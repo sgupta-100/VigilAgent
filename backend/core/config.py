@@ -33,6 +33,26 @@ class GlobalSettings:
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
+    SCAN_TIMEOUT: int = int(os.getenv("SCAN_TIMEOUT", "600"))  # Default 10 minutes
+    ALPHA_ENABLE_V6: bool = os.getenv("ALPHA_ENABLE_V6", "true").lower() == "true"
+    ALPHA_TOOL_ROOT: str = os.getenv("ALPHA_TOOL_ROOT", r"D:\projects")
+    ALPHA_ARTIFACT_ROOT: str = os.getenv("ALPHA_ARTIFACT_ROOT", "data/scans")
+    ALPHA_DEFAULT_MODE: str = os.getenv("ALPHA_DEFAULT_MODE", "STANDARD")
+    ALPHA_DEFAULT_RPS: int = int(os.getenv("ALPHA_DEFAULT_RPS", "50"))
+    ALPHA_MAX_HTTPX_THREADS: int = int(os.getenv("ALPHA_MAX_HTTPX_THREADS", "50"))
+    ALPHA_MAX_CRAWL_DEPTH: int = int(os.getenv("ALPHA_MAX_CRAWL_DEPTH", "3"))
+    ALPHA_ENABLE_EXTERNAL_TOOLS: bool = os.getenv("ALPHA_ENABLE_EXTERNAL_TOOLS", "false").lower() == "true"
+    ALPHA_TOOL_TIMEOUT_SECONDS: int = int(os.getenv("ALPHA_TOOL_TIMEOUT_SECONDS", "180"))
+    ALPHA_ENABLE_PINCHTAB: bool = os.getenv("ALPHA_ENABLE_PINCHTAB", "true").lower() == "true"
+    ALPHA_EXPLICIT_AUTHORIZATION: bool = os.getenv("ALPHA_EXPLICIT_AUTHORIZATION", "false").lower() == "true"
+    PINCHTAB_BASE_URL: str = os.getenv("PINCHTAB_BASE_URL", "http://127.0.0.1:9867")
+    ALPHA_ENABLE_NEO4J: bool = os.getenv("ALPHA_ENABLE_NEO4J", "false").lower() == "true"
+    NEO4J_URI: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    NEO4J_USER: str = os.getenv("NEO4J_USER", "neo4j")
+    NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "")
+    ALPHA_ENABLE_OPENCTI_EXPORT: bool = os.getenv("ALPHA_ENABLE_OPENCTI_EXPORT", "false").lower() == "true"
+    OPENCTI_URL: str = os.getenv("OPENCTI_URL", "")
+    OPENCTI_TOKEN: str = os.getenv("OPENCTI_TOKEN", "")
 
 settings = GlobalSettings()
 
@@ -57,6 +77,8 @@ class WorkerConfig:
 
 @dataclass
 class PinchTabConfig:
+    base_url: str = os.getenv("PINCHTAB_BASE_URL", "http://127.0.0.1:9867")
+    enabled: bool = os.getenv("ALPHA_ENABLE_PINCHTAB", "true").lower() == "true"
     headless: bool = os.getenv("PINCHTAB_HEADLESS", "true").lower() == "true"
     browser_type: str = "chromium"
     timeout: int = 30000

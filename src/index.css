@@ -2,91 +2,60 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Smooth Scrolling */
-/* Smooth Scrolling handled by Lenis */
+/* ═══════════════════════════════════════════════════════
+   DESIGN TOKENS
+   ═══════════════════════════════════════════════════════ */
+
+:root {
+    --bg-deep: #06070B;
+    --cyan-bloom: rgba(20, 184, 166, 0.25);
+    --magenta-bloom: rgba(162, 28, 175, 0.20);
+    --primary: #8A2BE2;
+}
+
+/* ═══════════════════════════════════════════════════════
+   BASE STYLES
+   ═══════════════════════════════════════════════════════ */
 
 body {
-    background-color: #0d1117;
+    font-family: 'Inter', sans-serif;
+    background-color: var(--bg-deep);
+    color: #e2e8f0;
     overflow-x: hidden;
 }
 
-/* Custom Scrollbar */
-::-webkit-scrollbar {
-    width: 8px;
+/* ═══════════════════════════════════════════════════════
+   BACKGROUNDS & OVERLAYS
+   ═══════════════════════════════════════════════════════ */
+
+.nebula-background {
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    pointer-events: none;
+    background:
+        radial-gradient(circle at 0% 0%, var(--cyan-bloom) 0%, transparent 50%),
+        radial-gradient(circle at 100% 100%, var(--magenta-bloom) 0%, transparent 50%),
+        linear-gradient(180deg, #06070B 0%, #040508 100%);
 }
 
-::-webkit-scrollbar-track {
-    background: #0d1117;
-}
-
-::-webkit-scrollbar-thumb {
-    background: #30363d;
-    border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-    background: #58a6ff;
-}
-
-/* Glassmorphism Utilities */
-.glass-panel {
-    background: rgba(22, 27, 34, 0.7);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
-}
-
-.glass-panel-fast {
-    background: rgba(22, 27, 34, 0.85);
-    /* Slightly more opaque to compensate for lack of blur */
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
-}
-
-.glass-table th,
-.glass-table td {
-    border-color: rgba(255, 255, 255, 0.05);
-}
-
-/* Animated Stars */
-@keyframes twinkle {
-    0% {
-        opacity: 0;
-        transform: scale(0.5);
-    }
-
-    50% {
-        opacity: 1;
-        transform: scale(1.2);
-    }
-
-    100% {
-        opacity: 0;
-        transform: scale(0.5);
-    }
-}
-
-.star {
-    position: absolute;
-    background: white;
-    border-radius: 50%;
-    animation: twinkle 3s infinite ease-in-out;
+.noise-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.05;
+    background-image: url(https://lh3.googleusercontent.com/aida-public/AB6AXuB1Rk5iZrbiz4M9YYaTmE2PCG6RczkwzwtiFuCKCNTBZ-Lie5z-ZKfH5a6sMbvR4JswvLkYh0_WS4QLJNEs5xe_rm3OHlVLGlQfN7Ynp11mI0ARa7hln4cEvGUBClC0kW6BOchJWYaJE5La4vTFnfuw5je-3CHm-W3Zhes-AhlxLh__DbzBMnlH2m_00WPCHqeoLiJeXQDpbULIJ1PpQfZLBiBgSHWF0IxKvfxyXw-pPuLz8X9ZUdHtSu-CbqA8sRMPUn7DVXooTp2i);
 }
 
 /* Aurora Gradient Background Animation */
 @keyframes aurora {
-    0% {
-        background-position: 0% 50%;
-    }
-
-    50% {
-        background-position: 100% 50%;
-    }
-
-    100% {
-        background-position: 0% 50%;
-    }
+    0%   { background-position: 0% 50%; }
+    50%  { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
 }
 
 .aurora-bg {
@@ -95,28 +64,182 @@ body {
     animation: aurora 15s ease infinite;
 }
 
-/* Shadow Glows */
-.shadow-glow {
-    box-shadow: 0 0 15px rgba(138, 43, 226, 0.4);
+/* ═══════════════════════════════════════════════════════
+   GLASSMORPHISM PANELS
+   ═══════════════════════════════════════════════════════ */
+
+.glass-panel {
+    background: rgba(11, 12, 20, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-.shadow-glass {
-    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+.glass-panel-fast {
+    background: rgba(22, 27, 34, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
 }
 
-/* Input Focus Glow */
+.glass-panel-dash {
+    background: rgba(18, 24, 38, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2);
+}
+
+.glass-panel-settings {
+    background: rgba(18, 24, 38, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.15);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
+.glassmorphism-card {
+    background-color: rgba(42, 46, 74, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    position: relative;
+}
+
+.glassmorphism-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0) 60%);
+}
+
+.glass-card-lib {
+    background: rgba(30, 35, 50, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* ═══════════════════════════════════════════════════════
+   METRIC CARDS
+   ═══════════════════════════════════════════════════════ */
+
+.metric-card {
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: inset 0 0 20px rgba(255, 255, 255, 0.03);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.metric-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.5);
+}
+
+/* ═══════════════════════════════════════════════════════
+   TABLE STYLES
+   ═══════════════════════════════════════════════════════ */
+
+.glass-table th {
+    font-weight: 400;
+    color: #94a3b8;
+    font-size: 0.85rem;
+    padding-top: 1.25rem;
+    padding-bottom: 1.25rem;
+}
+
+.glass-table td {
+    vertical-align: middle;
+    padding-top: 1rem;
+    padding-bottom: 1rem;
+}
+
+.glass-table th,
+.glass-table td {
+    border-color: rgba(255, 255, 255, 0.05);
+}
+
+/* ═══════════════════════════════════════════════════════
+   CARD GRADIENTS
+   ═══════════════════════════════════════════════════════ */
+
+.bg-card-gradient-purple { background: linear-gradient(135deg, rgba(30, 27, 75, 0.9) 0%, rgba(49, 46, 129, 0.4) 100%); }
+.bg-card-gradient-green  { background: linear-gradient(135deg, rgba(6, 78, 59, 0.8) 0%, rgba(6, 95, 70, 0.3) 100%); }
+.bg-card-gradient-orange { background: linear-gradient(135deg, rgba(67, 20, 7, 0.9) 0%, rgba(124, 45, 18, 0.4) 100%); }
+.bg-card-gradient-red    { background: linear-gradient(135deg, rgba(69, 10, 10, 0.9) 0%, rgba(127, 29, 29, 0.4) 100%); }
+
+.card-glow-purple { background: radial-gradient(circle at bottom right, rgba(168, 85, 247, 0.5), transparent 60%); }
+.card-glow-green  { background: radial-gradient(circle at bottom right, rgba(34, 197, 94, 0.5), transparent 60%); }
+.card-glow-orange { background: radial-gradient(circle at bottom right, rgba(249, 115, 22, 0.5), transparent 60%); }
+.card-glow-red    { background: radial-gradient(circle at bottom right, rgba(239, 68, 68, 0.5), transparent 60%); }
+
+/* ═══════════════════════════════════════════════════════
+   GLOWS & EFFECTS
+   ═══════════════════════════════════════════════════════ */
+
+.shadow-glow { box-shadow: 0 0 20px rgba(138, 43, 226, 0.15); }
+.shadow-glass { box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37); }
+.glow-element { box-shadow: 0 0 15px 3px rgba(155, 97, 255, 0.5), 0 0 5px 1px rgba(155, 97, 255, 0.6); }
+.text-glow { text-shadow: 0 0 8px rgba(155, 97, 255, 0.7); }
+.icon-glow { filter: drop-shadow(0 0 5px rgba(155, 97, 255, 0.7)); }
+
+/* ═══════════════════════════════════════════════════════
+   STARS
+   ═══════════════════════════════════════════════════════ */
+
+.star {
+    position: absolute;
+    background: white;
+    border-radius: 50%;
+}
+
+@keyframes twinkle {
+    0%, 100% { opacity: 0.1; transform: scale(0.8); }
+    50%      { opacity: 0.8; transform: scale(1.1); }
+}
+
+/* ═══════════════════════════════════════════════════════
+   ANIMATIONS
+   ═══════════════════════════════════════════════════════ */
+
+@keyframes draw {
+    from { stroke-dashoffset: 2000; }
+    to   { stroke-dashoffset: 0; }
+}
+
+.animate-draw {
+    stroke-dasharray: 2000;
+    animation: draw 2s ease-out forwards;
+}
+
+/* ═══════════════════════════════════════════════════════
+   SCROLLBAR
+   ═══════════════════════════════════════════════════════ */
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #06070B; }
+::-webkit-scrollbar-thumb { background: #1e2130; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #31364a; }
+
+/* ═══════════════════════════════════════════════════════
+   FORM CONTROLS
+   ═══════════════════════════════════════════════════════ */
+
 input:focus,
 textarea:focus {
     box-shadow: 0 0 0 2px rgba(138, 43, 226, 0.3);
 }
 
-/* Button Hover Scale */
-button:active {
-    transform: scale(0.96);
-}
+/* Settings Toggles */
+.toggle-checkbox:checked { right: 0; border-color: #8B5CF6; }
+.toggle-checkbox:checked + .toggle-label { background-color: #8B5CF6; }
 
-/* Optimization for Animations */
+/* ═══════════════════════════════════════════════════════
+   PERFORMANCE UTILITIES
+   ═══════════════════════════════════════════════════════ */
+
 .will-change-transform {
     will-change: transform;
     backface-visibility: hidden;
+}
+
+button:active {
+    transform: scale(0.96);
 }

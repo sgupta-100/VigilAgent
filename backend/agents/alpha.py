@@ -2,6 +2,8 @@ import asyncio
 import aiohttp
 from backend.core.hive import BaseAgent, EventType, HiveEvent
 from backend.core.protocol import JobPacket, ResultPacket, AgentID, ModuleConfig, TaskTarget
+from backend.core.config import settings
+from backend.agents.alpha_v6 import AlphaOrchestrator
 
 # Hybrid AI Engine
 from backend.ai.cortex import CortexEngine, get_cortex_engine
@@ -18,6 +20,7 @@ class AlphaAgent(BaseAgent):
         self.cortex = get_cortex_engine()
         self.MAX_CRAWL_DEPTH = 5
         self._session = None
+        self.alpha_recon = AlphaOrchestrator(bus, agent_name=self.name)
 
     async def setup(self):
         # Listen for assigned jobs
@@ -40,7 +43,15 @@ class AlphaAgent(BaseAgent):
             payload={"url": target_url, "arsenal": "Recon Engine", "action": "Initiating HTTP Recon", "payload": "N/A"}
         ))
         
-        # Perform real HTTP recon
+        if getattr(settings, "ALPHA_ENABLE_V6", True):
+            try:
+                mode = event.payload.get("scan_mode") or event.payload.get("mode") or getattr(settings, "ALPHA_DEFAULT_MODE", "STANDARD")
+                await self.alpha_recon.run(target_url, scan_id=event.scan_id, mode=mode)
+                return
+            except Exception as exc:
+                print(f"[{self.name}] Alpha V6 recon failed, falling back to legacy HTTP recon: {exc}")
+
+        # Legacy fallback: preserve the existing shallow HTTP recon path.
         await self._real_http_recon(target_url, event.scan_id)
 
     async def _real_http_recon(self, target_url: str, scan_id: str = None):

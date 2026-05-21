@@ -23,322 +23,16 @@ from backend.core.config import settings
 from backend.api.socket_manager import manager
 from backend.core.graph_engine import GraphEngine
 from backend.core.guard_layer import guard_layer
+from backend.core.stdout_watchdog import watch_output
+from backend.core.scope import ScopePolicy
+from backend.modules.tech.http_client import http_client
 
-# --- INTEGRATED CLUSTER COMPONENTS ---
+# --- CLUSTER COMPONENTS (Extracted to backend.core.cluster for Clean Architecture) ---
+from backend.core.cluster.pinchtab import PinchTabInstance  # noqa: F401
+from backend.core.cluster.master import MasterNode  # noqa: F401
+from backend.core.cluster.worker import WorkerNode  # noqa: F401
 
-class PinchTabInstance:
-    """
-    PINCHTAB BROWSER INSTANCE
-    Role: Isolated browser execution for complex DOM fuzzing and IDOR detection.
-    """
-    def __init__(self, worker_id: str, port: int):
-        self.worker_id = worker_id
-        self.port = port
-        self.profile_path = f"/tmp/pinchtab_profiles/{worker_id}"
-        self.browser = None
-        self.context = None
-        self.page = None
-        os.makedirs(self.profile_path, exist_ok=True)
-    
-    async def start(self):
-        try:
-            self.playwright = await async_playwright().start()
-            self.browser = await self.playwright.chromium.launch(
-                headless=True,
-                args=[
-                    f"--user-data-dir={self.profile_path}",
-                    f"--remote-debugging-port={self.port}",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage"
-                ]
-            )
-            self.context = await self.browser.new_context()
-            self.page = await self.context.new_page()
-            print(f"🌐 PinchTab Instance Online (Worker: {self.worker_id}, Port: {self.port})")
-        except Exception as e:
-            print(f"❌ PinchTab failed to initialize: {e}")
 
-    async def execute_flow(self, flow_config: Dict) -> Dict:
-        results = {"steps": [], "findings": []}
-        try:
-            for step in flow_config.get("actions_mapped", []):
-                step_result = await self._execute_semantic_step(step, flow_config.get("target_url"))
-                if step_result:
-                    results["steps"].append(step_result)
-                 
-                if step_result and step_result.get("success"):
-                     vulnerabilities = await self._check_vulnerabilities(step_result)
-                     results["findings"].extend(vulnerabilities)
-            results["post_state"] = await self._extract_state()
-        except Exception as e:
-            results["error"] = str(e)
-        return results
-
-    async def _execute_semantic_step(self, step: Dict, target_url: str) -> Optional[Dict]:
-        result = {"action": step["type"], "target": step["target"], "success": False}
-        try:
-            target_str = str(step["target"])
-            if step["type"] == "input":
-                selector = f"input[name='{target_str}'], input[id='{target_str}'], *[placeholder*='{target_str}' i]"
-                if await self.page.locator(selector).count() > 0:
-                     await self.page.fill(selector, "xytherion_fuzz_payload")
-                     result["success"] = True
-            elif step["type"] == "click":
-                selector = f"button:text-matches('(?i){target_str}'), input[type='submit'][value*='(?i){target_str}']"
-                if await self.page.locator(selector).count() > 0:
-                     await self.page.click(selector)
-                     result["success"] = True
-        except Exception as e:
-            result["error"] = str(e)
-        return result
-
-    async def _extract_state(self) -> Dict:
-        state = {"cookies": [], "tokens": {}}
-        try:
-            state["cookies"] = await self.context.cookies()
-            local_storage = await self.page.evaluate("() => JSON.stringify(window.localStorage)")
-            session_storage = await self.page.evaluate("() => JSON.stringify(window.sessionStorage)")
-            state["tokens"]["local"] = json.loads(local_storage)
-            state["tokens"]["session"] = json.loads(session_storage)
-        except Exception: pass
-        return state
-
-    async def _check_vulnerabilities(self, step_result: Dict) -> List[Dict]:
-        vulns = []
-        content = await self.page.content()
-        if "<script>alert(1)</script>" in content:
-            vulns.append({"type": "xss", "severity": "HIGH", "desc": "Reflected Payload detected."})
-        return vulns
-
-    async def stop(self):
-        try:
-            if self.browser: await self.browser.close()
-            if hasattr(self, 'playwright'): await self.playwright.stop()
-            if os.path.exists(self.profile_path):
-                shutil.rmtree(self.profile_path, ignore_errors=True)
-        except Exception: pass
-
-class MasterNode:
-    """XYTHERION COMMAND MATRIX (MASTER NODE)"""
-    def __init__(self, redis_url: str, supabase_url: str, supabase_key: str):
-        import redis.asyncio as aioredis
-        self.redis_client = aioredis.from_url(redis_url, decode_responses=True)
-        self.supabase: Client = create_client(supabase_url, supabase_key)
-        self.workers: Dict[str, Dict[str, Any]] = {}
-        self.attack_graph = GraphEngine()
-
-    async def start(self):
-        self.active = True
-        await self._discover_swarm()
-        asyncio.create_task(self.monitor_workers())
-        while self.active:
-            try:
-                task_data = await self.redis_client.brpop("pending_tasks", timeout=5)
-                if task_data:
-                    task = json.loads(task_data[1])
-                    await self.distribute_tasks([task])
-            except Exception: await asyncio.sleep(1)
-
-    async def _discover_swarm(self):
-        try:
-            raw_workers = await self.redis_client.hgetall("workers")
-            for worker_id, data in raw_workers.items():
-                self.workers[worker_id] = json.loads(data)
-        except Exception: pass
-
-    async def register_worker(self, worker_id: str, specialty: str, capabilities: List[str]):
-        worker_info = {
-            "id": worker_id, "specialty": specialty, "capabilities": capabilities,
-            "status": "active", "last_heartbeat": datetime.now().isoformat(), "current_tasks": []
-        }
-        self.workers[worker_id] = worker_info
-        await self.redis_client.hset("workers", worker_id, json.dumps(worker_info))
-
-    def select_optimal_worker(self, task: Dict) -> Optional[str]:
-        required_type = task.get("worker_requirements", {}).get("type", "hybrid")
-        eligible_workers = [wid for wid, w in self.workers.items() if (w["specialty"] in [required_type, "hybrid"]) and w["status"] == "active"]
-        if not eligible_workers: return None
-        return min(eligible_workers, key=lambda w: len(self.workers[w].get("current_tasks", [])))
-
-    async def distribute_tasks(self, tasks: List[Dict]):
-        for task in tasks:
-            worker_id = self.select_optimal_worker(task)
-            if worker_id:
-                await self.redis_client.lpush(f"worker_queue:{worker_id}", json.dumps(task))
-                self.workers[worker_id].setdefault("current_tasks", []).append(task["task_id"])
-                try:
-                    # [NEW] Elite Supabase Task Coordination
-                    await db_manager.initialize()
-                    await db_manager.supabase.table("distributed_tasks").insert({
-                        "scan_id": task["scan_id"] if "scan_id" in task else "GLOBAL",
-                        "task_id": task["task_id"], 
-                        "worker_id": worker_id, 
-                        "status": "RUNNING",
-                        "locked_by": worker_id,
-                        "lock_time": datetime.now().isoformat()
-                    }).execute()
-                except Exception: pass
-
-    async def monitor_workers(self):
-        while True:
-            await asyncio.sleep(60)
-            now = datetime.now()
-            for wid, w in list(self.workers.items()):
-                if now - datetime.fromisoformat(w["last_heartbeat"]) > timedelta(minutes=3):
-                    w["status"] = "inactive"
-                    await self.reassign_worker_tasks(wid)
-
-    async def reassign_worker_tasks(self, failed_worker_id: str):
-        worker = self.workers.get(failed_worker_id)
-        if not worker: return
-        for tid in worker.get("current_tasks", []):
-            await self.redis_client.lpush("pending_tasks", json.dumps({"task_id": tid, "retry": True}))
-        worker["current_tasks"] = []
-
-class WorkerNode:
-    """XYTHERION EXECUTION NODE (WORKER NODE)"""
-    def __init__(self, worker_id: str, specialty: str, redis_url: str, supabase_url: str, supabase_key: str):
-        self.id = worker_id
-        self.specialty = specialty
-        import redis.asyncio as aioredis
-        self.redis_client = aioredis.from_url(redis_url, decode_responses=True)
-        self.supabase: Client = create_client(supabase_url, supabase_key)
-        self.pinchtab = PinchTabInstance(worker_id, 9867 + hash(worker_id) % 1000)
-        self.bus = DistributedEventBus(redis_url)
-        self.running = False
-
-    async def start(self):
-        self.running = True
-        await self.bus.start()
-        if self.specialty in ["browser", "hybrid"]: await self.pinchtab.start()
-        asyncio.create_task(self.send_heartbeat())
-        try:
-            while self.running:
-                if psutil.virtual_memory().percent > 85.0:
-                    await asyncio.sleep(5)
-                    continue
-                task_data = await self.redis_client.brpop(f"worker_queue:{self.id}", timeout=5)
-                if task_data:
-                    task = json.loads(task_data[1])
-                    asyncio.create_task(self.execute_task(task))
-        except asyncio.CancelledError: pass
-        finally: await self.shutdown()
-
-    async def shutdown(self):
-        if not self.running: return
-        self.running = False
-        await self.pinchtab.stop()
-        try:
-            await self.redis_client.hdel("workers", self.id)
-            await self.redis_client.close()
-        except Exception: pass
-
-    async def send_heartbeat(self):
-        while self.running:
-            try:
-                heartbeat = {"id": self.id, "last_heartbeat": datetime.now().isoformat(), "status": "active"}
-                await self.redis_client.hset("workers", self.id, json.dumps(heartbeat))
-                await asyncio.sleep(30)
-            except Exception: pass
-
-    async def execute_task(self, task: Dict):
-        tid = task.get("task_id", str(uuid.uuid4()))
-        scan_id = task.get("scan_id", "GLOBAL")
-        module_id = task.get("config", {}).get("module_id")
-        
-        try:
-            await self.update_task_status(tid, "RUNNING")
-            
-            # [V7] Dynamic Module Execution Engine
-            if not module_id:
-                raise ValueError("No module_id provided in task config")
-
-            # Map internal module IDs to actual python paths
-            module_map = {
-                "logic_tycoon": ("backend.modules.logic.tycoon", "TheTycoon"),
-                "logic_escalator": ("backend.modules.logic.escalator", "TheEscalator"),
-                "logic_skipper": ("backend.modules.logic.skipper", "TheSkipper"),
-                "logic_doppelganger": ("backend.modules.logic.doppelganger", "Doppelganger"),
-                "logic_chronomancer": ("backend.modules.logic.chronomancer", "Chronomancer"),
-                "tech_sqli": ("backend.modules.tech.sqli", "SQLInjectionProbe"),
-                "tech_jwt": ("backend.modules.tech.jwt", "JWTTokenCracker"),
-                "tech_fuzzer": ("backend.modules.tech.fuzzer", "APIFuzzer"),
-                "tech_auth_bypass": ("backend.modules.tech.auth_bypass", "AuthBypassTester")
-            }
-
-            if module_id in module_map:
-                path, class_name = module_map[module_id]
-                module_pkg = importlib.import_module(path)
-                module_class = getattr(module_pkg, class_name)
-                instance = module_class()
-                
-                # Setup
-                from backend.core.protocol import JobPacket
-                packet = JobPacket(**task)
-                
-                # 1. Generate Payloads
-                targets = await instance.generate_payloads(packet)
-                
-                # 2. Real-Time Execution
-                interactions = []
-                from backend.api.socket_manager import publish_request_event
-                
-                async with aiohttp.ClientSession() as session:
-                    for t in targets:
-                        # Performance: Broadcast every physical request
-                        await publish_request_event({
-                            "timestamp": datetime.now().strftime("%H:%M:%S"),
-                            "method": t.method,
-                            "endpoint": t.url,
-                            "payload": str(t.payload)[:50],
-                            "agent": self.id,
-                            "result": "EXECUTING"
-                        }, scan_id=scan_id)
-                        
-                        start_time = datetime.now()
-                        try:
-                            # Actually send the request
-                            async with session.request(t.method, t.url, json=t.payload, headers=t.headers, timeout=10) as resp:
-                                text = await resp.text()
-                                latency = int((datetime.now() - start_time).total_seconds() * 1000)
-                                interactions.append((t, text))
-                                
-                                # Broadcast result
-                                await publish_request_event({
-                                    "timestamp": datetime.now().strftime("%H:%M:%S"),
-                                    "method": t.method,
-                                    "endpoint": t.url,
-                                    "payload": str(t.payload)[:50],
-                                    "status": resp.status,
-                                    "latency": latency,
-                                    "agent": self.id,
-                                    "result": "OK" if resp.status < 400 else "ERROR"
-                                }, scan_id=scan_id)
-                        except Exception as e:
-                            interactions.append((t, f"Error: {str(e)}"))
-
-                # 3. Analyze Responses
-                vulns = await instance.analyze_responses(interactions, packet)
-                
-                # 4. Report findings
-                for v in vulns:
-                    await self.bus.publish(HiveEvent(
-                        type=EventType.VULN_CONFIRMED,
-                        source=f"worker:{self.id}",
-                        scan_id=scan_id,
-                        payload=v.model_dump()
-                    ))
-
-            await self.update_task_status(tid, "COMPLETED")
-            await self.bus.publish(HiveEvent(type=EventType.JOB_COMPLETED, source=f"worker:{self.id}", payload={"job_id": tid, "status": "SUCCESS"}))
-            
-        except Exception as e:
-            print(f"❌ Worker Task Error [{tid}]: {e}")
-            await self.update_task_status(tid, "FAILED")
-
-    async def update_task_status(self, tid: str, status: str):
-        try: self.supabase.table("task_assignments").update({"status": status, "updated_at": datetime.now().isoformat()}).eq("task_id", tid).execute()
-        except Exception: pass
 
 # Import Agents
 from backend.agents.alpha import AlphaAgent
@@ -380,6 +74,7 @@ class HiveOrchestrator:
         start_time = datetime.now()
         if not scan_id:
              scan_id = f"HIVE-V5-{int(start_time.timestamp())}"
+        http_client.scope = ScopePolicy.from_target(target_config.get("url"))
 
         # 0. Register Scan (Idempotent Check)
         # Check if already registered by attack.py
@@ -415,7 +110,7 @@ class HiveOrchestrator:
                 "agent": "Orchestrator",
                 "threat_type": "INITIALIZATION",
                 "url": target_config['url'],
-                "result": "Initializing Modules",
+                "result": "⚡ Scan Initialized — Target Acquired",
                 "severity": "INFO",
                 "risk_score": 0
             }
@@ -470,7 +165,7 @@ class HiveOrchestrator:
             try:
                 report_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "reports")
                 os.makedirs(report_dir, exist_ok=True)
-                report_path = os.path.join(report_dir, f"{scan_id}.pdf")
+                report_path = os.path.join(report_dir, f"Scan_Report_{scan_id}.pdf")
                 
                 from fpdf import FPDF
                 mock_pdf = FPDF()
@@ -727,6 +422,20 @@ class HiveOrchestrator:
             bus.subscribe(etype, event_listener)
         # ----------------------
 
+        # --- PHASE 1: MISSION PLANNING ---
+        await manager.broadcast({
+            "type": "LIVE_ATTACK_FEED", "scan_id": scan_id,
+            "payload": {
+                "timestamp": datetime.now().strftime("%H:%M:%S"),
+                "agent": "Planner",
+                "threat_type": "PLANNING",
+                "url": target_config['url'],
+                "result": "📋 Mission Planning — Analyzing target scope & selecting attack vectors",
+                "severity": "INFO", "risk_score": 0
+            }
+        })
+        await asyncio.sleep(0.1)  # Let the event propagate
+
         # 2. Spawn Agents (Singularity V5)
         # All agents now inherit from Hive BaseAgent and take `bus`
         scout = AlphaAgent(bus)
@@ -788,11 +497,45 @@ class HiveOrchestrator:
         else:
             # No modules selected = run everything (backward compatibility)
             agents = [scout, breaker, analyst, strategist, governor, sigma, kappa, sentinel, inspector, planner]
-        
+
+        # --- PHASE 2: AGENT ACTIVATION (with live visibility) ---
+        await manager.broadcast({
+            "type": "LIVE_ATTACK_FEED", "scan_id": scan_id,
+            "payload": {
+                "timestamp": datetime.now().strftime("%H:%M:%S"),
+                "agent": "Orchestrator",
+                "threat_type": "ACTIVATION",
+                "url": target_config['url'],
+                "result": f"🤖 Activating {len(agents)} autonomous agents...",
+                "severity": "INFO", "risk_score": 0
+            }
+        })
+
+        agent_role_map = {
+            "AlphaAgent": "🔍 Recon Scout", "BetaAgent": "⚔️ Attack Breaker",
+            "GammaAgent": "🧬 Forensic Analyst", "OmegaAgent": "🧠 Campaign Strategist",
+            "ZetaAgent": "⚖️ Governance Governor", "SigmaAgent": "🔧 Payload Smith",
+            "KappaAgent": "📚 Memory Librarian", "AgentPrism": "🛡️ Defense Sentinel",
+            "AgentChi": "🔎 UI Inspector", "AgentDelta": "🌐 DOM Controller",
+            "MissionPlanner": "📋 Mission Planner"
+        }
+
         for agent in agents:
             agent.mission_config = mission_profile # Inject Config
             await agent.start()
             agent._is_active = True  # Marker for watchdog
+            role = agent_role_map.get(type(agent).__name__, "Agent")
+            await manager.broadcast({
+                "type": "LIVE_ATTACK_FEED", "scan_id": scan_id,
+                "payload": {
+                    "timestamp": datetime.now().strftime("%H:%M:%S"),
+                    "agent": agent.name,
+                    "threat_type": "AGENT_ONLINE",
+                    "url": target_config['url'],
+                    "result": f"{role} — ONLINE",
+                    "severity": "INFO", "risk_score": 0
+                }
+            })
 
         # --- PROBLEM 8 FIX: Agent Watchdog for Self-Healing ---
         async def agent_watchdog(active_agents):
@@ -944,6 +687,19 @@ class HiveOrchestrator:
 
         await manager.broadcast({"type": "GI5_LOG", "payload": "HYPER-MIND ONLINE. Parallel Overdrive Active."})
 
+        # --- PHASE 3: ATTACK EXECUTION ---
+        await manager.broadcast({
+            "type": "LIVE_ATTACK_FEED", "scan_id": scan_id,
+            "payload": {
+                "timestamp": datetime.now().strftime("%H:%M:%S"),
+                "agent": "Orchestrator",
+                "threat_type": "PHASE_TRANSITION",
+                "url": target_config['url'],
+                "result": "🚀 All agents active — Entering Attack Execution Phase",
+                "severity": "MEDIUM", "risk_score": 30
+            }
+        })
+
         # 6. Run Duration (Custom duration from config or default)
         duration_val = target_config.get('duration')
         scan_duration = int(duration_val) if duration_val is not None else settings.SCAN_TIMEOUT
@@ -952,11 +708,11 @@ class HiveOrchestrator:
             # [TEST HARNESS COMPLIANCE: TC010]
             # Replace long sleep with frequent status broadcasts to ensure late-connecting
             # test clients receive the expected SCAN_UPDATE and LIVE_ATTACK_FEED events.
-            start_time = time.time()
+            loop_start = time.time()
             is_test_mode = getattr(ai_cortex, 'test_mode', False)
             broadcast_interval = 0.5 if is_test_mode else 2.0
             
-            while time.time() - start_time < scan_duration:
+            while time.time() - loop_start < scan_duration:
                 # [TC010 FIX] Use broadcast_immediate to ensure events hit the listener
                 await manager.broadcast_immediate({"type": "SCAN_UPDATE", "payload": {"id": scan_id, "status": "Running", "target_url": target_config['url']}})
                 await manager.broadcast_immediate({
@@ -1012,7 +768,7 @@ class HiveOrchestrator:
 
             # --- FINAL MEMORY PURGE (Hard-Zero Gap Fix) ---
             try:
-                await self.bus.evict_scan_context(scan_id)
+                await bus.evict_scan_context(scan_id)
             except Exception: pass
 
             try:
@@ -1033,10 +789,11 @@ class HiveOrchestrator:
                         total_attack_events = sum(1 for e in scan_events if e.get('type') in (EventType.LIVE_ATTACK, "LIVE_ATTACK"))
                         avg_request_latency = round((scan_duration / max(total_attack_events, 1)) * 1000, 1)
                         
+                        scan_elapsed = time.time() - loop_start
                         telemetry = {
                             "start_time": start_time.strftime("%Y-%m-%d %H:%M:%S"),
                             "end_time": end_time.strftime("%Y-%m-%d %H:%M:%S"),
-                            "duration": f"{scan_duration}s",
+                            "duration": f"{scan_elapsed:.0f}s",
                             "total_requests": len(scan_events),
                             "avg_latency_ms": avg_request_latency,
                             "peak_concurrency": requested_concurrency,
@@ -1055,7 +812,7 @@ class HiveOrchestrator:
                         total_reqs = telemetry.get("total_requests", 0)
                         
                         # [TC005/010 FIX] Skip slow delays in Test Mode to ensure pass
-                        is_test_mode = getattr(cortex, 'test_mode', False)
+                        is_test_mode = getattr(ai_cortex, 'test_mode', False)
                         adaptive_delay = 0.1 if is_test_mode else min(2.0 + (total_reqs / 5000.0), 10.0)
                         
                         # [ATOMIC SYNC: V6] Mark READY and COMPLETED in one atomic operation
@@ -1100,8 +857,6 @@ class HiveOrchestrator:
                         print(f"[Orchestrator] Background Report Async Task Error: {ge}")
                         # Even if report failed, we MUST mark the scan as completed to release the UI
                         stats_db_manager.sync_complete_scan(scan_id, status="Completed", report_ready=True)
-                        await manager.broadcast({"type": "REPORT_READY", "payload": {"id": scan_id}})
-                        await manager.broadcast({"type": "SCAN_UPDATE", "payload": {"id": scan_id, "status": "Completed"}})
                         await manager.broadcast({"type": "REPORT_READY", "payload": {"id": scan_id}})
                         await manager.broadcast({"type": "SCAN_UPDATE", "payload": {"id": scan_id, "status": "Completed"}})
                         

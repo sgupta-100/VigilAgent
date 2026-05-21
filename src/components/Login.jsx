@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
+import { apiUrl } from '../lib/api';
 
 const Login = ({ onLoginSuccess }) => {
     const [token, setToken] = useState('');
@@ -12,10 +13,10 @@ const Login = ({ onLoginSuccess }) => {
         setError('');
 
         try {
-            const res = await fetch('http://127.0.0.1:8000/api/dashboard/auth/login', {
+            const res = await fetch(apiUrl('/api/dashboard/auth/login'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ token: token })
+                body: JSON.stringify({ totp_code: token })
             });
             const data = await res.json();
 

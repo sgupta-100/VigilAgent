@@ -1,8 +1,10 @@
-import React from 'react';
-import { motion, LayoutGroup } from 'framer-motion';
+import React, { useState } from 'react';
+import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
 import { LIQUID_SPRING } from '../lib/constants';
 
 const Navigation = ({ navigate, activePage }) => {
+    const [mobileOpen, setMobileOpen] = useState(false);
+
     return (
         <nav className="relative z-10 w-full pt-6 pb-2">
             <div className="max-w-7xl mx-auto px-6 lg:px-8">
@@ -17,9 +19,9 @@ const Navigation = ({ navigate, activePage }) => {
                             <span className="font-medium text-lg text-white tracking-wide" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>Vulagent Scanner</span>
                         </div>
 
-                        {/* Links Section */}
+                        {/* Desktop Links */}
                         <div className="hidden md:flex items-center space-x-1">
-                            {['dashboard', 'scans', 'library', 'settings'].map((page) => (
+                            {['dashboard', 'recon', 'scans', 'library', 'settings'].map((page) => (
                                 <div key={page} className="relative flex flex-col items-center">
                                     <button
                                         onClick={() => navigate(page)}
@@ -38,17 +40,52 @@ const Navigation = ({ navigate, activePage }) => {
                             ))}
                         </div>
 
-                        {/* Icons Section */}
+                        {/* Icons + Mobile Hamburger */}
                         <div className="flex items-center gap-5">
-                            <button className="text-gray-400 hover:text-white transition-colors">
+                            <button className="text-gray-400 hover:text-white transition-colors hidden md:block">
                                 <span className="material-symbols-outlined text-[22px]">notifications</span>
                             </button>
-                            <button className="text-gray-400 hover:text-white transition-colors">
+                            <button className="text-gray-400 hover:text-white transition-colors hidden md:block">
                                 <span className="material-symbols-outlined text-[22px]">account_circle</span>
+                            </button>
+                            {/* Mobile hamburger */}
+                            <button
+                                className="md:hidden text-gray-300 hover:text-white transition-colors"
+                                onClick={() => setMobileOpen(prev => !prev)}
+                                aria-label="Toggle mobile menu"
+                            >
+                                <span className="material-symbols-outlined text-[26px]">
+                                    {mobileOpen ? 'close' : 'menu'}
+                                </span>
                             </button>
                         </div>
                     </div>
                 </LayoutGroup>
+
+                {/* Mobile Drawer */}
+                <AnimatePresence>
+                    {mobileOpen && (
+                        <motion.div
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: 'auto' }}
+                            exit={{ opacity: 0, height: 0 }}
+                            transition={{ duration: 0.2 }}
+                            className="md:hidden overflow-hidden border-t border-white/10 mt-2"
+                        >
+                            <div className="flex flex-col py-3 gap-1">
+                                {['dashboard', 'recon', 'scans', 'library', 'settings'].map((page) => (
+                                    <button
+                                        key={page}
+                                        onClick={() => { navigate(page); setMobileOpen(false); }}
+                                        className={`${activePage === page ? 'text-white bg-purple-600/20' : 'text-gray-400 hover:text-white hover:bg-white/5'} px-4 py-3 text-sm font-medium transition-colors capitalize rounded-lg text-left`}
+                                    >
+                                        {page}
+                                    </button>
+                                ))}
+                            </div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
             </div>
         </nav>
     );

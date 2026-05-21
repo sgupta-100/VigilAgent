@@ -1,7 +1,8 @@
 {
     "name": "antigravity-scanner",
     "private": true,
-    "version": "0.0.0",
+    "version": "6.1.0",
+    "description": "AI-powered autonomous security reconnaissance and vulnerability assessment platform",
     "type": "module",
     "scripts": {
         "dev": "vite",

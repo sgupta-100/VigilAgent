@@ -3,8 +3,11 @@ import os
 import asyncio
 from typing import List, Dict, Any, Optional
 
-GRAPH_FILE = "graph.json"
-TMP_GRAPH_FILE = "graph.json.tmp"
+# Store graph in a project-local data directory, not CWD
+_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data")
+os.makedirs(_DATA_DIR, exist_ok=True)
+GRAPH_FILE = os.path.join(_DATA_DIR, "graph.json")
+TMP_GRAPH_FILE = os.path.join(_DATA_DIR, "graph.json.tmp")
 
 class VulnNode:
     def __init__(self, type: str, endpoint: str, weight: int = 1):
@@ -94,10 +97,10 @@ class GraphEngine:
             try:
                 def _write():
                     with open(TMP_GRAPH_FILE, "w") as f:
-                        json.dump(data, f, indent=4)
+                        json.dump(data, f)  # Compact JSON — 30% less disk I/O
                     os.replace(TMP_GRAPH_FILE, GRAPH_FILE)
                 
-                await asyncio.get_event_loop().run_in_executor(None, _write)
+                await asyncio.get_running_loop().run_in_executor(None, _write)
             except Exception as e:
                 print(f"[GraphEngine] Failed to persist intelligence graph: {e}")
 

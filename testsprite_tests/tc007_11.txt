@@ -1,0 +1,42 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.7, pytest-9.0.2, pluggy-1.6.0 -- C:\Users\Dell\AppData\Local\Programs\Python\Python313\python.exe
+cachedir: .pytest_cache
+rootdir: D:\Antigravity 2\API Endpoint Scanner
+plugins: anyio-4.12.1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 1 item / 3 errors
+
+=================================== ERRORS ====================================
+_ ERROR collecting testsprite_tests/TC007_API_Latency__Core_Bottleneck_Identification.py _
+testsprite_tests\TC007_API_Latency__Core_Bottleneck_Identification.py:132: in <module>
+    test_api_latency_and_core_bottleneck_identification()
+testsprite_tests\TC007_API_Latency__Core_Bottleneck_Identification.py:73: in test_api_latency_and_core_bottleneck_identification
+    assert malformed_resp.status_code == 500, "Malformed payload did not cause 500 error as expected"
+E   AssertionError: Malformed payload did not cause 500 error as expected
+E   assert 422 == 500
+E    +  where 422 = <Response [422]>.status_code
+_ ERROR collecting testsprite_tests/TC010_End_to_End_Backend_Workflow_Execution.py _
+testsprite_tests\TC010_End_to_End_Backend_Workflow_Execution.py:261: in <module>
+    test_TC010_end_to_end_backend_workflow_execution()
+testsprite_tests\TC010_End_to_End_Backend_Workflow_Execution.py:243: in test_TC010_end_to_end_backend_workflow_execution
+    websocket_listen(scan_id)
+testsprite_tests\TC010_End_to_End_Backend_Workflow_Execution.py:122: in websocket_listen
+    assert all(ws_msgs.values()), "Did not receive all expected WebSocket message types"
+E   AssertionError: Did not receive all expected WebSocket message types
+E   assert False
+E    +  where False = all(dict_values([True, False]))
+E    +    where dict_values([True, False]) = <built-in method values of dict object at 0x0000021BC81BFA00>()
+E    +      where <built-in method values of dict object at 0x0000021BC81BFA00> = {'LIVE_ATTACK_FEED': False, 'SCAN_UPDATE': True}.values
+_ ERROR collecting testsprite_tests/TC011_Functional__Branch_Coverage_Mapping.py _
+testsprite_tests\TC011_Functional__Branch_Coverage_Mapping.py:188: in <module>
+    test_TC011_functional_branch_coverage_high_load()
+testsprite_tests\TC011_Functional__Branch_Coverage_Mapping.py:125: in test_TC011_functional_branch_coverage_high_load
+    assert resp.status_code == 500
+E   assert 422 == 500
+E    +  where 422 = <Response [422]>.status_code
+=========================== short test summary info ===========================
+ERROR testsprite_tests/TC007_API_Latency__Core_Bottleneck_Identification.py
+ERROR testsprite_tests/TC010_End_to_End_Backend_Workflow_Execution.py - Asser...
+ERROR testsprite_tests/TC011_Functional__Branch_Coverage_Mapping.py - assert ...
+!!!!!!!!!!!!!!!!!!! Interrupted: 3 errors during collection !!!!!!!!!!!!!!!!!!!
+============================= 3 errors in 18.34s ==============================

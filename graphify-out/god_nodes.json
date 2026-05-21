@@ -1,0 +1,142 @@
+[
+  {
+    "label": "orchestrator",
+    "id": "orchestrator",
+    "degree": 76,
+    "type": "unknown",
+    "file": ""
+  },
+  {
+    "label": "CortexEngine",
+    "id": "cortex::CortexEngine",
+    "degree": 66,
+    "type": "class",
+    "file": "d:\\Antigravity 2\\API Endpoint Scanner\\backend\\ai\\cortex.py"
+  },
+  {
+    "label": "typing::Any",
+    "id": "typing::Any",
+    "degree": 51,
+    "type": "unknown",
+    "file": ""
+  },
+  {
+    "label": "pydantic::BaseModel",
+    "id": "pydantic::BaseModel",
+    "degree": 48,
+    "type": "unknown",
+    "file": ""
+  },
+  {
+    "label": "main",
+    "id": "main",
+    "degree": 36,
+    "type": "unknown",
+    "file": ""
+  },
+  {
+    "label": "typing::Dict",
+    "id": "typing::Dict",
+    "degree": 34,
+    "type": "unknown",
+    "file": ""
+  },
+  {
+    "label": "StateManager",
+    "id": "state::StateManager",
+    "degree": 27,
+    "type": "class",
+    "file": "d:\\Antigravity 2\\API Endpoint Scanner\\backend\\core\\state.py"
+  },
+  {
+    "label": "enum::Enum",
+    "id": "enum::Enum",
+    "degree": 27,
+    "type": "unknown",
+    "file": ""
+  },
+  {
+    "label": "typing::List",
+    "id": "typing::List",
+    "degree": 26,
+    "type": "unknown",
+    "file": ""
+  },
+  {
+    "label": "backend.ai.cortex::get_cortex_engine",
+    "id": "backend.ai.cortex::get_cortex_engine",
+    "degree": 25,
+    "type": "unknown",
+    "file": ""
+  },
+  {
+    "label": "backend.ai.cortex::CortexEngine",
+    "id": "backend.ai.cortex::CortexEngine",
+    "degree": 24,
+    "type": "unknown",
+    "file": ""
+  },
+  {
+    "label": "backend.core.protocol::JobPacket",
+    "id": "backend.core.protocol::JobPacket",
+    "degree": 23,
+    "type": "unknown",
+    "file": ""
+  },
+  {
+    "label": "sigma",
+    "id": "sigma",
+    "degree": 23,
+    "type": "unknown",
+    "file": ""
+  },
+  {
+    "label": "defense",
+    "id": "defense",
+    "degree": 21,
+    "type": "unknown",
+    "file": ""
+  },
+  {
+    "label": "SecurityReportPDF",
+    "id": "reporting::SecurityReportPDF",
+    "degree": 20,
+    "type": "class",
+    "file": "d:\\Antigravity 2\\API Endpoint Scanner\\backend\\core\\reporting.py"
+  },
+  {
+    "label": "AlphaV6ReconOrchestrator",
+    "id": "orchestrator::AlphaV6ReconOrchestrator",
+    "degree": 19,
+    "type": "class",
+    "file": "d:\\Antigravity 2\\API Endpoint Scanner\\backend\\agents\\alpha_v6\\orchestrator.py"
+  },
+  {
+    "label": "EliteDBManager",
+    "id": "database::EliteDBManager",
+    "degree": 19,
+    "type": "class",
+    "file": "d:\\Antigravity 2\\API Endpoint Scanner\\backend\\core\\database.py"
+  },
+  {
+    "label": "chi",
+    "id": "chi",
+    "degree": 19,
+    "type": "unknown",
+    "file": ""
+  },
+  {
+    "label": "__future__::annotations",
+    "id": "__future__::annotations",
+    "degree": 19,
+    "type": "unknown",
+    "file": ""
+  },
+  {
+    "label": "hive",
+    "id": "hive",
+    "degree": 19,
+    "type": "unknown",
+    "file": ""
+  }
+]

@@ -1,0 +1,48 @@
+version: "2"
+type: backend
+tech_stack:
+  - Python
+  - FastAPI
+  - Redis
+  - Supabase
+  - Docker (SonarQube)
+features:
+  - name: GI5 Forensic Engine
+    description: 6-Core deterministic cyber-forensic logic for threat analysis
+    files:
+      - backend/ai/gi5.py
+    endpoints: [] # Direct Logic Access
+  - name: Cortex Hybrid AI
+    description: Bayesian weighting and LLM fallback orchestration
+    files:
+      - backend/ai/cortex.py
+    endpoints: [] # Direct Logic Access
+  - name: Scan Orchestration
+    description: Hive-based distributed scan management and scheduling
+    files:
+      - backend/core/orchestrator.py
+    endpoints:
+      - method: POST
+        path: /api/attack/fire
+        description: Initialize a massive automated scan
+        auth_required: false
+  - name: Recon Ingestion
+    description: Capture and archive network recon data packets
+    files:
+      - backend/api/endpoints/recon.py
+    endpoints:
+      - method: POST
+        path: /api/recon/ingest
+        description: Ingest network reconnaissance data
+        auth_required: false
+  - name: Attack Agents
+    description: 8+ Specialized agents for vulnerability research (Sigma, Kappa, etc.)
+    files:
+      - backend/agents/sigma.py
+      - backend/agents/kappa.py
+      - backend/agents/alpha.py
+    endpoints: [] # Distributed Hive Events
+known_limitations:
+  - issue: Complex asynchronous state machines may lead to race conditions under 100% load
+    location: backend/core/orchestrator.py
+    impact: Possible scan state mismatch

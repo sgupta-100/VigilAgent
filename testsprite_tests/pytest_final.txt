@@ -1,0 +1,16 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.7, pytest-9.0.2, pluggy-1.6.0 -- C:\Users\Dell\AppData\Local\Programs\Python\Python313\python.exe
+cachedir: .pytest_cache
+rootdir: D:\Antigravity 2\API Endpoint Scanner
+plugins: anyio-4.12.1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 15 items
+
+testsprite_tests/test_backend_comprehensive_audit.py::test_api_layer_schema_validation ERROR [  6%]
+testsprite_tests/test_backend_comprehensive_audit.py::test_api_layer_defense_health ERROR [ 13%]
+testsprite_tests/test_backend_comprehensive_audit.py::test_distributed_race_condition_suppression ERROR [ 20%]
+testsprite_tests/test_backend_comprehensive_audit.py::test_llm_hallucination_and_fallback ERROR [ 26%]
+testsprite_tests/test_backend_comprehensive_audit.py::test_business_logic_event_routing ERROR [ 33%]
+testsprite_tests/test_backend_comprehensive_audit.py::test_performance_throughput ERROR [ 40%]
+testsprite_tests/test_backend_comprehensive_audit.py::test_security_prompt_injection ERROR [ 46%]
+testsprite_tests/test_backend_comprehensive_audit.py::test_security_xss_nosql_sanitization ERROR [ 53%]

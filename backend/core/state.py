@@ -82,24 +82,40 @@ class StateManager:
                 print(f"[StateManager] Load Error: {e}")
 
     async def _background_writer(self):
-        while True:
-            await asyncio.sleep(2.0)
+        """Coalesces multiple dirty flags into a single disk write every 2s."""
+        try:
+            while True:
+                await asyncio.sleep(2.0)
+                if self._dirty:
+                    async with self._lock:
+                        self._save_sync()
+        except asyncio.CancelledError:
+            # Final flush on shutdown
             if self._dirty:
-                async with self._lock:
-                    self._save_sync()
+                self._save_sync()
 
     def _mark_dirty(self):
         self._dirty = True
+        if os.getenv("VULAGENT_TEST_MODE") == "true":
+            self._save_sync()
+            return
         try:
             loop = asyncio.get_running_loop()
             if self._task is None or self._task.done():
                 self._task = loop.create_task(self._background_writer())
         except RuntimeError:
-            self.flush_immediate()
+            # No event loop — synchronous fallback
+            self._save_sync()
 
     def flush_immediate(self):
         """Immediately force-save state to disk (Critical for report readiness)."""
-        asyncio.run_coroutine_threadsafe(self._async_save(), asyncio.get_event_loop()) if self._task else self._save_sync()
+        # Always save synchronously — asyncio scheduling is unreliable here
+        # because this is often called during shutdown or from non-async contexts
+        with self._sync_lock:
+            try:
+                self._save_sync()
+            except Exception as e:
+                print(f"[StateManager] flush_immediate error: {e}")
 
     async def _async_save(self):
         async with self._lock:
@@ -131,10 +147,19 @@ class StateManager:
             if "id" in scan_data and "scan_id" not in scan_data:
                 scan_data["scan_id"] = scan_data["id"]
             
-            # $O(1) appending is safer for high frequency, reports can sort by timestamp
-            self._stats["scans"].append(scan_data)
-            self._stats["active_scans"] += 1
-            self._stats["total_scans"] += 1
+            existing_index = next(
+                (idx for idx, scan in enumerate(self._stats["scans"]) if scan.get("id") == scan_data.get("id")),
+                None,
+            )
+            if existing_index is None:
+                self._stats["scans"].append(scan_data)
+                self._stats["total_scans"] += 1
+            else:
+                self._stats["scans"][existing_index] = scan_data
+            self._stats["active_scans"] = sum(
+                1 for scan in self._stats["scans"]
+                if scan.get("status") in {"Initializing", "Running", "Finalizing"}
+            )
             self._save()
 
     async def add_scan_event(self, scan_id: str, event: Dict[str, Any]):
@@ -181,17 +206,13 @@ class StateManager:
             if severity.upper() in ["CRITICAL", "HIGH"]:
                 self._stats["critical"] += 1
 
+            # Update history for graph spike (INSIDE lock to prevent race condition)
+            current_total = self._stats["vulnerabilities"]
+            self._stats["history"].append(current_total)
+            if len(self._stats["history"]) > 30:
+                self._stats["history"].pop(0)
             
-        # Update history immediate for graph spike
-        # We take the current total and append/update last point
-        current_total = self._stats["vulnerabilities"]
-        
-        # Simple Logic: Append new total to history for the graph
-        self._stats["history"].append(current_total)
-        if len(self._stats["history"]) > 30:
-            self._stats["history"].pop(0)
-            
-        self._save()
+            self._dirty = True
 
     async def record_threat(self, threat_type: str, risk_score: int):
         """V6: Record a detected threat for metrics (Async-Safe)."""
@@ -213,11 +234,12 @@ class StateManager:
 
         
     def complete_scan(self, scan_id: str, results: List[Any], duration: float):
-        self._stats["active_scans"] = max(0, self._stats["active_scans"] - 1)
+        with self._sync_lock:
+            self._stats["active_scans"] = max(0, self._stats["active_scans"] - 1)
         
-        # Clean up ephemeral signatures for this scan
-        if scan_id in self._seen_signatures:
-            del self._seen_signatures[scan_id]
+            # Clean up ephemeral signatures for this scan
+            if scan_id in self._seen_signatures:
+                del self._seen_signatures[scan_id]
 
 
         seen_results = set()
@@ -337,7 +359,14 @@ class StateManager:
             return {}
 
     async def list_scan_states(self) -> list:
-        """Read all sharded scan state files."""
+        """Read all sharded scan state files via thread pool to avoid blocking the event loop."""
+        import functools
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self._list_scan_states_sync
+        )
+
+    def _list_scan_states_sync(self) -> list:
+        """Synchronous implementation of list_scan_states."""
         self._ensure_scans_dir()
         scans = []
         for fname in os.listdir(self.SCANS_DIR):
@@ -372,5 +401,6 @@ class StateManager:
 
 # Singleton Instance
 stats_db_manager = StateManager()
-# Legacy Accessor (for backward compatibility if needed, but prefer manager)
-stats_db = stats_db_manager._stats
+# NOTE: stats_db global alias removed — it exposed mutable _stats without locking.
+# All access should go through stats_db_manager.get_stats() which returns a copy.
+

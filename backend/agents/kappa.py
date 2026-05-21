@@ -7,6 +7,7 @@ import aiohttp
 import time as _time
 from backend.core.hive import BaseAgent, EventType, HiveEvent
 from backend.core.protocol import JobPacket, ResultPacket, AgentID
+from backend.core.memory import memory_store, cosine_similarity
 
 class KappaAgent(BaseAgent):
     """
@@ -64,12 +65,7 @@ class KappaAgent(BaseAgent):
         return []
 
     def _cosine_similarity(self, vec1: list[float], vec2: list[float]) -> float:
-        if not vec1 or not vec2 or len(vec1) != len(vec2): return 0.0
-        dot = sum(a*b for a, b in zip(vec1, vec2))
-        norm1 = math.sqrt(sum(a*a for a in vec1))
-        norm2 = math.sqrt(sum(b*b for b in vec2))
-        if norm1 == 0 or norm2 == 0: return 0.0
-        return dot / (norm1 * norm2)
+        return cosine_similarity(vec1, vec2)
 
     async def archive_victory(self, event: HiveEvent):
         payload = event.payload
@@ -91,6 +87,9 @@ class KappaAgent(BaseAgent):
         archive_data["vector"] = embedding
         
         self._save_record(archive_data)
+        memory_store.remember_episode(event.scan_id, {"type": "vulnerability", "payload": archive_data})
+        if embedding:
+            memory_store.remember_semantic(archive_data)
         
         await self.bus.publish(HiveEvent(
             type=EventType.LOG,
@@ -138,6 +137,10 @@ class KappaAgent(BaseAgent):
         print(f"[{self.name}] Semantic search for: {query}")
         query_vec = await self._get_embedding(query)
         if not query_vec: return []
+
+        semantic_hits = memory_store.recall_semantic(query_vec, top_k=top_k)
+        if semantic_hits:
+            return semantic_hits
 
         with open(self.memory_file, "r") as f:
             data = json.load(f)

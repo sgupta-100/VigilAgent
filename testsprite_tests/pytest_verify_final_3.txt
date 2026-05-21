@@ -1,0 +1,5 @@
+ERROR: usage: __main__.py [options] [file_or_dir] [file_or_dir] [...]
+__main__.py: error: unrecognized arguments: --json-report --json-report-file=testsprite_tests/pytest_final_3_report.json
+  inifile: None
+  rootdir: D:\Antigravity 2\API Endpoint Scanner
+

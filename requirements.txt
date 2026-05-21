@@ -4,6 +4,7 @@ pydantic>=2.0.0
 websockets
 websocket-client
 requests
+aiohttp
 fpdf2
 psutil
 pyotp
@@ -17,3 +18,4 @@ numpy
 playwright
 playwright-stealth
 python-dotenv
+openai

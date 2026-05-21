@@ -1,7 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Navigation from './Navigation';
 import { motion } from 'framer-motion';
 import { LIQUID_SPRING } from '../lib/constants';
+import { apiUrl } from '../lib/api';
+import { handleAutoDownload } from '../lib/downloadReport';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 
 const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
@@ -24,10 +27,12 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
     useEffect(() => { isCooldownRef.current = persistentState?.isCooldown; }, [persistentState?.isCooldown]);
     useEffect(() => { isStartDelayRef.current = persistentState?.isStartDelay; }, [persistentState?.isStartDelay]);
 
-    const wsRef = useRef(null);
     const statsBuffer = useRef([]);
     const bufferTimer = useRef(null);
     const requestCountRef = useRef(0);
+
+    // ── Shared WebSocket (singleton — no more per-page connections) ──
+    const { subscribe } = useWebSocket();
 
     const flushBuffer = () => {
         const events = statsBuffer.current;
@@ -77,14 +82,12 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
                         setScanTargetUrl('');
                         scanTargetUrlRef.current = '';
 
-                        // [V7] Auto-Cleanup Logic: Clear everything on finish and start cooldown
-                        nextState.threat_feed = [];
-                        nextState.graph_data = [];
+                        // [V8 FIX] Keep threat_feed and graph_data so the user can see results!
+                        // Only clear the scan tracking state, not the visible data.
                         nextState.activeScanId = null;
                         activeScanIdRef.current = null;
-                        requestCountRef.current = 0;
 
-                        // Start 5-second cooldown
+                        // Start 2-second cooldown (prevents stale events from next scan)
                         nextState.isCooldown = true;
                         isCooldownRef.current = true;
                         setTimeout(() => {
@@ -108,7 +111,7 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
                         }
                     }
                 }
-                else if (['LIVE_THREAT_LOG', 'ATTACK_HIT', 'VULN_CONFIRMED', 'LOG', 'JOB_ASSIGNED', 'RECON_PACKET', 'KEY_CAPTURE', 'LIVE_ATTACK_FEED'].includes(data.type)) {
+                else if (['LIVE_THREAT_LOG', 'ATTACK_HIT', 'VULN_CONFIRMED', 'LOG', 'JOB_ASSIGNED', 'RECON_PACKET', 'KEY_CAPTURE', 'LIVE_ATTACK_FEED', 'GI5_LOG'].includes(data.type)) {
 
                     // [V7] ISOLATION PRISM: 
                     // If we are in COOLDOWN or START DELAY, don't show ANYTHING.
@@ -179,16 +182,33 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
                             risk_score: severityToRisk('HIGH')
                         };
                     } else if (data.type === 'LIVE_ATTACK_FEED') {
-                        const attackSev = data.payload?.severity || 'HIGH';
+                        const attackPayload = data.payload || {};
+                        // Map orchestrator lifecycle events to descriptive types
+                        const lifecycleTypes = ['INITIALIZATION', 'PLANNING', 'ACTIVATION', 'AGENT_ONLINE', 'PHASE_TRANSITION', 'MONITORING', 'TERMINATION'];
+                        const isLifecycle = lifecycleTypes.includes(attackPayload.threat_type);
+                        const attackSev = attackPayload.severity || (isLifecycle ? 'INFO' : 'HIGH');
+                        const displayType = isLifecycle
+                            ? attackPayload.threat_type
+                            : `[ATTACK] ${attackPayload.arsenal?.toUpperCase() || attackPayload.threat_type || 'GENERAL'}`;
                         threat = {
-                            timestamp: data.payload.timestamp || new Date().toLocaleTimeString(),
-                            agent: data.payload.agent || 'agent_sigma',
-                            threat_type: `[ATTACK] ${data.payload.arsenal?.toUpperCase() || 'GENERAL'}`,
-                            url: data.payload.url || 'Target Endpoint',
+                            timestamp: attackPayload.timestamp || new Date().toLocaleTimeString(),
+                            agent: attackPayload.agent || 'agent_sigma',
+                            threat_type: displayType,
+                            url: attackPayload.result || attackPayload.url || 'Target Endpoint',
                             severity: attackSev,
-                            risk_score: data.payload.risk_score || severityToRisk(attackSev),
-                            action: data.payload.action,
-                            payload_data: data.payload.payload
+                            risk_score: attackPayload.risk_score || severityToRisk(attackSev),
+                            action: attackPayload.action,
+                            payload_data: attackPayload.payload
+                        };
+                    } else if (data.type === 'GI5_LOG') {
+                        const logMsg = typeof data.payload === 'string' ? data.payload : data.payload?.message || 'System Event';
+                        threat = {
+                            timestamp: new Date().toLocaleTimeString(),
+                            agent: 'Orchestrator',
+                            threat_type: 'SYSTEM LOG',
+                            url: logMsg.substring(0, 80),
+                            severity: 'INFO',
+                            risk_score: severityToRisk('INFO')
                         };
                     }
 
@@ -204,13 +224,15 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
 
                     nextState.v6_metrics = newMetrics;
 
-                    // [V7] UNLIMITED TELEMETRY: No more slicing or MAX_THREAT_ROWS
-                    nextState.threat_feed = [threat, ...(nextState.threat_feed || [])];
+                    // Cap threat_feed at 500 entries to prevent unbounded memory growth
+                    const MAX_THREAT_FEED = 500;
+                    const updatedFeed = [threat, ...(nextState.threat_feed || [])];
+                    nextState.threat_feed = updatedFeed.length > MAX_THREAT_FEED
+                        ? updatedFeed.slice(0, MAX_THREAT_FEED)
+                        : updatedFeed;
 
                     // Sync graph with request count (Request Activity)
                     if (scanActiveRef.current) {
-                        // V7: Authoritative counts are now handled by VULN_UPDATE for the graph Y-axis 
-                        // as actual RPS values. We keep incrementing for the text label until next sync.
                         requestCountRef.current += 1;
                     }
                 }
@@ -220,10 +242,9 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
     };
 
     useEffect(() => {
-        const backendHost = window.location.hostname === 'localhost' ? 'localhost:8000' : '127.0.0.1:8000';
         const fetchStats = async () => {
             try {
-                const res = await fetch(`http://${backendHost}/api/dashboard/stats`);
+                const res = await fetch(apiUrl('/api/dashboard/stats'));
                 const data = await res.json();
 
                 setPersistentState(prev => ({
@@ -248,65 +269,40 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
         fetchStats();
         const interval = setInterval(fetchStats, 5000);
 
-        let reconnectTimer = null;
+        // Subscribe to shared WS instead of opening a new connection
+        const unsub = subscribe((data) => {
+            // Handle BATCH envelopes from optimized socket_manager
+            const events = data.type === 'BATCH' && Array.isArray(data.payload)
+                ? data.payload
+                : [data];
 
-        const connectWs = () => {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${backendHost}/stream?client_type=ui`;
+            events.forEach(event => {
+                statsBuffer.current.push(event);
+                // Auto-download generated PDF report (shared utility)
+                handleAutoDownload(event);
+            });
 
-            wsRef.current = new WebSocket(wsUrl);
-            wsRef.current.onopen = () => console.log("Dashboard: Connected to Real-time Stream");
-
-            wsRef.current.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    statsBuffer.current.push(data);
-
-                    // Auto-download generated PDF report
-                    if (data.type === 'GI5_LOG' && data.payload && data.payload.includes('REPORT GENERATED:')) {
-                        const parts = data.payload.split(/\\|\//);
-                        const filename = parts[parts.length - 1];
-                        const url = `http://${backendHost}/api/reports/download/${filename}`;
-
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.target = '_blank';
-                        a.download = filename;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                    }
-
-                    if (!bufferTimer.current) {
-                        bufferTimer.current = requestAnimationFrame(() => {
-                            flushBuffer();
-                            bufferTimer.current = null;
-                        });
-                    }
-                } catch (e) {
-                    console.error("WS Graph Error", e);
-                }
-            };
-
-            wsRef.current.onclose = () => {
-                console.log("Dashboard: WS Connection closed. Reconnecting in 3 seconds...");
-                reconnectTimer = setTimeout(connectWs, 3000);
-            };
-        };
-
-        connectWs();
+            if (!bufferTimer.current) {
+                bufferTimer.current = requestAnimationFrame(() => {
+                    flushBuffer();
+                    bufferTimer.current = null;
+                });
+            }
+        });
 
         return () => {
             clearInterval(interval);
-            clearTimeout(reconnectTimer);
-            if (wsRef.current) {
-                wsRef.current.onclose = null;
-                wsRef.current.close();
+            unsub();
+            if (bufferTimer.current) {
+                cancelAnimationFrame(bufferTimer.current);
+                bufferTimer.current = null;
             }
         };
     }, []);
 
-    const generateGraphPath = React.useCallback((data) => {
+    // ── Memoized graph path generators ──
+    const graphPath = useMemo(() => {
+        const data = persistentState?.graph_data;
         if (!data || data.length === 0) return "";
         const maxVal = Math.max(...data, 1);
         const width = 1000;
@@ -320,9 +316,10 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
         });
         path += `L${width},${height} Z`;
         return path;
-    }, []);
+    }, [persistentState?.graph_data]);
 
-    const generateLinePath = React.useCallback((data) => {
+    const linePath = useMemo(() => {
+        const data = persistentState?.graph_data;
         if (!data || data.length === 0) return "";
         const maxVal = Math.max(...data, 1);
         const width = 1000;
@@ -336,7 +333,7 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
             else d += ` L${x},${y}`;
         });
         return d;
-    }, []);
+    }, [persistentState?.graph_data]);
 
     return (
         <div className="min-h-screen relative overflow-x-hidden" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
@@ -380,10 +377,10 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
                                 >
                                     <div className={`absolute inset-0 ${item.glow} transition-opacity duration-300 opacity-60 group-hover:opacity-100`}></div>
                                     <div className="flex justify-between items-start mb-4 relative z-10">
-                                        <div className={`p-2 rounded-lg ${item.color.startsWith('bg') ? item.color : `${item.color.replace('text-', 'bg-').replace('500', '500/20')}`} ${item.bgIcon ? '' : 'text-' + item.color + '-300'}`}>
-                                            <span className={`material-symbols-outlined text-xl ${item.bgIcon ? '' : 'text-current'}`}>{item.icon}</span>
+                                        <div className={`p-2 rounded-lg ${item.bgIcon}`}>
+                                            <span className="material-symbols-outlined text-xl">{item.icon}</span>
                                         </div>
-                                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${item.trend >= 0 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                                        <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-green-500/20 text-green-400">
                                             LIVE
                                         </span>
                                     </div>
@@ -418,7 +415,7 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
                             </div>
                         </div>
                         <div className="flex-grow w-full h-full relative z-0 mt-2">
-                            {persistentState?.graph_data && Array.isArray(persistentState.graph_data) && persistentState.graph_data.length > 0 ? (
+                            {graphPath ? (
                                 <svg className="w-full h-full drop-shadow-[0_0_15px_rgba(139,92,246,0.3)]" preserveAspectRatio="none" viewBox="0 0 1000 300">
                                     <defs>
                                         <linearGradient id="lineGradient" x1="0%" x2="100%" y1="0%" y2="0%">
@@ -433,13 +430,13 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
                                     </defs>
                                     <path
                                         className="transition-all duration-300 ease-in-out"
-                                        d={generateGraphPath(persistentState.graph_data)}
+                                        d={graphPath}
                                         fill="url(#areaGradient)"
                                         opacity="0.8"
                                     ></path>
                                     <path
                                         className="transition-all duration-300 ease-in-out"
-                                        d={generateLinePath(persistentState.graph_data)}
+                                        d={linePath}
                                         fill="none"
                                         stroke="url(#lineGradient)"
                                         strokeLinecap="round"
@@ -457,7 +454,7 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
                         </div>
                     </motion.div>
 
-                    {/* REQUEST MONITORING — Adaptive 400-row rolling window */}
+                    {/* REQUEST MONITORING — Adaptive 500-row rolling window */}
                     <div className="grid grid-cols-1 gap-6 h-[500px]">
                         <motion.div
                             initial={{ opacity: 0, scale: 0.95 }}
@@ -465,85 +462,66 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
                             transition={{ ...LIQUID_SPRING, delay: 0.3 }}
                             className="glass-panel-dash rounded-2xl p-0 relative overflow-hidden flex flex-col h-full"
                         >
-                            <div className="p-4 border-b border-white/10 bg-black/20 flex justify-between items-center">
-                                <h3 className="text-sm font-medium text-gray-200 flex items-center gap-2">
-                                    <span className={`w-2 h-2 rounded-full ${scanActive ? 'bg-red-500 animate-pulse shadow-[0_0_10px_red]' : 'bg-gray-600'}`}></span>
-                                    REQUEST MONITORING
-                                </h3>
-                                <div className="flex gap-4 text-xs font-mono text-gray-500">
-                                    <span className="text-gray-600">{persistentState.threat_feed.length} requests captured</span>
-                                    <span>STATUS: {scanActive ? 'ONLINE' : 'STANDBY'}</span>
+                            <div className="h-full flex flex-col">
+                                <div className="flex justify-between items-center px-5 py-3 border-b border-white/5">
+                                    <h2 className="text-sm font-medium text-gray-200 flex items-center gap-2">
+                                        <span className="material-symbols-outlined text-base text-purple-400">monitoring</span>
+                                        Live Threat Monitor
+                                    </h2>
+                                    {scanActive && (
+                                        <span className="flex items-center gap-1.5 text-[10px] font-mono text-green-400">
+                                            <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></span>
+                                            MONITORING
+                                        </span>
+                                    )}
                                 </div>
-                            </div>
-
-                            {/* TABLE HEADER */}
-                            <div className="grid grid-cols-12 gap-2 px-4 py-2 bg-black/40 text-[10px] font-mono text-gray-500 uppercase tracking-wider border-b border-white/5">
-                                <div className="col-span-2">Time</div>
-                                <div className="col-span-2">Agent</div>
-                                <div className="col-span-2">Threat Type</div>
-                                <div className="col-span-4">Target / Payload</div>
-                                <div className="col-span-1">Severity</div>
-                                <div className="col-span-1 text-right">Risk</div>
-                            </div>
-
-                            <div className="flex-grow overflow-y-auto font-mono text-xs bg-black/40 relative">
-                                <div className="absolute inset-0 pointer-events-none bg-[url('https://media.giphy.com/media/oEI9uBYSzLpBK/giphy.gif')] opacity-[0.02]"></div>
-
-                                {persistentState.threat_feed && persistentState.threat_feed.length > 0 ? persistentState.threat_feed.map((item, idx) => {
-                                    let agentName = "UNKNOWN";
-                                    let agentColor = "text-gray-400";
-
-                                    if (item.agent?.includes('theta')) { agentName = "THE SENTINEL"; agentColor = "text-purple-400"; }
-                                    else if (item.agent?.includes('iota')) { agentName = "THE INSPECTOR"; agentColor = "text-orange-400"; }
-                                    else if (item.agent?.includes('beta')) { agentName = "BETA (BREAKER)"; agentColor = "text-red-400"; }
-                                    else if (item.agent?.includes('alpha')) { agentName = "ALPHA (SCOUT)"; agentColor = "text-cyan-400"; }
-                                    else if (item.agent?.includes('gamma')) { agentName = "GAMMA (TYCOON)"; agentColor = "text-yellow-400"; }
-                                    else if (item.agent?.includes('omega')) { agentName = "OMEGA (STRAT)"; agentColor = "text-pink-400"; }
-                                    else if (item.agent?.includes('zeta')) { agentName = "ZETA (CORTEX)"; agentColor = "text-indigo-400"; }
-                                    else if (item.agent?.includes('sigma')) { agentName = "SIGMA (SMITH)"; agentColor = "text-green-400"; }
-                                    else if (item.agent?.includes('kappa')) { agentName = "KAPPA (LIBRARIAN)"; agentColor = "text-teal-400"; }
-                                    else if (item.agent?.includes('alpha_recon')) { agentName = "ALPHA (RECON)"; agentColor = "text-cyan-400"; }
-                                    else if (item.agent?.includes('planner')) { agentName = "PLANNER"; agentColor = "text-amber-400"; }
-                                    else if (item.agent?.includes('Orchestrator')) { agentName = "ORCHESTRATOR"; agentColor = "text-fuchsia-400"; }
-
-                                    return (
-                                        <motion.div
-                                            key={`threat-${idx}`}
-                                            initial={{ x: -20, opacity: 0 }}
-                                            animate={{ x: 0, opacity: 1 }}
-                                            transition={{ duration: 0.15 }}
-                                            className={`grid grid-cols-12 gap-2 px-4 py-2 border-b border-white/5 hover:bg-white/5 transition-colors items-center ${item.severity === 'CRITICAL' ? 'bg-red-500/5' : ''}`}
-                                        >
-                                            <div className="col-span-2 text-gray-500">{item.timestamp}</div>
-                                            <div className={`col-span-2 font-bold ${agentColor}`}>{agentName}</div>
-                                            <div className="col-span-2 text-gray-300 truncate" title={item.threat_type}>{item.threat_type}</div>
-                                            <div className="col-span-4 text-gray-400 truncate font-light" title={item.payload_data || item.url}>
-                                                {item.action ? (
-                                                    <span className="text-blue-400 font-medium">[{item.action}] </span>
-                                                ) : null}
-                                                {item.payload_data || item.url}
+                                <div className="flex-grow overflow-y-auto scrollbar-thin px-1">
+                                    {(persistentState.threat_feed || []).length === 0 ? (
+                                        <div className="flex items-center justify-center h-full text-gray-600 opacity-40">
+                                            <div className="text-center">
+                                                <span className="material-symbols-outlined text-3xl block mb-2">security</span>
+                                                <p className="text-xs font-mono">No threats detected yet</p>
                                             </div>
-                                            <div className="col-span-1">
-                                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${item.severity === 'CRITICAL' ? 'bg-red-500 text-black' :
-                                                    item.severity === 'HIGH' ? 'bg-orange-500 text-black' :
-                                                        item.severity === 'MEDIUM' ? 'bg-yellow-500 text-black' :
-                                                            item.severity === 'LOW' ? 'bg-green-500 text-black' :
-                                                                'bg-blue-500 text-black'
-                                                    }`}>
-                                                    {item.severity}
-                                                </span>
-                                            </div>
-                                            <div className="col-span-1 text-right font-bold text-white">
-                                                {item.risk_score || 0}%
-                                            </div>
-                                        </motion.div>
-                                    );
-                                }) : (
-                                    <div className="flex flex-col items-center justify-center h-full text-gray-600 opacity-50">
-                                        <span className="material-icons text-4xl mb-2">security</span>
-                                        <p>SYSTEM SECURE // NO ACTIVE THREATS</p>
-                                    </div>
-                                )}
+                                        </div>
+                                    ) : (
+                                        <table className="w-full text-xs">
+                                            <thead className="sticky top-0 bg-[#0a0a1a]/90 backdrop-blur z-10">
+                                                <tr className="text-gray-500 text-left">
+                                                    <th className="px-4 py-2 font-medium">Time</th>
+                                                    <th className="px-4 py-2 font-medium">Agent</th>
+                                                    <th className="px-4 py-2 font-medium">Type</th>
+                                                    <th className="px-4 py-2 font-medium">Target</th>
+                                                    <th className="px-4 py-2 font-medium">Severity</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {(persistentState.threat_feed || []).slice(0, 500).map((t, i) => {
+                                                    const sevColors = {
+                                                        CRITICAL: 'text-red-400 bg-red-500/10',
+                                                        HIGH: 'text-orange-400 bg-orange-500/10',
+                                                        MEDIUM: 'text-yellow-400 bg-yellow-500/10',
+                                                        LOW: 'text-blue-400 bg-blue-500/10',
+                                                        INFO: 'text-gray-400 bg-gray-500/10',
+                                                    };
+                                                    const sevClass = sevColors[t.severity?.toUpperCase()] || sevColors.INFO;
+                                                    return (
+                                                        <tr key={i} className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors">
+                                                            <td className="px-4 py-2 text-gray-500 font-mono">{t.timestamp}</td>
+                                                            <td className="px-4 py-2 text-purple-300 font-mono">{t.agent}</td>
+                                                            <td className="px-4 py-2 text-gray-300 font-mono">{t.threat_type}</td>
+                                                            <td className="px-4 py-2 text-gray-400 font-mono truncate max-w-[200px]" title={t.url}>{t.url}</td>
+                                                            <td className="px-4 py-2">
+                                                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${sevClass}`}>
+                                                                    {t.severity || 'INFO'}
+                                                                </span>
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    )}
+                                </div>
                             </div>
                         </motion.div>
                     </div>

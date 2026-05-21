@@ -1,7 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Navigation from './Navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { LIQUID_SPRING } from '../lib/constants';
+import { apiUrl } from '../lib/api';
+import { handleAutoDownload } from '../lib/downloadReport';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 const Scans = ({ navigate }) => {
     const starsRef = useRef(null);
@@ -10,28 +13,26 @@ const Scans = ({ navigate }) => {
     const [progressMap, setProgressMap] = useState({}); // Real-time report progress
     const messageBuffer = useRef([]);
     const lastFlush = useRef(Date.now());
-    const wsRef = useRef(null);
-    const backendHost = '127.0.0.1:8000';
+    const { subscribe } = useWebSocket();
+    const scansRef = useRef(scans);
+    const progressMapRef = useRef(progressMap);
 
-    const fetchScans = async () => {
+    useEffect(() => { scansRef.current = scans; }, [scans]);
+    useEffect(() => { progressMapRef.current = progressMap; }, [progressMap]);
+
+    const fetchScans = useCallback(async () => {
         try {
-            const res = await fetch(`http://${backendHost}/api/dashboard/scans`);
+            const res = await fetch(apiUrl('/api/dashboard/scans'));
             const data = await res.json();
             setScans(data);
         } catch (err) {
             console.error("Failed to fetch scans:", err);
         }
-    };
+    }, []);
 
-    // WebSocket & Initial Fetch
+    // Shared WebSocket subscription & Initial Fetch
     useEffect(() => {
         fetchScans();
-
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${backendHost}/stream?client_type=ui`;
-
-        wsRef.current = new WebSocket(wsUrl);
-        wsRef.current.onopen = () => console.log("Scans: Connected to Real-time Stream");
 
         const flushBuffer = () => {
             if (messageBuffer.current.length === 0) return;
@@ -40,7 +41,8 @@ const Scans = ({ navigate }) => {
             messageBuffer.current = [];
 
             let shouldFetch = false;
-            const newProgress = { ...progressMap };
+            const currentProgress = progressMapRef.current;
+            const newProgress = { ...currentProgress };
 
             messages.forEach(data => {
                 // 1. Progress Updates (SCAN_UPDATE with progress field)
@@ -53,24 +55,14 @@ const Scans = ({ navigate }) => {
                     shouldFetch = true;
                 }
 
-                // 3. Auto-download generated PDF report
-                if (data.type === 'GI5_LOG' && data.payload && data.payload.includes('REPORT GENERATED:')) {
-                    const parts = data.payload.split(/[\\/]/);
-                    const filename = parts[parts.length - 1];
-                    const url = `http://${backendHost}/api/reports/download/${filename}`;
-
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.target = '_blank';
-                    a.download = filename;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
+                // 3. Auto-download generated PDF report (shared utility)
+                if (data.type === 'GI5_LOG') {
+                    handleAutoDownload(data);
                 }
             });
 
-            if (Object.keys(newProgress).length > Object.keys(progressMap).length || 
-                JSON.stringify(newProgress) !== JSON.stringify(progressMap)) {
+            if (Object.keys(newProgress).length > Object.keys(currentProgress).length ||
+                JSON.stringify(newProgress) !== JSON.stringify(currentProgress)) {
                 setProgressMap(prev => ({ ...prev, ...newProgress }));
             }
 
@@ -81,36 +73,28 @@ const Scans = ({ navigate }) => {
 
         const throttleInterval = setInterval(flushBuffer, 800);
 
-        wsRef.current.onmessage = (event) => {
-            try {
-                const parsed = JSON.parse(event.data);
-                if (parsed.type === "BATCH" && Array.isArray(parsed.payload)) {
-                    messageBuffer.current.push(...parsed.payload);
-                } else {
-                    messageBuffer.current.push(parsed);
-                }
-            } catch (e) {
-                console.error("WS Error", e);
-            }
-        };
+        // Subscribe to shared singleton WS (no per-page connection)
+        const unsub = subscribe((data) => {
+            messageBuffer.current.push(data);
+        });
 
         // --- FIXED POLLING: Check for both Finalizing and Completed-not-ready ---
         const pollInterval = setInterval(() => {
-            const needsRefresh = scans.some(s =>
+            const needsRefresh = scansRef.current.some(s =>
                 s.status === 'Finalizing' ||
                 (s.status === 'Completed' && !s.report_ready)
             );
             if (needsRefresh) {
                 fetchScans();
             }
-        }, 5000); // Increased to 5s to reduce overhead
+        }, 5000);
 
         return () => {
-            if (wsRef.current) wsRef.current.close();
+            unsub();
             clearInterval(pollInterval);
             clearInterval(throttleInterval);
         };
-    }, [scans, progressMap]);
+    }, [fetchScans, subscribe]);
 
     // Live Duration Timer - Removed (Was causing lag and excessive re-renders)
     // useEffect(() => { ... }, []);
@@ -127,7 +111,7 @@ const Scans = ({ navigate }) => {
     const handleWipeHistory = async () => {
         if (!confirm("Are you sure you want to PERMANENTLY wipe all scan history? This cannot be undone.")) return;
         try {
-            const response = await fetch(`http://${backendHost}/api/dashboard/reset`, { method: 'POST' });
+            const response = await fetch(apiUrl('/api/dashboard/reset'), { method: 'POST' });
             if (response.ok) {
                 fetchScans();
                 alert("Scan history wiped successfully.");
@@ -140,7 +124,7 @@ const Scans = ({ navigate }) => {
     const handleDownloadPdf = async (scanId) => {
         setDownloading(scanId);
         try {
-            const response = await fetch(`http://${backendHost}/api/reports/pdf/${scanId}`);
+            const response = await fetch(apiUrl(`/api/reports/pdf/${scanId}`));
             if (!response.ok) throw new Error('Download failed');
 
             const blob = await response.blob();

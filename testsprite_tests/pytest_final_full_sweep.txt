@@ -1,0 +1,1102 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.7, pytest-9.0.2, pluggy-1.6.0
+rootdir: D:\Antigravity 2\API Endpoint Scanner
+plugins: anyio-4.12.1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 10 items
+
+testsprite_tests\TC001_API_Layer_Discovery__Discovery_Verification.py .  [ 10%]
+testsprite_tests\TC002_Supabase_PostgreSQL_RLS__CRUD_integrity.py .      [ 20%]
+testsprite_tests\TC003_Auth_Flow__Privilege_Escalation_Simulation.py .   [ 30%]
+testsprite_tests\TC004_AI_OpenRouter_LLM_Logic__Hallucination_Flow.py F  [ 40%]
+testsprite_tests\TC005_Business_Logic_Orchestration__Data_Transformations.py F [ 50%]
+                                                                         [ 50%]
+testsprite_tests\TC006_Graceful_Degradation__Network_Resilience.py .     [ 60%]
+testsprite_tests\TC007_API_Latency__Core_Bottleneck_Identification.py .  [ 70%]
+testsprite_tests\TC008_Distributed_Race_Condition__Conflict_Resolution.py . [ 80%]
+                                                                         [ 80%]
+testsprite_tests\TC010_End_to_End_Backend_Workflow_Execution.py F        [ 90%]
+testsprite_tests\TC011_Functional__Branch_Coverage_Mapping.py F          [100%]
+
+================================== FAILURES ===================================
+_____________ test_ai_openrouter_llm_logic_and_hallucination_flow _____________
+
+    def test_ai_openrouter_llm_logic_and_hallucination_flow():
+        """
+        Test AI Cortex handling of malformed payloads to detect hallucination flows
+        and fallback to GI5/Ollama when OpenRouter timeouts occur.
+        This test covers:
+        - API discovery (POST /api/defense/analyze)
+        - Auth flows (no auth required)
+        - OpenRouter AI fallback & error handling (simulate timeout)
+        - Security by sending malformed payloads
+        - Resilience to network failures and latency detection
+        - Concurrency by firing several requests simultaneously
+        - Verify 200, 422, or 500 error responses with correct content
+        """
+    
+        analyze_url = f"{BASE_URL}/api/defense/analyze"
+    
+        # Malformed payloads for hallucination detection / error stimulation
+        malformed_payloads = [
+            {},  # empty payload, missing required keys
+            {"agent_id": "agent_prism"},  # missing content and url
+            {"agent_id": "agent_prism", "content": "this should be dict", "url": "https://example.com"},  # wrong content type
+            {"agent_id": "agent_prism", "content": {"innerText": "normal text"}, "url": ""},  # empty URL
+            {"agent_id": "nonexistent_agent", "content": {"innerText": "test"}, "url": "https://example.com"},  # invalid agent_id
+            {"agent_id": "agent_prism", "content": {"innerText": "drop table users;--"}, "url": "https://evil.com"},  # injection attempt
+        ]
+    
+        success_responses = []
+        error_responses = []
+    
+        def send_request(payload):
+            try:
+                start_time = time.time()
+                resp = requests.post(analyze_url, json=payload, timeout=TIMEOUT)
+                elapsed = time.time() - start_time
+                # Accept 200 with valid response, or 422 validation error, or 500 for internal AI failures
+                if resp.status_code == 200:
+                    json_data = resp.json()
+                    # Validate presence and types of keys in success response
+                    keys = {"verdict", "reason", "risk_score"}
+                    assert keys.issubset(json_data.keys()), f"Missing keys in success response: {json_data}"
+                    assert json_data["verdict"] in ("BLOCK", "ALLOW"), f"Unexpected verdict value: {json_data['verdict']}"
+                    assert isinstance(json_data["risk_score"], int), f"risk_score type invalid: {type(json_data['risk_score'])}"
+                    success_responses.append((payload, resp.status_code, elapsed))
+                elif resp.status_code == 422:
+                    # Validation error for malformed payloads
+                    error_responses.append((payload, resp.status_code, elapsed))
+                elif resp.status_code == 500:
+                    json_data = resp.json()
+                    # Should report server AI failure on malformed or internal error
+                    assert "error" in json_data or "mode" in json_data, f"Unexpected 500 response structure: {json_data}"
+                    error_responses.append((payload, resp.status_code, elapsed))
+                else:
+                    # Unexpected response code
+                    error_responses.append((payload, resp.status_code, None))
+            except requests.Timeout:
+                # Simulate OpenRouter timeout fallback scenario
+                error_responses.append((payload, 'Timeout', None))
+            except Exception as e:
+                error_responses.append((payload, f'Exception: {e}', None))
+    
+        # Step 1: API Discovery - validate endpoint existence by sending minimal valid request
+        discovery_payload = {
+            "agent_id": "agent_prism",
+            "content": {"innerText": "test discovery"},
+            "url": "https://example.com"
+        }
+        try:
+            resp = requests.post(analyze_url, json=discovery_payload, timeout=TIMEOUT)
+            assert resp.status_code in (200, 500), f"API discovery unexpected status: {resp.status_code}"
+            if resp.status_code == 200:
+                json_data = resp.json()
+                keys = {"verdict", "reason", "risk_score"}
+                assert keys.issubset(json_data.keys()), f"Missing keys in discovery success response: {json_data}"
+                assert json_data["verdict"] in ("BLOCK", "ALLOW"), f"Unexpected verdict value in discovery: {json_data['verdict']}"
+                assert isinstance(json_data["risk_score"], int), f"risk_score type invalid in discovery: {type(json_data['risk_score'])}"
+                success_responses.append((discovery_payload, resp.status_code, None))
+        except Exception as e:
+            assert False, f"API discovery failed with exception: {e}"
+    
+        # Step 2-11: Send malformed payloads with concurrency to detect hallucination & fallback
+        threads = []
+        for payload in malformed_payloads:
+            t = threading.Thread(target=send_request, args=(payload,))
+            threads.append(t)
+            t.start()
+    
+        # Add multiple requests with simulated delay to detect latency and resilience
+        def delayed_request():
+            send_request({
+                "agent_id": "agent_prism",
+                "content": {"innerText": "test latency and fallback"},
+                "url": "https://example.com"
+            })
+    
+        for _ in range(3):
+            t = threading.Thread(target=delayed_request)
+            threads.append(t)
+            t.start()
+    
+        for t in threads:
+            t.join()
+    
+        # Validate at least one success response and at least one error/fallback occurred
+        assert len(success_responses) > 0, "No successful responses detected."
+        assert len(error_responses) > 0, "No error or fallback responses detected."
+    
+        # Check for latency/performance: no request should exceed 20 seconds (shorter than timeout)
+        for _, status, elapsed in success_responses + error_responses:
+            if isinstance(elapsed, float):
+>               assert elapsed < 20, f"Request exceeded latency threshold: {elapsed}s"
+E               AssertionError: Request exceeded latency threshold: 28.518202304840088s
+E               assert 28.518202304840088 < 20
+
+testsprite_tests\TC004_AI_OpenRouter_LLM_Logic__Hallucination_Flow.py:117: AssertionError
+___________ test_business_logic_orchestration_data_transformations ____________
+
+    def test_business_logic_orchestration_data_transformations():
+        """
+        Verify correctness of distributed task orchestration and data flow transformation
+        between the Orchestrator and backend agents focusing on the 11-point criteria.
+        """
+    
+        # 1. API Discovery: Check key endpoints are reachable and return expected status codes
+        critical_endpoints = [
+            "/api/attack/fire",
+            "/api/dashboard/scans",
+            "/api/defense/analyze",
+            "/api/health",
+            "/api/ai/status"
+        ]
+        for ep in critical_endpoints:
+            try:
+                url = BASE_URL + ep
+                if ep == "/api/attack/fire":
+                    # /api/attack/fire requires POST with valid payload
+                    test_payload = {
+                        "target_url": "https://example.com",
+                        "method": "GET",
+                        "headers": {},
+                        "duration": 1
+                    }
+                    r = requests.post(url, json=test_payload, timeout=TIMEOUT)
+                    assert r.status_code == 200, f"Failed to POST to endpoint {ep}"
+                else:
+                    # Use GET request to check endpoint reachability instead of OPTIONS
+                    r = requests.get(url, timeout=TIMEOUT)
+                    assert r.status_code in (200, 204), f"Failed to discover endpoint {ep}"
+            except requests.exceptions.RequestException as ex:
+                assert False, f"Exception during API discovery for {ep}: {ex}"
+    
+        # 2. Supabase Integration: Check if scans are properly recorded and retrievable
+        def launch_scan(target_url):
+            payload = {
+                "target_url": target_url,
+                "method": "GET",
+                "headers": {"User-Agent": "VulagentScannerTest/1.0"},
+                "duration": 5
+            }
+            resp = requests.post(BASE_URL + "/api/attack/fire", json=payload, timeout=TIMEOUT)
+            assert resp.status_code == 200, f"Scan launch failed: {resp.text}"
+            body = resp.json()
+            assert body.get("status") == "Swarm Online"
+            assert "scan_id" in body
+            return body["scan_id"]
+    
+        scan_id = None
+        try:
+            # Launch a scan for a basic test target
+            scan_id = launch_scan("https://example.com")
+    
+            # Wait till the scan appears in dashboard (polling with timeout)
+            found = False
+            for _ in range(15):
+                r = requests.get(BASE_URL + "/api/dashboard/scans", timeout=TIMEOUT)
+                assert r.status_code == 200
+                scans = r.json()
+                if any(s.get("scan_id") == scan_id for s in scans):
+                    found = True
+                    break
+                time.sleep(1)
+            assert found, "Scan ID not found in dashboard scans"
+    
+            # 3. Auth Flows - Since no auth is required for core scan launching, test 401 on protected 2FA verify (negative case)
+            r_2fa_verify = requests.post(BASE_URL + "/api/dashboard/settings/2fa/verify", json={"totp_code": "000000"}, timeout=TIMEOUT)
+            assert r_2fa_verify.status_code in (401, 403), "2FA verify accepted invalid totp_code"
+    
+            # 4. OpenRouter AI Fallbacks/Hallucinations: Provoking malformed input to /api/defense/analyze
+            bad_payload = {"agent_id": "agent_prism", "content": "malformed_string_instead_of_dict", "url": "https://x.com"}
+            r = requests.post(BASE_URL + "/api/defense/analyze", json=bad_payload, timeout=TIMEOUT)
+            assert r.status_code in (500, 422), "Malformed defense/analyze payload did not error correctly"
+    
+            # 5. Business Logic: Validate the /api/defense/analyze correct path and verdict
+            good_payload = {
+                "agent_id": "agent_prism",
+                "content": {"innerText": "This might be a prompt injection test."},
+                "url": "https://example.com"
+            }
+            r = requests.post(BASE_URL + "/api/defense/analyze", json=good_payload, timeout=TIMEOUT)
+            assert r.status_code == 200
+            result = r.json()
+            assert "verdict" in result and result["verdict"] in ("BLOCK", "ALLOW")
+            assert "risk_score" in result and isinstance(result["risk_score"], int)
+    
+            # 6. Resilience (Network Failures): Simulate by attempting a request to an invalid port and ensuring failure managed
+            try:
+                requests.get("http://127.0.0.1:5999/api/health", timeout=5)
+                assert False, "Connection to invalid port unexpectedly succeeded"
+            except requests.exceptions.RequestException:
+                pass  # Expected
+    
+            # 7. Performance (Latency): Measure /api/health latency should be low (< 0.5s)
+            start = time.time()
+            r = requests.get(BASE_URL + "/api/health", timeout=TIMEOUT)
+            latency = time.time() - start
+            assert r.status_code == 200
+            assert latency < 0.5, f"High latency for /api/health: {latency}s"
+    
+            # 8. Concurrency (Race Conditions): Fire concurrent scan launches, verify no duplicates
+            scan_ids = []
+            def concurrent_launch():
+                try:
+                    sid = launch_scan("https://example.com")
+                    scan_ids.append(sid)
+                except AssertionError:
+                    pass
+    
+            threads = [threading.Thread(target=concurrent_launch) for _ in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            assert len(scan_ids) >= 1, "No scans launched concurrently"
+            # Basic uniqueness check
+            assert len(set(scan_ids)) == len(scan_ids), "Duplicate scan IDs detected in concurrent launches"
+    
+            # 9. Security (Injections): Test injection in the 'target_url' field for /api/attack/fire
+            injection_payload = {
+                "target_url": "'; DROP TABLE users;--",
+                "method": "GET",
+                "headers": {},
+                "duration": 1
+            }
+            resp = requests.post(BASE_URL + "/api/attack/fire", json=injection_payload, timeout=TIMEOUT)
+            # Expect either validation error or safe rejection; no server error or injection
+            assert resp.status_code in (422, 400, 200), f"Injection payload caused unsafe response: {resp.text}"
+    
+            # 10. End-to-End Integration: Confirm scan lifecycle through states
+            # Poll scan until report_ready or timeout
+            report_ready = False
+            for _ in range(30):
+                r = requests.get(BASE_URL + "/api/dashboard/scans", timeout=TIMEOUT)
+                assert r.status_code == 200
+                scans = r.json()
+                for s in scans:
+                    if s.get("scan_id") == scan_id and s.get("report_ready"):
+                        report_ready = True
+                        break
+                if report_ready:
+                    break
+                time.sleep(2)
+>           assert report_ready, "Scan did not complete with report ready in time"
+E           AssertionError: Scan did not complete with report ready in time
+E           assert False
+
+testsprite_tests\TC005_Business_Logic_Orchestration__Data_Transformations.py:154: AssertionError
+______________ test_TC010_end_to_end_backend_workflow_execution _______________
+
+    def test_TC010_end_to_end_backend_workflow_execution():
+        """
+        End-to-End Backend Workflow Execution:
+        Runs full pipeline: Fire -> Orchestrator -> Cortex AI -> Supabase storage -> Response.
+        Includes API discovery, RLS/CRUD, Auth Flows, AI fallbacks, business logic, resilience,
+        latency, concurrency, security, and end-to-end integration backend validation.
+        """
+        headers = {"Content-Type": "application/json"}
+    
+        def call_api_discovery():
+            # API discovery and endpoint verification:
+            endpoints = [
+                "/api/attack/fire",
+                "/api/defense/analyze",
+                "/api/ai/status",
+                "/api/dashboard/scans",
+                "/api/dashboard/stats",
+                "/api/health"
+            ]
+            for ep in endpoints:
+                try:
+                    r = requests.options(f"{BASE_URL}{ep}", timeout=TIMEOUT)
+                    assert r.status_code in (200, 204, 405), f"Discovery OPTIONS {ep} failed: {r.status_code}"
+                except requests.RequestException:
+                    pass  # Not all may support OPTIONS, continue
+    
+        def launch_fire_scan():
+            """
+            Launch a scan with /api/attack/fire (fire event).
+            Returns scan_id.
+            """
+            payload = {
+                "target_url": "https://example.com/api/v1/test",
+                "method": "GET",
+                "headers": {"User-Agent": "Vulagent-Scanner-Test/1.0"},
+                "duration": 3  # short duration to keep test timely
+            }
+            resp = requests.post(f"{BASE_URL}/api/attack/fire", json=payload, headers=headers, timeout=TIMEOUT)
+            assert resp.status_code == 200, f"Fire scan launch failed: {resp.status_code} {resp.text}"
+            data = resp.json()
+            assert "scan_id" in data and data.get("status") == "Swarm Online"
+            return data["scan_id"]
+    
+        def get_scan_from_dashboard(scan_id):
+            resp = requests.get(f"{BASE_URL}/api/dashboard/scans", timeout=TIMEOUT)
+            assert resp.status_code == 200, f"Dashboard scans fetch failed: {resp.status_code}"
+            scans = resp.json()
+            assert any(scan.get("scan_id") == scan_id for scan in scans), "scan_id not found in dashboard scans"
+    
+        def assert_ai_status_ok():
+            resp = requests.get(f"{BASE_URL}/api/ai/status", timeout=TIMEOUT)
+            assert resp.status_code == 200, f"AI status fetch failed: {resp.status_code}"
+            data = resp.json()
+            core_status = data.get("core_status", {})
+            fallback = data.get("fallback", "")
+            # Validate keys and types
+            assert all(k in core_status for k in ("gi5", "ollama", "openrouter"))
+            assert isinstance(data.get("llm_calls"), int)
+            assert isinstance(data.get("circuit_breaker_trips"), int)
+            assert fallback in ("OpenRouter", "GI5_only", "Ollama", "")
+    
+        def analyze_defense_block():
+            payload = {
+                "agent_id": "agent_prism",
+                "content": {"innerText": "malicious prompt injection attempt"},
+                "url": "https://example.com"
+            }
+            resp = requests.post(f"{BASE_URL}/api/defense/analyze", json=payload, headers=headers, timeout=TIMEOUT)
+            assert resp.status_code == 200, f"Defense analyze failed: {resp.status_code} {resp.text}"
+            data = resp.json()
+            assert data.get("verdict") in ("BLOCK", "ALLOW")
+            assert isinstance(data.get("risk_score"), int)
+    
+        def websocket_listen(scan_id, duration=5):
+            """
+            Connect to live WebSocket feed and ensure receiving SCAN_UPDATE and LIVE_THREAT_LOG messages
+            referencing the scan_id.
+            """
+            ws_url = f"ws://127.0.0.1:8000/stream?client_type=ui"
+            ws_msgs = {"SCAN_UPDATE": False, "LIVE_ATTACK_FEED": False}
+            received_scan_id = False
+    
+            def on_message(ws, message):
+                try:
+                    msg = json.loads(message)
+                    t = msg.get("type")
+                    if t in ws_msgs:
+                        ws_msgs[t] = True
+                    # check if scan_id is referenced
+                    if scan_id in message:
+                        nonlocal received_scan_id
+                        received_scan_id = True
+                except Exception:
+                    pass
+    
+            def on_error(ws, error):
+                raise RuntimeError(f"WebSocket error: {error}")
+    
+            def on_close(ws, close_status_code, close_msg):
+                pass  # No-op
+    
+            ws = websocket.WebSocketApp(ws_url,
+                                        on_message=on_message,
+                                        on_error=on_error,
+                                        on_close=on_close)
+            wst = threading.Thread(target=ws.run_forever)
+            wst.daemon = True
+            wst.start()
+            time.sleep(duration)
+            ws.close()
+            wst.join(timeout=5)
+            assert all(ws_msgs.values()), "Did not receive all expected WebSocket message types"
+            assert received_scan_id, "Scan ID not referenced in any WebSocket messages"
+    
+        def check_scan_report(scan_id):
+            # Wait/retry briefly for report readiness
+            max_wait = 15
+            for _ in range(max_wait):
+                resp = requests.get(f"{BASE_URL}/api/dashboard/scans", timeout=TIMEOUT)
+                if resp.status_code != 200:
+                    time.sleep(1)
+                    continue
+                scans = resp.json()
+                scan = next((s for s in scans if s.get("scan_id") == scan_id), None)
+                if scan and scan.get("report_ready"):
+                    break
+                time.sleep(1)
+            else:
+                assert False, "Report not ready within timeout"
+    
+            # Download report PDF
+            r = requests.get(f"{BASE_URL}/api/reports/pdf/{scan_id}", timeout=TIMEOUT)
+            assert r.status_code == 200, f"Report PDF fetch failed: {r.status_code}"
+            ct = r.headers.get("Content-Type", "")
+            cd = r.headers.get("Content-Disposition", "")
+            assert "application/pdf" in ct.lower()
+            assert "filename" in cd.lower()
+    
+        def test_supabase_rls_crud():
+            # Basic test of Supabase CRUD by ingesting Recon packet and checking updates
+            ingest_payload = {
+                "url": "https://example.com/api/v1/test",
+                "method": "GET",
+                "headers": {"X-Test": "value"},
+                "body": {"test_key": "test_val"},
+                "timestamp": int(time.time())
+            }
+            r = requests.post(f"{BASE_URL}/api/recon/ingest", json=ingest_payload, headers=headers, timeout=TIMEOUT)
+            assert r.status_code == 200, f"Recon ingest failed: {r.status_code}"
+    
+            # Verify this affects dashboard scans or logs (best effort)
+            r = requests.get(f"{BASE_URL}/api/dashboard/scans", timeout=TIMEOUT)
+            assert r.status_code == 200
+            scans = r.json()
+            # At least one scan or recent recon log present (cannot assert exact content reliably)
+            assert isinstance(scans, list)
+    
+        def test_auth_flow_simulation():
+            # Generate TOTP 2FA secret
+            r = requests.post(f"{BASE_URL}/api/dashboard/settings/2fa/generate", timeout=TIMEOUT)
+            assert r.status_code == 200
+            data = r.json()
+            assert "secret" in data and "qr_code_base64" in data
+            secret = data["secret"]
+    
+            # Verify 2FA with invalid code returns 401
+            r = requests.post(f"{BASE_URL}/api/dashboard/settings/2fa/verify", json={"totp_code": "000000"}, timeout=TIMEOUT)
+            assert r.status_code == 401
+    
+            # Normally would verify with valid totp_code, but skipping generation complexity in this test
+    
+        def test_security_hardening_injection_check():
+            # Attempt injection via attack fire endpoint
+            injection_payload = {
+                "target_url": "https://example.com/api/v1/test",
+                "method": "GET",
+                "headers": {"User-Agent": "test'; DROP TABLE users; --"},
+                "duration": 2
+            }
+            r = requests.post(f"{BASE_URL}/api/attack/fire", json=injection_payload, headers=headers, timeout=TIMEOUT)
+            # Should succeed but be sanitized. Server should not crash or execute injection.
+            assert r.status_code == 200 or r.status_code == 422 or r.status_code == 429
+    
+            # Attempt malformed analyze defense payload for error 500 test
+            bad_payload = {"agent_id": "agent_prism", "content": "malformed_content", "url": "https://example.com"}
+            r = requests.post(f"{BASE_URL}/api/defense/analyze", json=bad_payload, headers=headers, timeout=TIMEOUT)
+            assert r.status_code in (500, 422, 400)  # Server error or validation failure as expected
+    
+        def test_concurrency_race_condition():
+            # Fire multiple concurrent scans and check no state corruption
+            scan_ids = []
+    
+            def fire_scan_thread():
+                try:
+                    sid = launch_fire_scan()
+                    scan_ids.append(sid)
+                except Exception:
+                    pass
+    
+            threads = [threading.Thread(target=fire_scan_thread) for _ in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+    
+            # All scan_ids unique and present in dashboard
+            assert len(scan_ids) >= 1
+            r = requests.get(f"{BASE_URL}/api/dashboard/scans", timeout=TIMEOUT)
+            assert r.status_code == 200
+            scans = r.json()
+            registered_ids = [s.get("scan_id") for s in scans]
+            for sid in scan_ids:
+                assert sid in registered_ids
+    
+        # Begin tests chained for end-to-end
+    
+        # 1. API Discovery
+        call_api_discovery()
+    
+        # 2. Launch primary scan fire (Fire -> Orchestrator)
+        scan_id = launch_fire_scan()
+    
+        # 3. Verify scan in dashboard (Storage)
+        get_scan_from_dashboard(scan_id)
+    
+        # 4. Check AI Cortex status endpoint (AI Fallbacks)
+        assert_ai_status_ok()
+    
+        # 5. Analyze defense endpoint with blocking verdict (AI logic)
+        analyze_defense_block()
+    
+        # 6. Listen on WebSocket feed for scan events (Orchestrator live telemetry)
+>       websocket_listen(scan_id)
+
+testsprite_tests\TC010_End_to_End_Backend_Workflow_Execution.py:243: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+scan_id = 'c975751e-4582-4946-9789-7df5ae9e8c6e', duration = 5
+
+    def websocket_listen(scan_id, duration=5):
+        """
+        Connect to live WebSocket feed and ensure receiving SCAN_UPDATE and LIVE_THREAT_LOG messages
+        referencing the scan_id.
+        """
+        ws_url = f"ws://127.0.0.1:8000/stream?client_type=ui"
+        ws_msgs = {"SCAN_UPDATE": False, "LIVE_ATTACK_FEED": False}
+        received_scan_id = False
+    
+        def on_message(ws, message):
+            try:
+                msg = json.loads(message)
+                t = msg.get("type")
+                if t in ws_msgs:
+                    ws_msgs[t] = True
+                # check if scan_id is referenced
+                if scan_id in message:
+                    nonlocal received_scan_id
+                    received_scan_id = True
+            except Exception:
+                pass
+    
+        def on_error(ws, error):
+            raise RuntimeError(f"WebSocket error: {error}")
+    
+        def on_close(ws, close_status_code, close_msg):
+            pass  # No-op
+    
+        ws = websocket.WebSocketApp(ws_url,
+                                    on_message=on_message,
+                                    on_error=on_error,
+                                    on_close=on_close)
+        wst = threading.Thread(target=ws.run_forever)
+        wst.daemon = True
+        wst.start()
+        time.sleep(duration)
+        ws.close()
+        wst.join(timeout=5)
+>       assert all(ws_msgs.values()), "Did not receive all expected WebSocket message types"
+E       AssertionError: Did not receive all expected WebSocket message types
+E       assert False
+E        +  where False = all(dict_values([False, False]))
+E        +    where dict_values([False, False]) = <built-in method values of dict object at 0x0000017B4E850E00>()
+E        +      where <built-in method values of dict object at 0x0000017B4E850E00> = {'LIVE_ATTACK_FEED': False, 'SCAN_UPDATE': False}.values
+
+testsprite_tests\TC010_End_to_End_Backend_Workflow_Execution.py:122: AssertionError
+_______________ test_TC011_functional_branch_coverage_high_load _______________
+
+self = <urllib3.connectionpool.HTTPConnectionPool object at 0x0000017B4E265390>
+conn = <HTTPConnection(host='127.0.0.1', port=8000) at 0x17b4e585260>
+method = 'GET', url = '/api/dashboard/stats', body = None
+headers = {'User-Agent': 'python-requests/2.32.5', 'Accept-Encoding': 'gzip, deflate, br', 'Accept': '*/*', 'Connection': 'keep-alive'}
+retries = Retry(total=0, connect=None, read=False, redirect=None, status=None)
+timeout = Timeout(connect=30, read=30, total=None), chunked = False
+response_conn = <HTTPConnection(host='127.0.0.1', port=8000) at 0x17b4e585260>
+preload_content = False, decode_content = False, enforce_content_length = True
+
+    def _make_request(
+        self,
+        conn: BaseHTTPConnection,
+        method: str,
+        url: str,
+        body: _TYPE_BODY | None = None,
+        headers: typing.Mapping[str, str] | None = None,
+        retries: Retry | None = None,
+        timeout: _TYPE_TIMEOUT = _DEFAULT_TIMEOUT,
+        chunked: bool = False,
+        response_conn: BaseHTTPConnection | None = None,
+        preload_content: bool = True,
+        decode_content: bool = True,
+        enforce_content_length: bool = True,
+    ) -> BaseHTTPResponse:
+        """
+        Perform a request on a given urllib connection object taken from our
+        pool.
+    
+        :param conn:
+            a connection from one of our connection pools
+    
+        :param method:
+            HTTP request method (such as GET, POST, PUT, etc.)
+    
+        :param url:
+            The URL to perform the request on.
+    
+        :param body:
+            Data to send in the request body, either :class:`str`, :class:`bytes`,
+            an iterable of :class:`str`/:class:`bytes`, or a file-like object.
+    
+        :param headers:
+            Dictionary of custom headers to send, such as User-Agent,
+            If-None-Match, etc. If None, pool headers are used. If provided,
+            these headers completely replace any pool-specific headers.
+    
+        :param retries:
+            Configure the number of retries to allow before raising a
+            :class:`~urllib3.exceptions.MaxRetryError` exception.
+    
+            Pass ``None`` to retry until you receive a response. Pass a
+            :class:`~urllib3.util.retry.Retry` object for fine-grained control
+            over different types of retries.
+            Pass an integer number to retry connection errors that many times,
+            but no other types of errors. Pass zero to never retry.
+    
+            If ``False``, then retries are disabled and any exception is raised
+            immediately. Also, instead of raising a MaxRetryError on redirects,
+            the redirect response will be returned.
+    
+        :type retries: :class:`~urllib3.util.retry.Retry`, False, or an int.
+    
+        :param timeout:
+            If specified, overrides the default timeout for this one
+            request. It may be a float (in seconds) or an instance of
+            :class:`urllib3.util.Timeout`.
+    
+        :param chunked:
+            If True, urllib3 will send the body using chunked transfer
+            encoding. Otherwise, urllib3 will send the body using the standard
+            content-length form. Defaults to False.
+    
+        :param response_conn:
+            Set this to ``None`` if you will handle releasing the connection or
+            set the connection to have the response release it.
+    
+        :param preload_content:
+          If True, the response's body will be preloaded during construction.
+    
+        :param decode_content:
+            If True, will attempt to decode the body based on the
+            'content-encoding' header.
+    
+        :param enforce_content_length:
+            Enforce content length checking. Body returned by server must match
+            value of Content-Length header, if present. Otherwise, raise error.
+        """
+        self.num_requests += 1
+    
+        timeout_obj = self._get_timeout(timeout)
+        timeout_obj.start_connect()
+        conn.timeout = Timeout.resolve_default_timeout(timeout_obj.connect_timeout)
+    
+        try:
+            # Trigger any extra validation we need to do.
+            try:
+                self._validate_conn(conn)
+            except (SocketTimeout, BaseSSLError) as e:
+                self._raise_timeout(err=e, url=url, timeout_value=conn.timeout)
+                raise
+    
+        # _validate_conn() starts the connection to an HTTPS proxy
+        # so we need to wrap errors with 'ProxyError' here too.
+        except (
+            OSError,
+            NewConnectionError,
+            TimeoutError,
+            BaseSSLError,
+            CertificateError,
+            SSLError,
+        ) as e:
+            new_e: Exception = e
+            if isinstance(e, (BaseSSLError, CertificateError)):
+                new_e = SSLError(e)
+            # If the connection didn't successfully connect to it's proxy
+            # then there
+            if isinstance(
+                new_e, (OSError, NewConnectionError, TimeoutError, SSLError)
+            ) and (conn and conn.proxy and not conn.has_connected_to_proxy):
+                new_e = _wrap_proxy_error(new_e, conn.proxy.scheme)
+            raise new_e
+    
+        # conn.request() calls http.client.*.request, not the method in
+        # urllib3.request. It also calls makefile (recv) on the socket.
+        try:
+            conn.request(
+                method,
+                url,
+                body=body,
+                headers=headers,
+                chunked=chunked,
+                preload_content=preload_content,
+                decode_content=decode_content,
+                enforce_content_length=enforce_content_length,
+            )
+    
+        # We are swallowing BrokenPipeError (errno.EPIPE) since the server is
+        # legitimately able to close the connection after sending a valid response.
+        # With this behaviour, the received response is still readable.
+        except BrokenPipeError:
+            pass
+        except OSError as e:
+            # MacOS/Linux
+            # EPROTOTYPE and ECONNRESET are needed on macOS
+            # https://erickt.github.io/blog/2014/11/19/adventures-in-debugging-a-potential-osx-kernel-bug/
+            # Condition changed later to emit ECONNRESET instead of only EPROTOTYPE.
+            if e.errno != errno.EPROTOTYPE and e.errno != errno.ECONNRESET:
+                raise
+    
+        # Reset the timeout for the recv() on the socket
+        read_timeout = timeout_obj.read_timeout
+    
+        if not conn.is_closed:
+            # In Python 3 socket.py will catch EAGAIN and return None when you
+            # try and read into the file pointer created by http.client, which
+            # instead raises a BadStatusLine exception. Instead of catching
+            # the exception and assuming all BadStatusLine exceptions are read
+            # timeouts, check for a zero timeout before making the request.
+            if read_timeout == 0:
+                raise ReadTimeoutError(
+                    self, url, f"Read timed out. (read timeout={read_timeout})"
+                )
+            conn.timeout = read_timeout
+    
+        # Receive the response from the server
+        try:
+>           response = conn.getresponse()
+                       ^^^^^^^^^^^^^^^^^^
+
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py:534: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connection.py:571: in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\http\client.py:1430: in getresponse
+    response.begin()
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\http\client.py:331: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\http\client.py:292: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <socket.SocketIO object at 0x0000017B4E73AD40>
+b = <memory at 0x0000017B4E467640>
+
+    def readinto(self, b):
+        """Read up to len(b) bytes into the writable buffer *b* and return
+        the number of bytes read.  If the socket is non-blocking and no bytes
+        are available, None is returned.
+    
+        If *b* is non-empty, a 0 return value indicates that the connection
+        was shutdown at the other end.
+        """
+        self._checkClosed()
+        self._checkReadable()
+        if self._timeout_occurred:
+            raise OSError("cannot read from timed out object")
+        try:
+>           return self._sock.recv_into(b)
+                   ^^^^^^^^^^^^^^^^^^^^^^^
+E           TimeoutError: timed out
+
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\socket.py:719: TimeoutError
+
+The above exception was the direct cause of the following exception:
+
+self = <requests.adapters.HTTPAdapter object at 0x0000017B4E5F7D50>
+request = <PreparedRequest [GET]>, stream = False
+timeout = Timeout(connect=30, read=30, total=None), verify = True, cert = None
+proxies = OrderedDict()
+
+    def send(
+        self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None
+    ):
+        """Sends PreparedRequest object. Returns Response object.
+    
+        :param request: The :class:`PreparedRequest <PreparedRequest>` being sent.
+        :param stream: (optional) Whether to stream the request content.
+        :param timeout: (optional) How long to wait for the server to send
+            data before giving up, as a float, or a :ref:`(connect timeout,
+            read timeout) <timeouts>` tuple.
+        :type timeout: float or tuple or urllib3 Timeout object
+        :param verify: (optional) Either a boolean, in which case it controls whether
+            we verify the server's TLS certificate, or a string, in which case it
+            must be a path to a CA bundle to use
+        :param cert: (optional) Any user-provided SSL certificate to be trusted.
+        :param proxies: (optional) The proxies dictionary to apply to the request.
+        :rtype: requests.Response
+        """
+    
+        try:
+            conn = self.get_connection_with_tls_context(
+                request, verify, proxies=proxies, cert=cert
+            )
+        except LocationValueError as e:
+            raise InvalidURL(e, request=request)
+    
+        self.cert_verify(conn, request.url, verify, cert)
+        url = self.request_url(request, proxies)
+        self.add_headers(
+            request,
+            stream=stream,
+            timeout=timeout,
+            verify=verify,
+            cert=cert,
+            proxies=proxies,
+        )
+    
+        chunked = not (request.body is None or "Content-Length" in request.headers)
+    
+        if isinstance(timeout, tuple):
+            try:
+                connect, read = timeout
+                timeout = TimeoutSauce(connect=connect, read=read)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid timeout {timeout}. Pass a (connect, read) timeout tuple, "
+                    f"or a single float to set both timeouts to the same value."
+                )
+        elif isinstance(timeout, TimeoutSauce):
+            pass
+        else:
+            timeout = TimeoutSauce(connect=timeout, read=timeout)
+    
+        try:
+>           resp = conn.urlopen(
+                method=request.method,
+                url=url,
+                body=request.body,
+                headers=request.headers,
+                redirect=False,
+                assert_same_host=False,
+                preload_content=False,
+                decode_content=False,
+                retries=self.max_retries,
+                timeout=timeout,
+                chunked=chunked,
+            )
+
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\adapters.py:644: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py:841: in urlopen
+    retries = retries.increment(
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\util\retry.py:474: in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\util\util.py:39: in reraise
+    raise value
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py:787: in urlopen
+    response = self._make_request(
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py:536: in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <urllib3.connectionpool.HTTPConnectionPool object at 0x0000017B4E265390>
+err = TimeoutError('timed out'), url = '/api/dashboard/stats'
+timeout_value = 30
+
+    def _raise_timeout(
+        self,
+        err: BaseSSLError | OSError | SocketTimeout,
+        url: str,
+        timeout_value: _TYPE_TIMEOUT | None,
+    ) -> None:
+        """Is the error actually a timeout? Will raise a ReadTimeout or pass"""
+    
+        if isinstance(err, SocketTimeout):
+>           raise ReadTimeoutError(
+                self, url, f"Read timed out. (read timeout={timeout_value})"
+            ) from err
+E           urllib3.exceptions.ReadTimeoutError: HTTPConnectionPool(host='127.0.0.1', port=8000): Read timed out. (read timeout=30)
+
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py:367: ReadTimeoutError
+
+During handling of the above exception, another exception occurred:
+
+    def test_TC011_functional_branch_coverage_high_load():
+        """
+        Test Case TC011:
+        Functional & Branch Coverage Mapping under high load.
+        Verify critical execution paths in hive.py, cortex.py are traversed,
+        focusing on key backend criteria.
+        """
+    
+        # Helper: Launch a scan swarm (core business logic trigger)
+        def launch_scan(target_url, method="GET", headers=None, duration=10):
+            if headers is None:
+                headers = {}
+            payload = {
+                "target_url": target_url,
+                "method": method,
+                "headers": headers,
+                "duration": duration
+            }
+            resp = requests.post(f"{BASE_URL}/api/attack/fire", json=payload, timeout=TIMEOUT)
+            resp.raise_for_status()
+            return resp.json()
+    
+        # Helper: Analyze defense API (stimulate cortex logic)
+        def defense_analyze(agent_id, content, url):
+            payload = {
+                "agent_id": agent_id,
+                "content": content,
+                "url": url
+            }
+            resp = requests.post(f"{BASE_URL}/api/defense/analyze", json=payload, timeout=TIMEOUT)
+            resp.raise_for_status()
+            return resp.json()
+    
+        # Helper: Query dashboard scans to retrieve scan_ids and simulate E2E integration
+        def get_dashboard_scans():
+            resp = requests.get(f"{BASE_URL}/api/dashboard/scans", timeout=TIMEOUT)
+            resp.raise_for_status()
+            return resp.json()
+    
+        # Helper: Validate scan_id existence in dashboard scans after launch
+        def validate_scan_presence(scan_id):
+            scans = get_dashboard_scans()
+            scan_ids = [scan.get("scan_id") for scan in scans if "scan_id" in scan]
+            assert scan_id in scan_ids, f"scan_id {scan_id} not found in dashboard scans"
+    
+        # --- 1. API Discovery: Validate essential endpoints are reachable under load ---
+    
+        essential_gets = [
+            "/api/dashboard/stats",
+            "/api/ai/status",
+            "/api/health"
+        ]
+    
+        # Test GET endpoints under concurrency to verify discovery and stability
+        def get_endpoint(path):
+            r = requests.get(f"{BASE_URL}{path}", timeout=TIMEOUT)
+            r.raise_for_status()
+            return r.json()
+    
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(get_endpoint, ep) for ep in essential_gets for _ in range(3)]
+            for future in futures:
+>               data = future.result()
+                       ^^^^^^^^^^^^^^^
+
+testsprite_tests\TC011_Functional__Branch_Coverage_Mapping.py:72: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\concurrent\futures\_base.py:456: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\concurrent\futures\_base.py:401: in __get_result
+    raise self._exception
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\concurrent\futures\thread.py:59: in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+testsprite_tests\TC011_Functional__Branch_Coverage_Mapping.py:65: in get_endpoint
+    r = requests.get(f"{BASE_URL}{path}", timeout=TIMEOUT)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\api.py:73: in get
+    return request("get", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\api.py:59: in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\sessions.py:589: in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\sessions.py:703: in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <requests.adapters.HTTPAdapter object at 0x0000017B4E5F7D50>
+request = <PreparedRequest [GET]>, stream = False
+timeout = Timeout(connect=30, read=30, total=None), verify = True, cert = None
+proxies = OrderedDict()
+
+    def send(
+        self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None
+    ):
+        """Sends PreparedRequest object. Returns Response object.
+    
+        :param request: The :class:`PreparedRequest <PreparedRequest>` being sent.
+        :param stream: (optional) Whether to stream the request content.
+        :param timeout: (optional) How long to wait for the server to send
+            data before giving up, as a float, or a :ref:`(connect timeout,
+            read timeout) <timeouts>` tuple.
+        :type timeout: float or tuple or urllib3 Timeout object
+        :param verify: (optional) Either a boolean, in which case it controls whether
+            we verify the server's TLS certificate, or a string, in which case it
+            must be a path to a CA bundle to use
+        :param cert: (optional) Any user-provided SSL certificate to be trusted.
+        :param proxies: (optional) The proxies dictionary to apply to the request.
+        :rtype: requests.Response
+        """
+    
+        try:
+            conn = self.get_connection_with_tls_context(
+                request, verify, proxies=proxies, cert=cert
+            )
+        except LocationValueError as e:
+            raise InvalidURL(e, request=request)
+    
+        self.cert_verify(conn, request.url, verify, cert)
+        url = self.request_url(request, proxies)
+        self.add_headers(
+            request,
+            stream=stream,
+            timeout=timeout,
+            verify=verify,
+            cert=cert,
+            proxies=proxies,
+        )
+    
+        chunked = not (request.body is None or "Content-Length" in request.headers)
+    
+        if isinstance(timeout, tuple):
+            try:
+                connect, read = timeout
+                timeout = TimeoutSauce(connect=connect, read=read)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid timeout {timeout}. Pass a (connect, read) timeout tuple, "
+                    f"or a single float to set both timeouts to the same value."
+                )
+        elif isinstance(timeout, TimeoutSauce):
+            pass
+        else:
+            timeout = TimeoutSauce(connect=timeout, read=timeout)
+    
+        try:
+            resp = conn.urlopen(
+                method=request.method,
+                url=url,
+                body=request.body,
+                headers=request.headers,
+                redirect=False,
+                assert_same_host=False,
+                preload_content=False,
+                decode_content=False,
+                retries=self.max_retries,
+                timeout=timeout,
+                chunked=chunked,
+            )
+    
+        except (ProtocolError, OSError) as err:
+            raise ConnectionError(err, request=request)
+    
+        except MaxRetryError as e:
+            if isinstance(e.reason, ConnectTimeoutError):
+                # TODO: Remove this in 3.0.0: see #2811
+                if not isinstance(e.reason, NewConnectionError):
+                    raise ConnectTimeout(e, request=request)
+    
+            if isinstance(e.reason, ResponseError):
+                raise RetryError(e, request=request)
+    
+            if isinstance(e.reason, _ProxyError):
+                raise ProxyError(e, request=request)
+    
+            if isinstance(e.reason, _SSLError):
+                # This branch is for urllib3 v1.22 and later.
+                raise SSLError(e, request=request)
+    
+            raise ConnectionError(e, request=request)
+    
+        except ClosedPoolError as e:
+            raise ConnectionError(e, request=request)
+    
+        except _ProxyError as e:
+            raise ProxyError(e)
+    
+        except (_SSLError, _HTTPError) as e:
+            if isinstance(e, _SSLError):
+                # This branch is for urllib3 versions earlier than v1.22
+                raise SSLError(e, request=request)
+            elif isinstance(e, ReadTimeoutError):
+>               raise ReadTimeout(e, request=request)
+E               requests.exceptions.ReadTimeout: HTTPConnectionPool(host='127.0.0.1', port=8000): Read timed out. (read timeout=30)
+
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\adapters.py:690: ReadTimeout
+=========================== short test summary info ===========================
+FAILED testsprite_tests/TC004_AI_OpenRouter_LLM_Logic__Hallucination_Flow.py::test_ai_openrouter_llm_logic_and_hallucination_flow
+FAILED testsprite_tests/TC005_Business_Logic_Orchestration__Data_Transformations.py::test_business_logic_orchestration_data_transformations
+FAILED testsprite_tests/TC010_End_to_End_Backend_Workflow_Execution.py::test_TC010_end_to_end_backend_workflow_execution
+FAILED testsprite_tests/TC011_Functional__Branch_Coverage_Mapping.py::test_TC011_functional_branch_coverage_high_load
+=================== 4 failed, 6 passed in 173.77s (0:02:53) ===================

@@ -1,0 +1,19 @@
+{
+  "status": "commited",
+  "type": "backend",
+  "scope": "codebase",
+  "localEndpoint": "http://localhost:8000/D:\\Antigravity 2\\API Endpoint Scanner",
+  "backendAuthType": "public",
+  "executionArgs": {
+    "projectName": "API Endpoint Scanner",
+    "projectPath": "d:\\Antigravity 2\\API Endpoint Scanner",
+    "testIds": [],
+    "additionalInstruction": "Generate 2500 'hard' and in-depth test cases to achieve 100% code coverage for the API Endpoint Scanner project. Focus on:\n1. GI5 Forensic Engine (deterministic heuristic cores).\n2. Cortex Hybrid AI (Bayesian weighting/LLM fallback).\n3. Attack Agents (Sigma, Kappa, etc.) for vulnerability research.\n4. Scan Orchestration (Hive-based distributed management).\nUse heavily obfuscated payloads (Double URL encoding, Base64+ROT13, invisible Unicode) to stress the sanitizer and poly-cipher cores. Include stress tests for parallel scans to hit concurrency/race-condition handlers.\nDocument each failure with a Root Cause Analysis in the final summary.",
+    "serverMode": "development",
+    "envs": {
+      "API_KEY": "sk-user-H_8y4jiCF4-Qh4quz5ivrA_8p70QNfdH6PIzfKy5FrtUKiNu-_xBir_ljz3JmC8udmDQWEpARy4Td2ca9BWy0A7hwvseTp0RzYCUzGIsy4HDjM_Keg33RhOtOEj905ebrmA"
+    }
+  },
+  "serverPort": 57278,
+  "proxy": "http://90d0c8f1-d7ef-4ceb-987b-cbdbd136f954:RrYTYfefYdezTKAUfeUvlfds8pyhZg3b@tun.testsprite.com:8080"
+}

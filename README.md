@@ -1,57 +1,114 @@
-# 🚀 Antigravity Agents
+# Antigravity V6 — Autonomous Security Reconnaissance Platform
 
-![UI Concept](https://img.shields.io/badge/Aesthetics-Glassmorphism-purple?style=flat-square) 
-![Scalability](https://img.shields.io/badge/Scale-1000%2B%20RPS-green?style=flat-square)
-![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)
-![React](https://img.shields.io/badge/React-Vite-blue?style=flat-square)
-![FastAPI](https://img.shields.io/badge/Python-FastAPI-teal?style=flat-square)
+> AI-powered multi-agent security engine with real-time dashboard, 25+ tool integrations, and enterprise export formats.
 
-**Antigravity Agents** is an advanced, AI-driven cybersecurity orchestration platform. It features a stunning, real-time dashboard that visualizes high-frequency threat intelligence, payload interception, and autonomous vulnerability scanning at scale.
+## Quick Start
 
-## ✨ Key Features
+### Prerequisites
+- Python 3.11+
+- Node.js 18+
+- Redis (optional, for distributed cache)
+- Supabase account (for persistence)
 
-- **Live Threat Monitoring:** A high-performance, real-time WebSocket architecture capable of rendering up to 1,000 Requests Per Second (RPS) seamlessly in the browser.
-- **Hive AI Orchestrator:** An autonomous, multi-agent artificial intelligence system (**Alpha** for recon, **Beta** for heavy mutation, **Sigma** for payloads) simulating an entirely automated threat ecosystem.
-- **Adaptive Telemetry:** Intelligent server-side load balancing ensures that critical security anomalies (SQLi, XSS, Leaks) are always displayed natively, while gracefully handling massive traffic spikes to prevent browser crashes.
-- **Resilient Connectivity:** Auto-reconnecting WebSockets ensure the UI automatically recovers from connection drops or backend restarts without losing its state.
-- **Forensic Reporting:** Automated, AI-generated intelligence briefings produced seamlessly upon scan completion.
-
-## 🛠️ Architecture
-
-- **Frontend:** React, Vite, Tailwind CSS, Framer Motion
-- **Backend:** Python, FastAPI, Uvicorn, Asyncio, WebSockets
-- **AI Engine:** Cortex Engine (integrated with locally hosted neural models)
-
----
-
-## 🚀 Getting Started
-
-Ensure you have **Node.js** and **Python 3.10+** installed on your system.
-
-### 1. Initialize the Backend
+### Backend Setup
 ```bash
-# Clone the repository
-git clone https://github.com/sgupta-100/ANTIGRAVITY-AGENTS.git
-cd ANTIGRAVITY-AGENTS
+cd "D:\Antigravity 2\API Endpoint Scanner"
+cp .env.example .env
+# Edit .env with your Supabase/Redis credentials
 
-# Create and activate a virtual environment
-python -m venv venv
-venv\Scripts\activate  # Windows
-
-# Install required dependencies
-pip install -r requirements.txt
-
-# Start the AI Engine and WebSocket server
-set PYTHONPATH=.
-python -m backend.main
+pip install -r backend/requirements.txt
+python -m backend.main --mode serve
 ```
 
-### 2. Initialize the Frontend
+### Frontend Setup
 ```bash
-# Open a new terminal session in the project root
 npm install
 npm run dev
 ```
 
-### 3. Launch the System
-Navigate to `http://localhost:5173` in your web browser. From the dashboard, you can trigger active scans and watch as the Hive Agents dismantle and dissect incoming targets in real-time.
+### Docker (Production)
+```bash
+docker-compose up -d
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  React/Vite Dashboard (5173)                            │
+│  Dashboard │ Recon │ Scans │ Library │ Settings          │
+└────────────────────────┬────────────────────────────────┘
+                         │ REST + WebSocket
+┌────────────────────────▼────────────────────────────────┐
+│  FastAPI Backend (8000)                                  │
+│  /api/health │ /api/recon │ /api/attack │ /api/reports   │
+│  /api/v1/recon/* (Alpha V6 Engine)                       │
+│  /ws/live (Real-time events)                             │
+└────────────────────────┬────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────┐
+│  Agent Swarm                                             │
+│  Alpha (Recon) │ Beta (Exploit) │ Gamma (Fuzz)           │
+│  Omega (Orch)  │ Sigma (Score)  │ Chi (Analysis)         │
+└────────────────────────┬────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────┐
+│  Alpha V6 Recon Engine (25 modules)                      │
+│  9-phase pipeline │ 24 parsers │ 25+ tool integrations   │
+│  Scope Gate │ Interactsh OOB │ Schema Discovery           │
+│  Playwright Fallback │ Approval Hooks │ Live Feed         │
+└────────────────────────┬────────────────────────────────┘
+                         │
+     ┌───────────────────┼───────────────────┐
+     ▼                   ▼                   ▼
+  Supabase            Redis              Neo4j
+  (Postgres)         (Cache)            (Graph)
+```
+
+## Integrated Tools (25+)
+
+| Phase | Tools |
+|-------|-------|
+| Passive Recon | subfinder, amass, gau, waybackurls, cloudlist, spiderfoot |
+| DNS/Infra | dnsx, shuffledns, naabu, nmap, tlsx |
+| HTTP/Browser | httpx, katana, hakrawler, PinchTab, Playwright |
+| JS Analysis | LinkFinder, SecretFinder |
+| Discovery | feroxbuster, ffuf, gobuster, dirsearch |
+| API Recon | kiterunner, InQL, Schema Discovery (OpenAPI/GraphQL) |
+| Visual | gowitness |
+| Validation | nuclei, interactsh |
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/health` | Infrastructure health check |
+| POST | `/api/v1/recon/start` | Start recon scan |
+| GET | `/api/v1/recon/status/{id}` | Scan status |
+| POST | `/api/v1/recon/stop/{id}` | Cancel scan |
+| GET | `/api/v1/recon/scans` | List scans |
+| POST | `/api/v1/recon/export` | Export (SARIF/STIX/Neo4j/Markdown) |
+| WS | `/api/v1/recon/live/{id}` | Real-time feed |
+
+## Export Formats
+
+- **SARIF v2.1.0** — GitHub/Azure DevOps integration
+- **STIX 2.1** — OpenCTI/MISP threat intelligence
+- **Neo4j Cypher** — Graph database import
+- **Maltego CSV** — Link analysis
+- **HackerOne** — Bug bounty submission
+- **Markdown** — Human-readable reports
+
+## Environment Variables
+
+See [.env.example](.env.example) for all configuration options.
+
+## Running Tests
+
+```bash
+python -m pytest tests/ -v --tb=short
+```
+
+## License
+
+Proprietary — All rights reserved.

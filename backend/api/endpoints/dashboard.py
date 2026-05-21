@@ -238,6 +238,26 @@ async def verify_2fa(payload: Verify2FA):
     else:
         return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid Token."})
 
+@router.post("/settings/2fa/disable")
+async def disable_2fa(authorization: str = Header(None)):
+    """Disable 2FA and clear the stored secret."""
+    config = load_config()
+    if not config.get("enabled"):
+        return {"status": "success", "message": "2FA is already disabled."}
+    
+    # Require valid auth to disable (security measure)
+    session = load_session()
+    if session.get("authenticated"):
+        is_valid, _ = _validate_auth(authorization)
+        if not is_valid:
+            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+    
+    config["enabled"] = False
+    config["secret"] = None
+    save_config(config)
+    clear_session()
+    return {"status": "success", "message": "2FA has been disabled."}
+
 # --- AUTHENTICATION FLOW ---
 
 @router.get("/auth/status")

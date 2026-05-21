@@ -119,7 +119,10 @@ async def generate_consolidated_report():
         # Aggregation Logic
         stats = stats_db_manager.get_stats()
         all_scans = stats.get("scans", [])
-        all_events = stats.get("events", [])
+        # Aggregate events from each scan record (events key is per-scan, not top-level)
+        all_events = []
+        for scan in all_scans:
+            all_events.extend(scan.get("events", []))
         
         if not all_scans:
             raise HTTPException(status_code=404, detail="No scan data available for consolidation.")

@@ -2,7 +2,7 @@ import asyncio
 import logging
 import json
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from supabase import create_client, Client
 import redis.asyncio as aioredis
@@ -76,7 +76,7 @@ class EliteDBManager:
             "severity": severity,
             "evidence": evidence,
             "validated_by": validated_by,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
         try:
@@ -114,7 +114,7 @@ class EliteDBManager:
             data = {
                 "status": "RUNNING",
                 "locked_by": worker_id,
-                "lock_time": datetime.utcnow().isoformat()
+                "lock_time": datetime.now(timezone.utc).isoformat()
             }
             result = self.supabase.table("distributed_tasks").update(data).eq("id", task_id).eq("status", "PENDING").execute()
             
@@ -138,7 +138,7 @@ class EliteDBManager:
         try:
             self.supabase.table("distributed_tasks").update({
                 "status": status,
-                "updated_at": datetime.utcnow().isoformat()
+                "updated_at": datetime.now(timezone.utc).isoformat()
             }).eq("id", task_id).execute()
         except Exception as e:
             logger.error(f"Failed to complete task {task_id}: {e}")
@@ -169,6 +169,311 @@ class EliteDBManager:
             }).execute()
         except Exception as e:
             logger.error(f"Failed to log exploit result: {e}")
+
+    # --- 5. QUERY HELPERS ---
+
+    async def get_vulnerabilities(self, scan_id: str) -> List[Dict[str, Any]]:
+        """Fetch all vulnerabilities for a given scan from Supabase."""
+        if not self.supabase:
+            return []
+        try:
+            result = self.supabase.table("vulnerabilities").select("*").eq("scan_id", scan_id).execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Failed to fetch vulnerabilities for scan {scan_id}: {e}")
+            return []
+
+    async def store_scan_episode(self, scan_id: str, event_type: str, payload: Dict[str, Any]):
+        if not self.supabase:
+            return None
+        try:
+            result = self.supabase.table("scan_episodes").insert({
+                "scan_id": scan_id,
+                "event_type": event_type,
+                "payload": payload,
+            }).execute()
+            return result.data[0]["id"] if result.data else None
+        except Exception as e:
+            logger.debug(f"Failed to store scan episode: {e}")
+            return None
+
+    async def store_semantic_memory(
+        self,
+        *,
+        memory_type: str,
+        content: str,
+        endpoint_pattern: str = "",
+        vuln_type: str = "",
+        metadata: Dict[str, Any] | None = None,
+        embedding: List[float] | None = None,
+        confidence: float = 0.0,
+    ):
+        if not self.supabase:
+            return None
+        try:
+            result = self.supabase.table("semantic_memory").insert({
+                "memory_type": memory_type,
+                "endpoint_pattern": endpoint_pattern,
+                "vuln_type": vuln_type,
+                "content": content,
+                "metadata": metadata or {},
+                "embedding": embedding,
+                "confidence": confidence,
+            }).execute()
+            return result.data[0]["id"] if result.data else None
+        except Exception as e:
+            logger.debug(f"Failed to store semantic memory: {e}")
+            return None
+
+    async def create_recon_run(
+        self,
+        *,
+        scan_id: str,
+        target: str,
+        mode: str,
+        scope: Dict[str, Any],
+        artifact_root: str,
+        status: str = "running",
+    ):
+        if not self.supabase:
+            return None
+        try:
+            result = self.supabase.table("recon_runs").upsert({
+                "scan_id": scan_id,
+                "target": target,
+                "mode": mode,
+                "scope": scope,
+                "artifact_root": artifact_root,
+                "status": status,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+            }, on_conflict="scan_id").execute()
+            return result.data[0]["scan_id"] if result.data else scan_id
+        except Exception as e:
+            logger.debug(f"Failed to create recon run: {e}")
+            return None
+
+    async def finish_recon_run(self, *, scan_id: str, status: str = "completed"):
+        if not self.supabase:
+            return None
+        try:
+            self.supabase.table("recon_runs").update({
+                "status": status,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("scan_id", scan_id).execute()
+            return scan_id
+        except Exception as e:
+            logger.debug(f"Failed to finish recon run: {e}")
+            return None
+
+    async def upsert_recon_entity(
+        self,
+        *,
+        id: str,
+        scan_id: str,
+        kind: str,
+        label: str,
+        normalized: Dict[str, Any],
+        sources: List[Dict[str, Any]],
+        confidence: float = 0.0,
+    ):
+        if not self.supabase:
+            return None
+        try:
+            result = self.supabase.table("recon_entities").upsert({
+                "id": id,
+                "scan_id": scan_id,
+                "kind": kind,
+                "label": label,
+                "normalized": normalized,
+                "sources": sources,
+                "confidence": confidence,
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+            }, on_conflict="id").execute()
+            return result.data[0]["id"] if result.data else id
+        except Exception as e:
+            logger.debug(f"Failed to upsert recon entity: {e}")
+            return None
+
+    async def create_recon_artifact(
+        self,
+        *,
+        id: str,
+        scan_id: str,
+        tool_name: str,
+        artifact_type: str,
+        path: str,
+        sha256: str = "",
+        bytes: int = 0,
+        metadata: Dict[str, Any] | None = None,
+    ):
+        if not self.supabase:
+            return None
+        try:
+            result = self.supabase.table("recon_artifacts").upsert({
+                "id": id,
+                "scan_id": scan_id,
+                "tool_name": tool_name,
+                "artifact_type": artifact_type,
+                "path": path,
+                "sha256": sha256,
+                "bytes": bytes,
+                "metadata": metadata or {},
+            }, on_conflict="id").execute()
+            return result.data[0]["id"] if result.data else id
+        except Exception as e:
+            logger.debug(f"Failed to create recon artifact: {e}")
+            return None
+
+    async def upsert_endpoint_score(
+        self,
+        *,
+        id: str,
+        scan_id: str,
+        endpoint_id: str,
+        score: int,
+        reasons: List[str],
+        omega_modules: List[str] | None = None,
+    ):
+        if not self.supabase:
+            return None
+        try:
+            result = self.supabase.table("recon_endpoint_scores").upsert({
+                "id": id,
+                "scan_id": scan_id,
+                "endpoint_id": endpoint_id,
+                "score": score,
+                "reasons": reasons,
+                "omega_modules": omega_modules or [],
+            }, on_conflict="id").execute()
+            return result.data[0]["id"] if result.data else id
+        except Exception as e:
+            logger.debug(f"Failed to upsert endpoint score: {e}")
+            return None
+
+    async def create_toolcall(
+        self,
+        *,
+        call_id: str,
+        scan_id: str,
+        tool_name: str,
+        agent: str,
+        args: Dict[str, Any],
+        status: str = "running",
+        error: str = "",
+    ):
+        if not self.supabase:
+            return None
+        try:
+            result = self.supabase.table("toolcalls").insert({
+                "call_id": call_id,
+                "scan_id": scan_id,
+                "tool_name": tool_name,
+                "agent": agent,
+                "args": args,
+                "status": status,
+                "error": error,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+            }).execute()
+            return result.data[0]["id"] if result.data else None
+        except Exception as e:
+            logger.debug(f"Failed to create toolcall: {e}")
+            return None
+
+    async def finish_toolcall(
+        self,
+        *,
+        call_id: str,
+        status: str,
+        result: Any = None,
+        error: str = "",
+        duration_ms: int = 0,
+        result_bytes: int = 0,
+        result_sha256: str = "",
+    ):
+        if not self.supabase:
+            return None
+        try:
+            payload = {
+                "status": status,
+                "result": result,
+                "error": error,
+                "duration_ms": duration_ms,
+                "result_bytes": result_bytes,
+                "result_sha256": result_sha256,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self.supabase.table("toolcalls").update(payload).eq("call_id", call_id).execute()
+        except Exception as e:
+            logger.debug(f"Failed to finish toolcall: {e}")
+            return None
+
+    async def create_approval(
+        self,
+        *,
+        approval_id: str,
+        scan_id: str,
+        tool_name: str,
+        reason: str,
+        payload: Dict[str, Any],
+        status: str = "pending",
+    ):
+        if not self.supabase:
+            return None
+        try:
+            result = self.supabase.table("approvals").insert({
+                "approval_id": approval_id,
+                "scan_id": scan_id,
+                "tool_name": tool_name,
+                "reason": reason,
+                "payload": payload,
+                "status": status,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }).execute()
+            return result.data[0]["id"] if result.data else None
+        except Exception as e:
+            logger.debug(f"Failed to create approval: {e}")
+            return None
+
+    async def log_http_exchange(
+        self,
+        *,
+        scan_id: str,
+        request_id: str,
+        method: str,
+        url: str,
+        request_headers: Dict[str, str],
+        request_body: Any,
+        status: int,
+        response_headers: Dict[str, str],
+        response_body: str,
+        elapsed_ms: int,
+    ):
+        if not self.supabase:
+            return None
+        try:
+            req = self.supabase.table("http_requests").insert({
+                "request_id": request_id,
+                "scan_id": scan_id,
+                "method": method,
+                "url": url,
+                "headers": request_headers,
+                "body": request_body,
+                "elapsed_ms": elapsed_ms,
+            }).execute()
+            db_request_id = req.data[0]["id"] if req.data else None
+            self.supabase.table("http_responses").insert({
+                "request_db_id": db_request_id,
+                "request_id": request_id,
+                "scan_id": scan_id,
+                "status": status,
+                "headers": response_headers,
+                "body": response_body,
+                "body_preview": response_body[:4000],
+            }).execute()
+            return db_request_id
+        except Exception as e:
+            logger.debug(f"Failed to log HTTP exchange: {e}")
+            return None
 
 # Global Instance
 db_manager = EliteDBManager()

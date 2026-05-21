@@ -6,7 +6,9 @@ from datetime import datetime
 from urllib.parse import urlparse
 import uuid
 import re
-from backend.core.state import stats_db
+import asyncio
+import time
+from backend.core.state import stats_db_manager
 
 router = APIRouter()
 
@@ -20,6 +22,8 @@ ALLOWED_HOSTS = {
     "example.com",
     "www.example.com",
 }
+_active_scan_targets: dict[str, float] = {}
+_active_scan_targets_lock = asyncio.Lock()
 ALLOWED_PRIVATE_RANGES = [
     re.compile(r"^10\."),           # 10.x.x.x
     re.compile(r"^172\.(1[6-9]|2[0-9]|3[01])\."),  # 172.16-31.x.x
@@ -41,6 +45,8 @@ def validate_target_url(url: str) -> tuple[bool, str]:
 
     if parsed.scheme not in ("http", "https"):
         return False, f"Invalid scheme '{parsed.scheme}'. Only HTTP/HTTPS allowed."
+    if any(ch in url for ch in ["<", ">", "\"", "'", "`"]):
+        return False, "Malformed URL content. Potential injection characters are not allowed in target URLs."
 
     hostname = parsed.hostname or ""
     
@@ -51,6 +57,8 @@ def validate_target_url(url: str) -> tuple[bool, str]:
 
     # Allow explicitly whitelisted hosts
     if hostname in ALLOWED_HOSTS:
+        return True, "OK"
+    if hostname.endswith(".test"):
         return True, "OK"
 
     # Allow private IP ranges
@@ -75,7 +83,18 @@ async def fire_attack(payload: AttackPayload, background_tasks: BackgroundTasks)
     # INPUT VALIDATION: Reject out-of-scope targets
     is_valid, reason = validate_target_url(payload.target_url)
     if not is_valid:
-        raise HTTPException(status_code=403, detail=f"Target URL rejected: {reason}")
+        status = 422 if reason.startswith("Invalid scheme") or reason.startswith("Malformed") else 403
+        raise HTTPException(status_code=status, detail=f"Target URL rejected: {reason}")
+
+    lock_key = f"{payload.method.upper()}:{payload.target_url.lower()}"
+    now = time.time()
+    async with _active_scan_targets_lock:
+        expired = [key for key, until in _active_scan_targets.items() if until < now]
+        for key in expired:
+            _active_scan_targets.pop(key, None)
+        if lock_key in _active_scan_targets:
+            raise HTTPException(status_code=429, detail="A scan for this target is already running.")
+        _active_scan_targets[lock_key] = now + max(int(payload.duration or 10), 10)
 
     scan_id = str(uuid.uuid4())
     
@@ -100,13 +119,9 @@ async def fire_attack(payload: AttackPayload, background_tasks: BackgroundTasks)
         "duration": payload.duration
     }
 
-    # 1.5 ATOMIC LOCKING (Prevent Race Conditions - TC020)
+    # 1.5 Initialize distributed DB layer
     from backend.core.database import db_manager
     await db_manager.initialize()
-    if db_manager.redis:
-        pass
-    else:
-        pass
 
 
     # We do a minimal placeholder here to ensure immediate UI feedback
@@ -128,7 +143,14 @@ async def fire_attack(payload: AttackPayload, background_tasks: BackgroundTasks)
     
     # 3. Launch The Hive (Background Task)
     # The Orchestrator manages the entire lifecycle (Agents, EventBus, Reporting)
-    background_tasks.add_task(HiveOrchestrator.bootstrap_hive, target_config, scan_id)
+    async def run_scan_and_release():
+        try:
+            await HiveOrchestrator.bootstrap_hive(target_config, scan_id)
+        finally:
+            async with _active_scan_targets_lock:
+                _active_scan_targets.pop(lock_key, None)
+
+    background_tasks.add_task(run_scan_and_release)
     
     # 4. Immediate Response
     return {

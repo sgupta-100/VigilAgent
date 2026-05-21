@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import Navigation from './Navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { LIQUID_SPRING } from '../lib/constants';
+import { apiUrl } from '../lib/api';
 
 const Settings = ({ navigate }) => {
     const [toggles, setToggles] = useState({
@@ -19,7 +20,7 @@ const Settings = ({ navigate }) => {
 
     // Fetch Settings on Load
     useEffect(() => {
-        fetch('http://127.0.0.1:8000/api/dashboard/settings')
+        fetch(apiUrl('/api/dashboard/settings'))
             .then(res => res.json())
             .then(data => {
                 if (data['2fa_enabled']) {
@@ -29,14 +30,24 @@ const Settings = ({ navigate }) => {
             .catch(err => console.error("Failed to load settings:", err));
     }, []);
 
-    const handleToggle = (id) => {
+    const handleToggle = async (id) => {
         if (id === '2fa') {
             if (!toggles['2fa']) {
                 // User wants to ENABLE 2FA -> Show QR
-                initiate2FA();
+                handleGenerate2FA();
             } else {
-                // Disable (for demo, just toggle off)
-                setToggles(prev => ({ ...prev, '2fa': false }));
+                // Disable 2FA — call backend to persist
+                try {
+                    const res = await fetch(apiUrl('/api/dashboard/settings/2fa/disable'), { method: 'POST' });
+                    if (res.ok) {
+                        setToggles(prev => ({ ...prev, '2fa': false }));
+                    } else {
+                        alert('Failed to disable 2FA');
+                    }
+                } catch (e) {
+                    console.error('Error disabling 2FA:', e);
+                    setToggles(prev => ({ ...prev, '2fa': false }));
+                }
             }
         } else {
             setToggles(prev => ({
@@ -49,7 +60,7 @@ const Settings = ({ navigate }) => {
     const handleGenerate2FA = async () => {
         setIsLoading(true);
         try {
-            const res = await fetch('http://127.0.0.1:8000/api/dashboard/settings/2fa/generate', { method: 'POST' });
+            const res = await fetch(apiUrl('/api/dashboard/settings/2fa/generate'), { method: 'POST' });
             const data = await res.json();
             setQrCode(data.qr_code);
             setShow2FAModal(true);
@@ -64,10 +75,10 @@ const Settings = ({ navigate }) => {
         if (!verifyCode) return;
         setIsLoading(true);
         try {
-            const res = await fetch('http://127.0.0.1:8000/api/dashboard/settings/2fa/verify', {
+            const res = await fetch(apiUrl('/api/dashboard/settings/2fa/verify'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ token: verifyCode })
+                body: JSON.stringify({ totp_code: verifyCode })
             });
             const data = await res.json();
 
@@ -88,12 +99,24 @@ const Settings = ({ navigate }) => {
     };
 
     const saveSettings = async () => {
-        // Just saves other toggles
         setIsLoading(true);
-        setTimeout(() => {
+        try {
+            const res = await fetch(apiUrl('/api/dashboard/settings'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(toggles)
+            });
+            if (res.ok) {
+                alert('Settings Updated');
+            } else {
+                alert('Failed to save settings');
+            }
+        } catch (e) {
+            console.error('Error saving settings:', e);
+            alert('Error saving settings');
+        } finally {
             setIsLoading(false);
-            alert("Settings Updated");
-        }, 800);
+        }
     };
 
     return (

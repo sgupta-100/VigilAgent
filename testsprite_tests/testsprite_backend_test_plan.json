@@ -1,0 +1,42 @@
+[
+  {
+    "id": "TC001",
+    "title": "post_api_attack_fire_with_valid_and_invalid_payloads",
+    "description": "Test POST /api/attack/fire endpoint with valid AttackPayload to ensure scan starts successfully and returns status 'Swarm Online' with scan_id. Verify scan appears in GET /api/dashboard/scans with status 'running'. Also test with malformed payloads missing required fields or invalid modules to confirm 400/422 validation errors and no scan entry created."
+  },
+  {
+    "id": "TC002",
+    "title": "post_api_recon_ingest_with_valid_and_invalid_payloads",
+    "description": "Test POST /api/recon/ingest endpoint with valid ReconPayload to confirm 200 acknowledgment with ingest_id and that RECON_PACKET events are published via WebSocket. Test with invalid JSON or missing required fields to verify 422 Unprocessable Entity response and no RECON_PACKET events emitted."
+  },
+  {
+    "id": "TC003",
+    "title": "websocket_stream_connection_and_event_reception",
+    "description": "Test WebSocket connection to /stream?client_type=ui to verify reception of LIFECYCLE_EVENT, LIVE_ATTACK_FEED messages, and REPORT_READY notifications. Also test connection failure scenarios when backend is down to ensure client receives appropriate network errors or handshake failures."
+  },
+  {
+    "id": "TC004",
+    "title": "get_api_reports_pdf_with_existing_and_nonexistent_scan_id",
+    "description": "Test GET /api/reports/pdf/{scan_id} after scan completion to receive 200 response with application/pdf content containing forensic report details. Also test with nonexistent or not ready scan_id to confirm 404 Not Found with appropriate error message."
+  },
+  {
+    "id": "TC005",
+    "title": "get_api_dashboard_stats_under_normal_and_failure_conditions",
+    "description": "Test GET /api/dashboard/stats to receive 200 with aggregated metrics, graph data, and recent activity for dashboard rendering. Simulate high load or backend failure to verify 503 or 500 error responses and that UI falls back to cached data or shows error notifications."
+  },
+  {
+    "id": "TC006",
+    "title": "post_api_ai_generate_payloads_with_llm_available_and_unavailable",
+    "description": "Test POST /api/ai/generate_payloads with valid context to receive 200 with generated payloads array from GI5 and Cortex fusion. Simulate Ollama/remote LLM unavailability to verify fallback to GI5 deterministic output with circuit_breaker status indicating LLM fallback."
+  },
+  {
+    "id": "TC007",
+    "title": "post_api_dashboard_settings_2fa_generate_verify_and_login",
+    "description": "Test 2FA workflow by POST /api/dashboard/settings/2fa/generate to receive TOTP secret and QR code, then POST /api/dashboard/settings/2fa/verify with TOTP code to enable 2FA. Finally, test POST /api/dashboard/auth/login with valid TOTP to receive session token and dashboard access, and with invalid TOTP to receive 401 Unauthorized and blocked access."
+  },
+  {
+    "id": "TC008",
+    "title": "post_api_defense_analyze_with_valid_and_invalid_payloads",
+    "description": "Test POST /api/defense/analyze with valid body containing agent_id, content, url, and session_id to receive 200 with verdict ('BLOCK' or 'ALLOW'), reason, and risk_score. Verify frontend or extension triggers blocking behavior on 'BLOCK'. Test with malformed content or unsupported agent_id to confirm 400/422 validation errors and no verdict produced."
+  }
+]

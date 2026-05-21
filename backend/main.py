@@ -15,10 +15,11 @@ import uvicorn
 
 # Vul Agent Core Imports
 from backend.core.config import settings, ConfigManager
+from backend.core.default_tools import register_default_tools
 from backend.core.orchestrator import HiveOrchestrator, MasterNode, WorkerNode
 from backend.api.socket_manager import manager
 from backend.core.state import stats_db_manager
-from backend.api.endpoints import recon, attack, reports, dashboard, ai
+from backend.api.endpoints import recon, attack, reports, dashboard, ai, runtime
 from backend.api.endpoints.code_analysis import router as code_analysis_router
 from backend.api.endpoints.data import router as data_router
 from backend.api import defense
@@ -37,8 +38,14 @@ async def lifespan(app: FastAPI):
     print("VUL AGENT: UNIFIED LIFECYCLE START")
     print("="*50)
     
+    # Clean up zombie scans from ungraceful shutdowns
+    cleaned = stats_db_manager.reset_stale_scans()
+    if cleaned > 0:
+        print(f"[LIFECYCLE] Reset {cleaned} stale scan(s) from previous session.")
+    
     # Pillar Initiation (GSD, Ralph, TestSprite)
     print("[PILLAR] Activating Governance Frameworks...")
+    register_default_tools()
     
     await manager.broadcast({
         "type": "LIFECYCLE_EVENT",
@@ -57,6 +64,11 @@ app = FastAPI(title="Vulagent Scanner", lifespan=lifespan)
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """TC004 Compliance: Map missing fields / Pydantic 422s to explicit REST 400 Bad Requests."""
+    if request.url.path.endswith("/api/attack/fire"):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": exc.errors()}
+        )
     return JSONResponse(
         status_code=400,
         content={"detail": "Invalid or missing payload. Expected a valid request structure."}
@@ -73,10 +85,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(runtime.router, prefix="/api")
+
 # Routes
 @app.get("/api/health")
 async def health_check():
-    return {"status": "online", "version": "v6.1-omega"}
+    """Production health check — tests infra components."""
+    import time as _t
+    start = _t.time()
+    comps = {}
+    try:
+        comps["supabase"] = "healthy" if settings.SUPABASE_URL else "not_configured"
+    except Exception:
+        comps["supabase"] = "unhealthy"
+    try:
+        if settings.REDIS_URL:
+            import redis.asyncio as aioredis
+            r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+            await r.ping(); await r.close()
+            comps["redis"] = "healthy"
+        else:
+            comps["redis"] = "not_configured"
+    except Exception:
+        comps["redis"] = "unhealthy"
+    comps["alpha"] = "enabled" if getattr(settings, "ALPHA_ENABLE_V6", False) else "disabled"
+    overall = "healthy" if "unhealthy" not in comps.values() else "degraded"
+    return {"status": overall, "version": "v6.1-omega",
+            "latency_ms": round((_t.time() - start) * 1000, 1), "components": comps}
 
 app.include_router(recon.router, prefix="/api/recon", tags=["Recon"])
 app.include_router(attack.router, prefix="/api/attack", tags=["Attack"])
@@ -86,6 +121,10 @@ app.include_router(dashboard.router, prefix="/api/dashboard", tags=["Dashboard"]
 app.include_router(ai.router, prefix="/api/ai", tags=["AI"])
 app.include_router(code_analysis_router, prefix="/api", tags=["Code Analysis"])  # PROBLEM 18
 app.include_router(data_router, prefix="/api/data", tags=["Data"])
+
+# Alpha Recon API
+from backend.agents.alpha_v6.api_routes import router as alpha_recon_router
+app.include_router(alpha_recon_router, tags=["Alpha Recon"])
 
 @app.websocket("/stream")
 @app.websocket("/ws/live")

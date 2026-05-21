@@ -15,7 +15,12 @@ export default defineConfig({
             "/stream": {
                 target: "ws://127.0.0.1:8000",
                 ws: true
+            },
+            "/ws/live": {
+                target: "ws://127.0.0.1:8000",
+                ws: true
             }
         }
     }
 })
+

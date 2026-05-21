@@ -1,0 +1,85 @@
+{
+    "scans": [
+        {
+            "id": "test-replay-scan-12345",
+            "status": "Completed",
+            "name": "Test Replay Scan",
+            "scope": "http://localhost:8000",
+            "modules": [
+                "TestModule"
+            ],
+            "timestamp": "2026-04-05 00:00:00",
+            "results": [
+                {
+                    "payload": {
+                        "vuln_id": "test-vuln-67890",
+                        "url": "http://localhost:8000/api/test",
+                        "method": "GET",
+                        "type": "SQL Injection",
+                        "severity": "High"
+                    }
+                }
+            ]
+        },
+        {
+            "id": "phase1-test-scan",
+            "status": "Interrupted",
+            "name": "Phase1 Test",
+            "scope": "http://test.local",
+            "modules": [
+                "test"
+            ],
+            "timestamp": "2026-01-01 00:00:00",
+            "results": [],
+            "events": [
+                {
+                    "type": "TEST",
+                    "data": "hello"
+                }
+            ],
+            "scan_id": "phase1-test-scan"
+        }
+    ],
+    "active_scans": 0,
+    "total_scans": 1,
+    "total_requests": 746,
+    "vulnerabilities": 2,
+    "critical": 2,
+    "history": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        2
+    ],
+    "v6_metrics": {
+        "injections_blocked": 7,
+        "deceptive_ui_blocked": 5,
+        "risk_score": 85
+    }
+}

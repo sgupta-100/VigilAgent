@@ -1,0 +1,13 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.7, pytest-9.0.2, pluggy-1.6.0 -- C:\Users\Dell\AppData\Local\Programs\Python\Python313\python.exe
+cachedir: .pytest_cache
+rootdir: D:\Antigravity 2\API Endpoint Scanner
+plugins: anyio-4.12.1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 3 items
+
+testsprite_tests/TC005_Business_Logic_Orchestration__Data_Transformations.py::test_business_logic_orchestration_data_transformations PASSED [ 33%]
+testsprite_tests/TC010_End_to_End_Backend_Workflow_Execution.py::test_TC010_end_to_end_backend_workflow_execution PASSED [ 66%]
+testsprite_tests/TC011_Functional__Branch_Coverage_Mapping.py::test_TC011_functional_branch_coverage_high_load PASSED [100%]
+
+============================= 3 passed in 19.31s ==============================

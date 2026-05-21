@@ -1,0 +1,76 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.7, pytest-9.0.2, pluggy-1.6.0 -- C:\Users\Dell\AppData\Local\Programs\Python\Python313\python.exe
+cachedir: .pytest_cache
+rootdir: D:\Antigravity 2\API Endpoint Scanner
+plugins: anyio-4.12.1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 0 items / 1 error
+
+=================================== ERRORS ====================================
+_ ERROR collecting testsprite_tests/TC001_API_Layer_Discovery__Discovery_Verification.py _
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connection.py:204: in _new_conn
+    sock = connection.create_connection(
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\util\connection.py:85: in create_connection
+    raise err
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\util\connection.py:73: in create_connection
+    sock.connect(sa)
+E   ConnectionRefusedError: [WinError 10061] No connection could be made because the target machine actively refused it
+
+The above exception was the direct cause of the following exception:
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py:787: in urlopen
+    response = self._make_request(
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py:493: in _make_request
+    conn.request(
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connection.py:500: in request
+    self.endheaders()
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\http\client.py:1333: in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\http\client.py:1093: in _send_output
+    self.send(msg)
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\http\client.py:1037: in send
+    self.connect()
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connection.py:331: in connect
+    self.sock = self._new_conn()
+                ^^^^^^^^^^^^^^^^
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connection.py:219: in _new_conn
+    raise NewConnectionError(
+E   urllib3.exceptions.NewConnectionError: HTTPConnection(host='127.0.0.1', port=8000): Failed to establish a new connection: [WinError 10061] No connection could be made because the target machine actively refused it
+
+The above exception was the direct cause of the following exception:
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\adapters.py:644: in send
+    resp = conn.urlopen(
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py:841: in urlopen
+    retries = retries.increment(
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\util\retry.py:519: in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='127.0.0.1', port=8000): Max retries exceeded with url: /api/attack/fire (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=8000): Failed to establish a new connection: [WinError 10061] No connection could be made because the target machine actively refused it"))
+
+During handling of the above exception, another exception occurred:
+testsprite_tests\TC001_API_Layer_Discovery__Discovery_Verification.py:143: in <module>
+    test_TC001_api_layer_discovery_and_verification()
+testsprite_tests\TC001_API_Layer_Discovery__Discovery_Verification.py:39: in test_TC001_api_layer_discovery_and_verification
+    fire_response = check_post_endpoint("/api/attack/fire", fire_payload, expected_status_codes=(200,422,429,500))
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+testsprite_tests\TC001_API_Layer_Discovery__Discovery_Verification.py:23: in check_post_endpoint
+    resp = requests.post(url, json=json_body, timeout=TIMEOUT)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\api.py:115: in post
+    return request("post", url, data=data, json=json, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\api.py:59: in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\sessions.py:589: in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\sessions.py:703: in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\adapters.py:677: in send
+    raise ConnectionError(e, request=request)
+E   requests.exceptions.ConnectionError: HTTPConnectionPool(host='127.0.0.1', port=8000): Max retries exceeded with url: /api/attack/fire (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=8000): Failed to establish a new connection: [WinError 10061] No connection could be made because the target machine actively refused it"))
+=========================== short test summary info ===========================
+ERROR testsprite_tests/TC001_API_Layer_Discovery__Discovery_Verification.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+============================== 1 error in 2.37s ===============================

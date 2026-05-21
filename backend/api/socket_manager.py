@@ -119,7 +119,7 @@ class SocketManager:
         self.logger = logging.getLogger("Antigravity.SocketManager")
         
         self.last_spy_activity = 0.0
-        self.message_queue = collections.deque(maxlen=100000) # Memory Guard: Increased for Unlimited Monitoring
+        self.message_queue = collections.deque(maxlen=10000) # Memory Guard: Capped for reasonable memory usage
         self._batch_task = None
         
         # [NEW] RPS Tracking for Adaptive Sampling
@@ -155,42 +155,56 @@ class SocketManager:
             self.recent_rps = self.packet_count
             self.packet_count = 0
 
-    async def _process_batch_queue(self):
-        """Batches messages and sends to UI at ~50 FPS."""
-        while self._running:
+    @staticmethod
+    def _sanitize_bytes(obj):
+        """Serialize bytes to hex for JSON compatibility."""
+        if isinstance(obj, bytes):
+            return obj.hex()
+        return str(obj)
 
+    @staticmethod
+    async def _send_with_timeout(connection, msg):
+        """Send message to a WebSocket with a 1s timeout. Returns connection on failure."""
+        try:
+            await asyncio.wait_for(connection.send_text(msg), timeout=1.0)
+            return None
+        except Exception:
+            return connection
+
+    async def _process_batch_queue(self):
+        """Batches messages and sends to UI at ~50 FPS. JSON serialized once per event."""
+        while self._running:
             try:
                 await asyncio.sleep(0.02)
                 if self.message_queue:
-                    # Thread-safe dequeue of all items
                     batch = []
                     while self.message_queue:
                         try:
                             batch.append(self.message_queue.popleft())
-                        except IndexError: break
-                    
-                    if not batch: continue
+                        except IndexError:
+                            break
 
-                    
-                    def sanitize_bytes(obj):
-                        if isinstance(obj, bytes):
-                            return obj.hex()
-                        return str(obj)
+                    if not batch:
+                        continue
 
-                    async def send_with_timeout(connection, msg):
-                        try:
-                            await asyncio.wait_for(connection.send_text(msg), timeout=1.0)
-                            return None
-                        except Exception:
-                            return connection
+                    # PERF: Serialize once, send same string to all connections
+                    if len(batch) == 1:
+                        message = json.dumps(batch[0], default=self._sanitize_bytes)
+                    else:
+                        # Wrap multiple events in a BATCH envelope — single frame
+                        message = json.dumps(
+                            {"type": "BATCH", "payload": batch},
+                            default=self._sanitize_bytes
+                        )
 
-                    for event_obj in batch:
-                        message = json.dumps(event_obj, default=sanitize_bytes)
-                        if self.ui_connections:
-                            results = await asyncio.gather(*(send_with_timeout(conn, message) for conn in self.ui_connections), return_exceptions=True)
-                            for dead in results:
-                                if isinstance(dead, WebSocket) and dead in self.ui_connections:
-                                    self.ui_connections.remove(dead)
+                    if self.ui_connections:
+                        results = await asyncio.gather(
+                            *(self._send_with_timeout(conn, message) for conn in self.ui_connections),
+                            return_exceptions=True
+                        )
+                        for dead in results:
+                            if isinstance(dead, WebSocket) and dead in self.ui_connections:
+                                self.ui_connections.remove(dead)
             except Exception as e:
                 self.logger.error(f"Batch Error: {e}")
                 await asyncio.sleep(1.0)

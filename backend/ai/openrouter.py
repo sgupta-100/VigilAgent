@@ -27,8 +27,8 @@ ARBITRATION_SYSTEM_PROMPT = """You are the Central Reasoning Engine of an autono
 
 You operate using:
 - GI-5 → deterministic truth engine (PRIMARY SOURCE OF TRUTH)
-- Qwen 2.5 → payload generation
-- Qwen 3.5 → validation filter
+- NVIDIA Qwen 2.5 Coder 32B -> payload generation
+- NVIDIA Nemotron Nano 8B -> validation filter
 - Beta → execution (real HTTP)
 - Gamma → anomaly detection
 

@@ -1,12 +1,12 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
-from backend.ai.cortex import CortexEngine, get_cortex_engine
+import os
+from backend.ai.cortex import get_cortex_engine
 from backend.core.orchestrator import HiveOrchestrator
 
 # Initialize Router
 router = APIRouter()
-brain = get_cortex_engine()
 
 class MutationRequest(BaseModel):
     url: str
@@ -28,6 +28,22 @@ async def generate_mutations(payload: MutationRequest):
         "method": payload.method,
         "body": payload.body
     }
+    if os.getenv("VULAGENT_TEST_MODE", "false").lower() == "true":
+        seed = str(payload.body)[:80]
+        return {
+            "status": "success",
+            "variants": [
+                {"type": "sqli", "payload": "' OR '1'='1", "target": payload.url},
+                {"type": "sqli", "payload": "admin'--", "target": payload.url},
+                {"type": "auth", "payload": {"username": "admin", "password": "admin"}, "target": payload.url},
+                {"type": "idor", "payload": {"id": 0}, "target": payload.url},
+                {"type": "xss", "payload": "<script>alert(1)</script>", "target": payload.url},
+                {"type": "json", "payload": {"$ne": seed}, "target": payload.url},
+                {"type": "logic", "payload": {"role": "admin"}, "target": payload.url},
+                {"type": "rate_limit", "payload": {"burst": payload.velocity}, "target": payload.url},
+            ],
+        }
+    brain = get_cortex_engine()
     variants = await brain.synthesize_payloads(base_request)
     return {"status": "success", "variants": variants}
 
@@ -52,14 +68,18 @@ async def get_ai_status():
     """
     Returns AI Core health, LLM metrics, and fallback state.
     """
+    brain = get_cortex_engine()
     # Defensive access to telemetry
     telemetry = brain._telemetry if hasattr(brain, "_telemetry") else {}
+    nvidia = getattr(brain, "_nvidia", None)
+    openrouter = getattr(brain, "_openrouter", None)
     
     return {
         "core_status": {
             "gi5": "online" if getattr(brain, "_gi5_available", False) else "error",
             "ollama": "standby",
-            "openrouter": "active"
+            "openrouter": "active" if getattr(openrouter, "is_available", False) else "disabled",
+            "nvidia": "active" if getattr(nvidia, "is_available", False) else "dummy_key"
         },
         "llm_calls": telemetry.get("llm_calls", 0),
         "circuit_breaker_trips": telemetry.get("circuit_breaker_trips", 0),

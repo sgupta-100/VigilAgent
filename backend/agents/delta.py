@@ -4,17 +4,17 @@ import aiohttp
 import os
 from backend.core.hive import BaseAgent, EventType, HiveEvent
 from backend.core.protocol import JobPacket, ResultPacket, AgentID, TaskTarget
+from backend.integrations.pinchtab_client import PinchTabClient
 
 class AgentDelta(BaseAgent):
     """
     AGENT DELTA: HYBRID BROWSER CONTROLLER (DOM + API FUSION)
     Role: Control PinchTab externally, execute client-side workflows, and extract live DOM evidence.
     """
-    PINCHTAB_URL = "http://localhost:9867"
-    PINCHTAB_CLI = "c:\\my2\\Vulagent\\pinchtab_core\\pinchtab.exe"
-
     def __init__(self, bus):
         super().__init__("agent_delta", bus)
+        self.pinchtab = PinchTabClient()
+        self._last_tab_id = ""
         
     async def setup(self):
         # Triggered by Recon/Orchestrator when navigating routes
@@ -36,47 +36,24 @@ class AgentDelta(BaseAgent):
             except Exception: pass
 
     async def _pinch_nav(self, session, url):
-        if not os.path.exists(self.PINCHTAB_CLI):
-            print(f"[{self.name}] Native PinchTab binary missing at {self.PINCHTAB_CLI}")
-            return False
-        proc = None
         try:
-            proc = await asyncio.create_subprocess_exec(
-                self.PINCHTAB_CLI, "nav", url,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            await asyncio.wait_for(proc.communicate(), timeout=15.0)
-            return proc.returncode == 0
+            await self.pinchtab.health()
+            nav = await self.pinchtab.navigate(url)
+            self._last_tab_id = str(nav.get("tabId") or nav.get("id") or nav.get("targetId") or "")
+            return bool(self._last_tab_id)
         except Exception as e:
-            print(f"[{self.name}] Native CLI Nav Error: {e}")
+            print(f"[{self.name}] PinchTab HTTP Nav Error: {e}")
             return False
-        finally:
-            await self._safe_kill(proc)
 
     async def _pinch_text(self, session):
-        proc = None
         try:
-            proc = await asyncio.create_subprocess_exec(
-                self.PINCHTAB_CLI, "text",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
-            decoded = stdout.decode('utf-8', errors='ignore')
-            
-            # V6-PRODUCTION: Structured Parsing
-            try:
-                import json
-                parsed_dom = json.loads(decoded)
-            except json.JSONDecodeError:
-                parsed_dom = {"text": decoded, "inputs": [], "buttons": [], "forms": []}
-                
-            return parsed_dom if proc.returncode == 0 else {}
+            if not self._last_tab_id:
+                return {}
+            text = await self.pinchtab.text(self._last_tab_id)
+            snapshot = await self.pinchtab.snapshot(self._last_tab_id)
+            return {"text": str(text), "snapshot": snapshot, "inputs": [], "buttons": [], "forms": []}
         except Exception:
             return {}
-        finally:
-            await self._safe_kill(proc)
 
     def _semantic_refine(self, dom_data: dict) -> dict:
         classification = "unknown"

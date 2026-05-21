@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import hashlib
 import time as _time
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -168,7 +169,8 @@ class CortexEngine:
         self._llm_semaphore = asyncio.Semaphore(3)
 
         # â”€â”€â”€ OPTIMIZATION: Response Cache (LRU with TTL) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        self._response_cache = {}  # {hash: {"result": str, "ts": float}}
+        self._response_cache = collections.OrderedDict()  # O(1) LRU
+        self._cache_max_size = 500  # Up from 200 for high-throughput scans
         self._cache_hits = 0
         self._cache_misses = 0
 
@@ -223,8 +225,20 @@ class CortexEngine:
             self._openrouter = None
             logger.warning(f"CORTEX CORE-3 [OPENROUTER] unavailable: {e}")
 
+        # --- CORE 4: NVIDIA NIM (OpenAI-compatible) for payloads + validation ---
+        try:
+            from backend.ai.nvidia import nvidia_client
+            self._nvidia = nvidia_client
+            if self._nvidia.is_available:
+                logger.info("CORTEX CORE-4 [NVIDIA] Payload + validation models initialized.")
+            else:
+                logger.warning("CORTEX CORE-4 [NVIDIA] Dummy key configured; cloud inference disabled.")
+        except Exception as e:
+            self._nvidia = None
+            logger.warning(f"CORTEX CORE-4 [NVIDIA] unavailable: {e}")
+
         logger.info(f"CORTEX CORE-2 [NEURAL] Model: {self.model} | Endpoint: {self.generate_url}")
-        logger.info("CORTEX HYBRID ENGINE: TRI-CORE ACTIVE (GI5 + Ollama + OpenRouter)")
+        logger.info("CORTEX HYBRID ENGINE: ACTIVE (GI5 + Ollama + OpenRouter + NVIDIA)")
 
     # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # OPTIMIZATION: Context Compression + Warm-up + Cache
@@ -246,12 +260,13 @@ class CortexEngine:
         return hashlib.sha256(prompt.encode('utf-8', errors='ignore')).hexdigest()
 
     def _get_cached(self, prompt: str) -> Optional[str]:
-        """Check cache for a previous response. Returns None if miss."""
+        """Check cache for a previous response (O(1) LRU). Returns None if miss."""
         import time
         key = self._cache_key(prompt)
         entry = self._response_cache.get(key)
         if entry and (time.time() - entry["ts"]) < CACHE_TTL:
             self._cache_hits += 1
+            self._response_cache.move_to_end(key)  # O(1) LRU touch
             return entry["result"]
         if entry:
             del self._response_cache[key]  # Expired
@@ -259,14 +274,15 @@ class CortexEngine:
         return None
 
     def _set_cached(self, prompt: str, result: str):
-        """Store a response in the cache."""
+        """Store a response in the O(1) LRU cache."""
         import time
         key = self._cache_key(prompt)
-        # LRU: evict oldest if cache > 200 entries
-        if len(self._response_cache) > 200:
-            oldest_key = min(self._response_cache, key=lambda k: self._response_cache[k]["ts"])
-            del self._response_cache[oldest_key]
+        if key in self._response_cache:
+            self._response_cache.move_to_end(key)
         self._response_cache[key] = {"result": result, "ts": time.time()}
+        # O(1) eviction — pop oldest from front
+        while len(self._response_cache) > self._cache_max_size:
+            self._response_cache.popitem(last=False)
 
     async def warm_up(self):
         """Pre-warm the Ollama model to avoid cold-start latency."""
@@ -399,6 +415,18 @@ class CortexEngine:
                 logger.error(f"CORTEX CORE-2 UNEXPECTED ERROR: {str(e)}")
                 return f"[CORTEX ERROR] {str(e)}"
 
+    async def _call_nvidia_payload_model(self, prompt: str, max_tokens: int = 1024, scan_ctx=None) -> str:
+        """Send a payload-generation prompt to NVIDIA Qwen 2.5 Coder 32B."""
+        if not self._nvidia:
+            return "[NVIDIA OFFLINE] NVIDIA client unavailable."
+        return await self._nvidia.generate_payloads(prompt, max_tokens=max_tokens, scan_ctx=scan_ctx)
+
+    async def _call_nvidia_validation_model(self, prompt: str, max_tokens: int = 4096, scan_ctx=None) -> str:
+        """Send a validation prompt to NVIDIA Nemotron Nano 8B."""
+        if not self._nvidia:
+            return "[NVIDIA OFFLINE] NVIDIA client unavailable."
+        return await self._nvidia.validate_candidate(prompt, max_tokens=max_tokens, scan_ctx=scan_ctx)
+
     def _check_circuit_breaker(self, reason: str):
         """Trip the circuit breaker if failures exceed threshold."""
         if self._consecutive_failures >= self._CIRCUIT_THRESHOLD:
@@ -433,10 +461,12 @@ class CortexEngine:
         if self._session and not self._session.closed:
             await self._session.close()
             logger.info("CORTEX: Base AIOHTTP session safely closed.")
+        if self._nvidia:
+            await self._nvidia.close()
 
     def _is_error(self, result: str) -> bool:
         """Check if an Ollama response is an error."""
-        return result.startswith("[CORTEX")
+        return isinstance(result, str) and result.startswith(("[CORTEX", "[NVIDIA"))
 
     # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # CORE 1: GI5 Deterministic Helpers
@@ -815,7 +845,7 @@ Output ONLY valid JSON. No markdown. No explanations."""
             except Exception:pass
         gi5_count = len(all_payloads)
 
-        # CORE 2: Sigma Payload Forge (Qwen 2.5 Coder 0.5B via Ollama)
+        # CORE 2: Sigma Payload Forge (NVIDIA Qwen 2.5 Coder 32B)
         prompt = f"""You are Sigma, the weapon-smith agent inside the Vulagent Scanner intelligence platform.
 
 Your job is to generate exploit payloads designed to reveal vulnerabilities in APIs.
@@ -868,7 +898,10 @@ RULES
 • include encoding variants
 • avoid duplicates"""
 
-        result = await self._call_ollama(prompt, temperature=0.1, max_tokens=300, scan_ctx=scan_ctx, model_override="qwen2.5-coder:0.5b")
+        result = await self._call_nvidia_payload_model(prompt, max_tokens=1024, scan_ctx=scan_ctx)
+        if self._is_error(result):
+            logger.warning("NVIDIA payload generation unavailable; falling back to local Ollama payload model.")
+            result = await self._call_ollama(prompt, temperature=0.1, max_tokens=300, scan_ctx=scan_ctx, model_override="qwen2.5-coder:0.5b")
         
         # Parse JSON
         if not self._is_error(result):
@@ -893,7 +926,7 @@ RULES
                 seen.add(p)
                 unique.append(p)
 
-        logger.info(f"HYBRID PAYLOAD GEN: {gi5_count} GI5 + {len(unique) - gi5_count} Granite = {len(unique)} total")
+        logger.info(f"HYBRID PAYLOAD GEN: {gi5_count} GI5 + {len(unique) - gi5_count} NVIDIA/Ollama = {len(unique)} total")
         return unique[:15]  # Cap at 15
 
     # ——— P2: BETA — WAF Bypass Mutation (HYBRID) —————————————————————————————————
@@ -1077,9 +1110,13 @@ RULES:
 • No preamble.
 • Output valid JSON only."""
 
-        # SELF-CONSISTENCY VALIDATION
-        result_pass_1 = await self._call_ollama(prompt, temperature=0.1, max_tokens=300, scan_ctx=scan_ctx)
-        result_pass_2 = await self._call_ollama(prompt, temperature=0.1, max_tokens=300, scan_ctx=scan_ctx)
+        # SELF-CONSISTENCY VALIDATION (NVIDIA Nemotron Nano 8B)
+        result_pass_1 = await self._call_nvidia_validation_model(prompt, max_tokens=4096, scan_ctx=scan_ctx)
+        result_pass_2 = await self._call_nvidia_validation_model(prompt, max_tokens=4096, scan_ctx=scan_ctx)
+        if self._is_error(result_pass_1) or self._is_error(result_pass_2):
+            logger.warning("NVIDIA validation unavailable; falling back to local Ollama validation.")
+            result_pass_1 = await self._call_ollama(prompt, temperature=0.1, max_tokens=300, scan_ctx=scan_ctx)
+            result_pass_2 = await self._call_ollama(prompt, temperature=0.1, max_tokens=300, scan_ctx=scan_ctx)
         
         result = result_pass_1
         try:
@@ -1138,7 +1175,9 @@ RULES:
                 verify_prompt = f"""Is there clear evidence of an authorization or logic boundary violation in the following description?
 DESCRIPTION: {self._compress_context(candidate_data.get('description', ''), 500)}
 Answer strictly "yes" or "no"."""
-                verify_result = await self._call_ollama(verify_prompt, temperature=0.0, max_tokens=10, scan_ctx=scan_ctx)
+                verify_result = await self._call_nvidia_validation_model(verify_prompt, max_tokens=10, scan_ctx=scan_ctx)
+                if self._is_error(verify_result):
+                    verify_result = await self._call_ollama(verify_prompt, temperature=0.0, max_tokens=10, scan_ctx=scan_ctx)
                 if "no" in verify_result.lower():
                     # Confidence downgraded by 30%
                     verdict["confidence"] = max(0.0, verdict["confidence"] - 0.3)
@@ -1387,7 +1426,7 @@ TECHNIQUE: name of the technique or NONE"""
                     all_payloads.append(p)
             except Exception:pass
 
-        # CORE 2: Granite creative payloads
+        # CORE 2: NVIDIA creative payloads
         prompt = f"""Generate 5 SQLi payloads.
 TARGET: {self._compress_context(target_url, 100)}
 DB: {db_type}
@@ -1395,7 +1434,9 @@ ERROR: {self._compress_context(error_text, 100) if error_text else 'none'}
 Types: UNION, Error, Boolean-blind, Time-based.
 Output raw payloads only, one per line."""
 
-        result = await self._call_ollama(prompt, temperature=0.3, max_tokens=150)
+        result = await self._call_nvidia_payload_model(prompt, max_tokens=1024)
+        if self._is_error(result):
+            result = await self._call_ollama(prompt, temperature=0.3, max_tokens=150)
         if not self._is_error(result):
             ai_payloads = [line.strip() for line in result.split("\n") if line.strip() and len(line.strip()) > 3]
             all_payloads.extend(ai_payloads)
@@ -1423,7 +1464,7 @@ Output raw payloads only, one per line."""
                     all_vectors.append(p)
             except Exception:pass
 
-        # CORE 2: Granite creative vectors
+        # CORE 2: NVIDIA creative vectors
         prompt = f"""Generate 5 API fuzzing payloads.
 TARGET: {self._compress_context(target_url, 100)}
 CONTENT-TYPE: {content_type or 'unknown'}
@@ -1431,7 +1472,9 @@ STACK: {tech_stack or 'unknown'}
 Types: XSS, SSTI, path traversal, null byte, format string.
 Output raw payloads only, one per line."""
 
-        result = await self._call_ollama(prompt, temperature=0.3, max_tokens=150)
+        result = await self._call_nvidia_payload_model(prompt, max_tokens=1024)
+        if self._is_error(result):
+            result = await self._call_ollama(prompt, temperature=0.3, max_tokens=150)
         if not self._is_error(result):
             ai_vectors = [line.strip() for line in result.split("\n") if line.strip() and len(line.strip()) > 3]
             all_vectors.extend(ai_vectors)

@@ -1,0 +1,868 @@
+[
+  {
+    "url": "http://test-bank.local/api/transfer",
+    "tag": "API"
+  },
+  {
+    "status": "VULN_FOUND",
+    "payload": {
+      "type": "SQLI"
+    }
+  },
+  {
+    "url": "http://test-bank.local/api/transfer",
+    "tag": "API"
+  },
+  {
+    "status": "VULN_FOUND",
+    "payload": {
+      "type": "SQLI"
+    }
+  },
+  {
+    "url": "http://test-bank.local/api/transfer",
+    "tag": "API"
+  },
+  {
+    "status": "VULN_FOUND",
+    "payload": {
+      "type": "SQLI"
+    }
+  },
+  {
+    "status": "VULN_FOUND",
+    "payload": {
+      "type": "SQLI"
+    }
+  },
+  {
+    "status": "VULN_FOUND",
+    "payload": {
+      "type": "SQLI"
+    }
+  },
+  {
+    "url": "http://test-bank.local/api/transfer",
+    "tag": "API"
+  },
+  {
+    "status": "VULN_FOUND",
+    "payload": {
+      "type": "SQLI"
+    }
+  },
+  {
+    "url": "http://test-bank.local/api/transfer",
+    "tag": "API"
+  },
+  {
+    "status": "VULN_FOUND",
+    "payload": {
+      "type": "SQLI"
+    }
+  },
+  {
+    "job_id": "92e9c80a-eb8b-46ff-819e-425979d02f42",
+    "source_agent": "agent_alpha",
+    "status": "VULN_FOUND",
+    "execution_time_ms": 0.0,
+    "data": {
+      "victorious_sequence": [
+        "http://127.0.0.1:8001",
+        "http://127.0.0.1:8001"
+      ]
+    },
+    "vulnerabilities": [
+      {
+        "name": "Workflow Bypass (Direct Access)",
+        "severity": "HIGH",
+        "description": "Accessed final step directly.",
+        "evidence": "Direct Access Successful"
+      }
+    ],
+    "next_step": null
+  },
+  {
+    "url": "http://127.0.0.1:8000/api/v1/payment",
+    "tag": "API",
+    "forensic_analysis": "\n::TITLE:: [Medium] Unknown\n::EVIDENCE:: N/A\n::REMEDIATION:: Review and patch the affected endpoint.\n",
+    "verified": true
+  },
+  {
+    "url": "http://127.0.0.1:8000/api/v1/payment",
+    "tag": "API",
+    "forensic_analysis": "\n::TITLE:: [Medium] Unknown\n::EVIDENCE:: N/A\n::REMEDIATION:: Review and patch the affected endpoint.\n",
+    "verified": true
+  },
+  {
+    "type": "LOGIC_SKIPPER",
+    "url": "http://127.0.0.1:8000/api/v1/payment",
+    "severity": "Medium",
+    "payload": "Logic Flaw"
+  },
+  {
+    "job_id": "512e1576-2205-4f48-a428-48e9ebb8db4c",
+    "source_agent": "agent_alpha",
+    "status": "VULN_FOUND",
+    "execution_time_ms": 0.0,
+    "data": {
+      "victorious_sequence": [
+        "http://testphp.vulnweb.com",
+        "http://testphp.vulnweb.com"
+      ]
+    },
+    "vulnerabilities": [
+      {
+        "name": "Workflow Bypass (Direct Access)",
+        "severity": "HIGH",
+        "description": "Accessed final step directly.",
+        "evidence": "Direct Access Successful"
+      }
+    ],
+    "next_step": null
+  },
+  {
+    "url": "file:///D:/Antigravity%202/API%20Endpoint%20Scanner/vulnerable_sample.html",
+    "tag": "API",
+    "forensic_analysis": "\n::TITLE:: [Medium] Unknown\n::EVIDENCE:: N/A\n::REMEDIATION:: Review and patch the affected endpoint.\n",
+    "verified": true
+  },
+  {
+    "url": "file:///D:/Antigravity%202/API%20Endpoint%20Scanner/vulnerable_sample.html",
+    "tag": "API",
+    "forensic_analysis": "\n::TITLE:: [Medium] Unknown\n::EVIDENCE:: N/A\n::REMEDIATION:: Review and patch the affected endpoint.\n",
+    "verified": true
+  },
+  {
+    "url": "http://localhost:8080/api",
+    "tag": "API"
+  },
+  {
+    "url": "http://localhost:8080/api",
+    "tag": "API"
+  },
+  {
+    "url": "http://localhost:8080/api",
+    "tag": "API"
+  },
+  {
+    "type": "LOGIC_SKIPPER",
+    "url": "http://localhost:8080/api",
+    "severity": "Medium",
+    "payload": "Logic Flaw"
+  },
+  {
+    "type": "LOGIC_SKIPPER",
+    "url": "http://testhtml5.vulnweb.com",
+    "severity": "Medium",
+    "payload": "Logic Flaw"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-0.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-1.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-2.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-3.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-4.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-5.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-6.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-7.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-8.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-9.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-0.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-1.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-2.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-3.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-4.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-5.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-6.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-7.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-8.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-9.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-0.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-1.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-2.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-3.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-4.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-5.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-6.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-7.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-8.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-9.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-0.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-1.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-2.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-3.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-4.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-5.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-6.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-7.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-8.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-9.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-0.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-1.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-2.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-3.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-4.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-5.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-6.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-7.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-8.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "PROMPT_INJECTION",
+    "url": "http://target-9.com",
+    "severity": "High",
+    "data": {
+      "risk_score": 100,
+      "threat_type": "Prompt Injection Signature: ignore previous instructions, Prompt Injection Signature: delete all files",
+      "element_api_id": null
+    },
+    "description": "Sentinel detected Prompt Injection"
+  },
+  {
+    "type": "HIDDEN_TEXT",
+    "url": "http://127.0.0.1:5173/",
+    "severity": "Medium",
+    "data": {
+      "risk_score": 60,
+      "threat_type": "Invisible Content Overlay",
+      "element_api_id": "band7xseb"
+    },
+    "description": "Sentinel detected Hidden Text"
+  },
+  {
+    "type": "HIDDEN_TEXT",
+    "url": "http://localhost:5173/",
+    "severity": "Medium",
+    "data": {
+      "risk_score": 60,
+      "threat_type": "Invisible Content Overlay",
+      "element_api_id": "yqbvamhfb"
+    },
+    "description": "Sentinel detected Hidden Text"
+  },
+  {
+    "type": "LOGIC_SKIPPER",
+    "url": "http://testphp.vulnweb.com/",
+    "severity": "HIGH",
+    "payload": "None",
+    "evidence": "Direct Access Successful"
+  },
+  {
+    "type": "LOGIC_SKIPPER",
+    "url": "http://testphp.vulnweb.com/",
+    "severity": "CRITICAL",
+    "payload": "None",
+    "evidence": "Referer: http://testphp.vulnweb.com/"
+  },
+  {
+    "type": "LOGIC_SKIPPER",
+    "url": "http://testphp.vulnweb.com/",
+    "severity": "HIGH",
+    "payload": "None",
+    "evidence": "Direct Access Successful"
+  },
+  {
+    "type": "LOGIC_SKIPPER",
+    "url": "http://testphp.vulnweb.com/",
+    "severity": "CRITICAL",
+    "payload": "None",
+    "evidence": "Referer: http://testphp.vulnweb.com/"
+  },
+  {
+    "type": "LOGIC_SKIPPER",
+    "url": "http://testphp.vulnweb.com/",
+    "severity": "HIGH",
+    "payload": "None",
+    "evidence": "Direct Access Successful"
+  },
+  {
+    "type": "LOGIC_SKIPPER",
+    "url": "http://testphp.vulnweb.com/",
+    "severity": "CRITICAL",
+    "payload": "None",
+    "evidence": "Referer: http://testphp.vulnweb.com/"
+  },
+  {
+    "type": "HIDDEN_TEXT",
+    "url": "http://localhost:5173/",
+    "severity": "Medium",
+    "data": {
+      "risk_score": 60,
+      "threat_type": "Invisible Content Overlay",
+      "element_api_id": "1e0nfbqyq"
+    },
+    "description": "Sentinel detected Hidden Text"
+  },
+  {
+    "type": "HIDDEN_TEXT",
+    "url": "http://localhost:5173/",
+    "severity": "Medium",
+    "data": {
+      "risk_score": 60,
+      "threat_type": "Invisible Content Overlay",
+      "element_api_id": "swzt1aiek"
+    },
+    "description": "Sentinel detected Hidden Text"
+  },
+  {
+    "type": "HIDDEN_TEXT",
+    "url": "http://localhost:5173/",
+    "severity": "Medium",
+    "data": {
+      "risk_score": 60,
+      "threat_type": "Invisible Content Overlay",
+      "element_api_id": "nid66njpi"
+    },
+    "description": "Sentinel detected Hidden Text"
+  },
+  {
+    "type": "LOGIC_SKIPPER",
+    "url": "http://testphp.vulnweb.com/",
+    "severity": "HIGH",
+    "payload": "None",
+    "evidence": "Direct Access Successful"
+  },
+  {
+    "type": "LOGIC_SKIPPER",
+    "url": "http://testphp.vulnweb.com/",
+    "severity": "CRITICAL",
+    "payload": "None",
+    "evidence": "Referer: http://testphp.vulnweb.com/"
+  },
+  {
+    "type": "LOGIC_SKIPPER",
+    "url": "http://testphp.vulnweb.com/",
+    "severity": "HIGH",
+    "payload": "None",
+    "evidence": "Direct Access Successful"
+  },
+  {
+    "type": "LOGIC_SKIPPER",
+    "url": "http://testphp.vulnweb.com/",
+    "severity": "CRITICAL",
+    "payload": "None",
+    "evidence": "Referer: http://testphp.vulnweb.com/"
+  },
+  {
+    "type": "HIDDEN_TEXT",
+    "url": "http://localhost:5173/",
+    "severity": "Medium",
+    "data": {
+      "risk_score": 60,
+      "threat_type": "Invisible Content Overlay",
+      "element_api_id": "3qwo8aysd"
+    },
+    "description": "Sentinel detected Hidden Text"
+  },
+  {
+    "type": "HIDDEN_TEXT",
+    "url": "http://localhost:5173/",
+    "severity": "Medium",
+    "data": {
+      "risk_score": 60,
+      "threat_type": "Invisible Content Overlay",
+      "element_api_id": "7peyhnq50"
+    },
+    "description": "Sentinel detected Hidden Text"
+  },
+  {
+    "type": "HIDDEN_TEXT",
+    "url": "http://localhost:5173/",
+    "severity": "Medium",
+    "data": {
+      "risk_score": 60,
+      "threat_type": "Invisible Content Overlay",
+      "element_api_id": "h1qgoaa9y"
+    },
+    "description": "Sentinel detected Hidden Text"
+  }
+]

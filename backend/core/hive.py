@@ -22,6 +22,10 @@ class EventType(str, Enum):
     CONTROL_SIGNAL = "CONTROL_SIGNAL"
     LIVE_ATTACK = "LIVE_ATTACK"
     RECON_PACKET = "RECON_PACKET"
+    RECON_COMPLETE = "RECON_COMPLETE"
+    SCHEMA_DISCOVERED = "SCHEMA_DISCOVERED"
+    MOBILE_ENDPOINT_DISCOVERED = "MOBILE_ENDPOINT_DISCOVERED"
+    SCOPE_VIOLATION = "SCOPE_VIOLATION"
     REPORT_READY = "REPORT_READY"
     PATTERN_LEARNED = "PATTERN_LEARNED"
 
@@ -41,6 +45,10 @@ class HiveEvent(BaseModel):
 
 from backend.core.protocol import ModuleConfig, ResultPacket, Vulnerability
 from backend.core.context import ScanContext
+from backend.core.guard_layer import PromptInjectionBlocked, guard_layer
+from backend.core.stdout_watchdog import watch_output
+from backend.core.memory import memory_store
+from backend.core.knowledge_graph import knowledge_graph
 import collections
 
 class EventBus:
@@ -96,6 +104,38 @@ class EventBus:
         Broadcasts an event to all interested agents.
         Routes to purely causal queue isolation by default.
         """
+        try:
+            event.payload = guard_layer.sanitize_payload(event.payload)
+            watched_payload = await watch_output(event.payload)
+            if watched_payload.truncated:
+                event.payload = {"guarded_payload": watched_payload.content}
+        except PromptInjectionBlocked as exc:
+            logging.warning("[EventBus] Blocked unsafe event payload from %s: %s", event.source, exc)
+            event = HiveEvent(
+                type=EventType.LOG,
+                source="guard_layer",
+                scan_id=event.scan_id,
+                payload={"message": "Unsafe prompt-injection-like payload blocked before agent ingestion.", "reason": str(exc)},
+            )
+        except Exception as exc:
+            logging.warning("[EventBus] Guard layer failed open for event %s: %s", event.id, exc)
+
+        if event.type == EventType.JOB_COMPLETED:
+            memory_store.remember_notification(event.scan_id, "Background job completed", event.payload)
+        if event.type in {EventType.RECON_PACKET, EventType.RECON_COMPLETE, EventType.SCHEMA_DISCOVERED}:
+            memory_store.remember_episode(event.scan_id, {
+                "event_type": event.type.value,
+                "source": event.source,
+                "payload": event.payload,
+            })
+            if event.type == EventType.RECON_PACKET:
+                try:
+                    knowledge_graph.ingest_http_record(event.payload, scan_id=event.scan_id)
+                except Exception:
+                    pass
+        if event.type == EventType.VULN_CONFIRMED:
+            knowledge_graph.ingest_finding(event.payload, scan_id=event.scan_id)
+
         if event.scan_id == "GLOBAL":
             if event.type in self.subscribers:
                 for handler in self.subscribers[event.type]:
@@ -107,7 +147,7 @@ class EventBus:
         ctx = self.get_or_create_context(event.scan_id)
         
         # CRITICAL FIX 1: Exact-once deduplication window (FIFO)
-        if hasattr(ctx, "_recent_events_fifo") is False:
+        if not hasattr(ctx, "_recent_events_fifo"):
             ctx._recent_events_fifo = collections.deque(maxlen=1000)
 
         if event.id in ctx._recent_events:

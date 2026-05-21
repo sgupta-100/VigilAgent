@@ -275,9 +275,9 @@ class SigmaAgent(BaseAgent):
         # 1. CONTEXT AWARE GENERATION
         generated_payloads = []
         
-        # Try AI First (Ollama Cortex) with Master Prompt Guardrails
+        # Try AI First (Cortex NVIDIA/Ollama) with Master Prompt Guardrails
         if self.ai and self.ai.enabled:
-             print(f"[{self.name}] >> CORTEX AI: Generating context-aware payloads via Ollama...")
+             print(f"[{self.name}] >> CORTEX AI: Generating context-aware payloads via NVIDIA/Ollama...")
              
              # INJECT: Xytherion Master Prompt (DEFINE -> ROAST -> REFINE)
              master_guard = "MASTER RULE: You must NOT hallucinate endpoints. Only generate payloads valid for the observed API behavior."

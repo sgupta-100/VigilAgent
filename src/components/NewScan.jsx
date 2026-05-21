@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import Navigation from './Navigation';
 import AnimationWrapper from './AnimationWrapper';
 import { motion } from 'framer-motion';
+import { apiUrl } from '../lib/api';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 const NewScan = ({ navigate }) => {
     // ... [STATE] ...
@@ -22,7 +24,7 @@ const NewScan = ({ navigate }) => {
     const localConnectedRef = useRef(false);
     const [requestRate, setRequestRate] = useState(450);
     const [concurrency, setConcurrency] = useState(50);
-    const [estimatedDuration, setEstimatedDuration] = useState(45); // Initial state
+    const [estimatedDuration, setEstimatedDuration] = useState(45);
 
     // [NEW] Interception Filters
     const [interceptionFilters, setInterceptionFilters] = useState([
@@ -40,12 +42,12 @@ const NewScan = ({ navigate }) => {
     const [targets, setTargets] = useState("");
     const [authContent, setAuthContent] = useState("");
     const [scanTitle, setScanTitle] = useState("Ultimate Precision Blueprint");
-    const wsRef = useRef(null);
+    const { subscribe } = useWebSocket();
 
-    const [isExtensionEnabled, setIsExtensionEnabled] = useState(false); // Default off
+    const [isExtensionEnabled, setIsExtensionEnabled] = useState(false);
     const [isLaunching, setIsLaunching] = useState(false);
 
-    // --- WebSocket Connection ---
+    // --- Extension Handshake ---
     useEffect(() => {
         if (!isExtensionEnabled) {
             setIsConnected(false);
@@ -53,7 +55,6 @@ const NewScan = ({ navigate }) => {
             return;
         }
 
-        // 1. Extension Handshake
         const handleMessage = (event) => {
             if (event.data?.type === 'VUL_AGENT_EXTENSION_CONNECTED') {
                 console.log("[FRONTEND] Extension Handshake Success (postMessage)");
@@ -71,74 +72,52 @@ const NewScan = ({ navigate }) => {
         window.addEventListener('message', handleMessage);
         document.addEventListener('ANTIGRAVITY_EXTENSION_HEARTBEAT', handleCustomEvent);
 
-        // Check if already connected via backend state (redundancy)
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            // trigger a check if needed, but usually passive
-        }
-
         return () => {
             window.removeEventListener('message', handleMessage);
             document.removeEventListener('VUL_AGENT_EXTENSION_HEARTBEAT', handleCustomEvent);
         };
     }, [isExtensionEnabled]);
 
-    useEffect(() => {
-        // 2. Backend WebSocket Connection
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/stream?client_type=ui`;
+    const isExtensionEnabledRef = useRef(isExtensionEnabled);
+    useEffect(() => { isExtensionEnabledRef.current = isExtensionEnabled; }, [isExtensionEnabled]);
 
-        wsRef.current = new WebSocket(wsUrl);
-        wsRef.current.onopen = () => console.log("Connected to Backend Stream");
-        wsRef.current.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                if (data.type === 'RECON_PACKET') {
-                    console.log("Recon Data:", data.payload);
-                    // Filter out our own backend traffic
-                    const url = data.payload.url || "";
-                    const isBackendTraffic = url.includes('127.0.0.1:8000') ||
-                        url.includes('localhost:8000') ||
-                        url.includes('127.0.0.1:5173') ||
-                        url.includes('localhost:5173') ||
-                        url.includes('/api/recon') ||
-                        url.includes('/stream');
-                    if (!isBackendTraffic) {
-                        // [NEW] Resolve 'Waiting' Status Forever: If we are seeing traffic, we ARE connected.
-                        if (isExtensionEnabled && !isConnected) {
-                            setIsConnected(true);
-                            localConnectedRef.current = true;
-                        }
-                        // Target list auto-population removed to fix clipboard/scope expansion bug.
-                    }
-                } else if (data.type === 'ATTACK_HIT') {
-                    console.log("Attack Result:", data.payload);
-                } else if (data.type === 'SPY_STATUS') {
-                    console.log("Spy Status Update:", data.payload);
-                    if (isExtensionEnabled) {
-                        // Prioritize local handshake over backend status
-                        if (data.payload.connected) {
-                            setIsConnected(true);
-                        } else if (!localConnectedRef.current) {
-                            setIsConnected(false);
-                        }
+    // --- Shared WebSocket Subscription (replaces per-page connection) ---
+    useEffect(() => {
+        const unsub = subscribe((data) => {
+            if (data.type === 'RECON_PACKET') {
+                console.log("Recon Data:", data.payload);
+                const url = data.payload.url || "";
+                const isBackendTraffic = url.includes('127.0.0.1:8000') ||
+                    url.includes('localhost:8000') ||
+                    url.includes('127.0.0.1:5173') ||
+                    url.includes('localhost:5173') ||
+                    url.includes('/api/recon') ||
+                    url.includes('/stream');
+                if (!isBackendTraffic) {
+                    if (isExtensionEnabledRef.current && !localConnectedRef.current) {
+                        setIsConnected(true);
+                        localConnectedRef.current = true;
                     }
                 }
-            } catch (e) {
-                console.error("WS Parse Error", e);
+            } else if (data.type === 'ATTACK_HIT') {
+                console.log("Attack Result:", data.payload);
+            } else if (data.type === 'SPY_STATUS') {
+                console.log("Spy Status Update:", data.payload);
+                if (isExtensionEnabledRef.current) {
+                    if (data.payload.connected) {
+                        setIsConnected(true);
+                    } else if (!localConnectedRef.current) {
+                        setIsConnected(false);
+                    }
+                }
             }
-        };
+        });
 
-        return () => {
-            if (wsRef.current) wsRef.current.close();
-        };
-    }, [isExtensionEnabled]); // Re-bind listener if enabled state changes to capture it in closure? No, ref is better or just dependency.
-    // Actually, recreating WS on toggle is overkill. Better to keep WS open and just gate the state update.
-    // I'll keep the useEffect dependency simple.
+        return () => { unsub(); };
+    }, [subscribe]);
 
     // Recalculate duration whenever relevant state changes
     useEffect(() => {
-        // Depth scan = 600s (10 mins), Standard scan = 180s (3 mins)
-        // Deep scan enforced: 600s (10 mins)
         const durationSeconds = 600;
         setEstimatedDuration(Math.ceil(durationSeconds / 60));
     }, [activeScanModules]);
@@ -151,7 +130,7 @@ const NewScan = ({ navigate }) => {
     };
 
     const toggleSwitch = (e, index) => {
-        e.stopPropagation(); // prevent triggering parent row click if needed
+        e.stopPropagation();
         const updated = [...activeScanModules];
         updated[index].switchState = !updated[index].switchState;
         setActiveScanModules(updated);
@@ -171,15 +150,28 @@ const NewScan = ({ navigate }) => {
 
     // --- Launch Action ---
     const handleLaunch = async () => {
-        // 1. Prepare Configuration
-        // Default to first line of targets for MVP
         const targetUrl = targets.split('\n')[0].trim();
         if (!targetUrl) {
             alert("Please specify a target URL.");
             return;
         }
 
-        // Build headers
+        // URL validation — prevent invalid targets from reaching backend
+        try {
+            const parsed = new URL(targetUrl);
+            if (!['http:', 'https:'].includes(parsed.protocol)) {
+                alert("Invalid protocol. Only http:// and https:// targets are supported.");
+                return;
+            }
+            if (!parsed.hostname || parsed.hostname.length < 3) {
+                alert("Invalid hostname. Please enter a valid domain or IP address.");
+                return;
+            }
+        } catch {
+            alert("Invalid URL format. Please enter a valid URL (e.g., https://example.com).");
+            return;
+        }
+
         const headers = {
             "Content-Type": "application/json",
             "User-Agent": "VulagentScanner/4.0"
@@ -191,24 +183,21 @@ const NewScan = ({ navigate }) => {
         }
 
         const payload = {
-            target_url: targetUrl, // MATCH BACKEND SCHEMA
+            target_url: targetUrl,
             method: "POST",
             headers: headers,
             velocity: parseInt(concurrency, 10),
-            body: "", // Ensure body field exists
-            // [NEW] Configuration
+            body: "",
             modules: activeScanModules.filter(m => m.selected).map(m => m.name),
             filters: interceptionFilters.filter(f => f.selected).map(f => f.name),
-            duration: 600 // Deep scan natively enforced
+            duration: 600
         };
 
         setIsLaunching(true);
-        const backendHost = '127.0.0.1:8000';
 
         try {
             console.log("Launching scan with payload:", payload);
-            // DIRECT LINK TO CORTEX ORCHESTRATOR
-            const response = await fetch(`http://${backendHost}/api/attack/fire`, {
+            const response = await fetch(apiUrl('/api/attack/fire'), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload)
@@ -223,7 +212,7 @@ const NewScan = ({ navigate }) => {
             }
 
             console.log("Scan launched with ID:", json.scan_id);
-            // Race Condition Fix: Wait 1s for backend to propagate state to dashboard/scans endpoint
+            // Race Condition Fix: Wait 1s for backend to propagate state
             await new Promise(resolve => setTimeout(resolve, 1000));
             navigate('scans');
         } catch (err) {
@@ -245,7 +234,7 @@ const NewScan = ({ navigate }) => {
 
                 <Navigation navigate={navigate} activePage="scans" />
 
-                {/* Main Content Wrapper - Aligned with Navigation */}
+                {/* Main Content Wrapper */}
                 <div className="flex-grow mx-auto max-w-7xl px-6 lg:px-8 w-full">
                     <div className="my-12 flex flex-wrap items-center justify-between gap-6">
                         <div>
@@ -253,7 +242,6 @@ const NewScan = ({ navigate }) => {
                             <p className="mt-2 text-base text-gray-300">Configure target scope, modules, and performance parameters for a new security assessment.</p>
                         </div>
                         <div className="flex items-center gap-4">
-                            {/* Reports button removed to prevent ghost clicks from previous page */}
                             <motion.button
                                 whileHover={{ scale: 1.05 }}
                                 whileTap={{ scale: 0.95 }}
@@ -295,7 +283,6 @@ const NewScan = ({ navigate }) => {
                                             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-black/20"><span className="material-symbols-outlined text-gray-400">target</span></div>
                                             <h3 className="text-lg font-semibold">Target Scope</h3>
                                         </div>
-                                        {/* Import button removed as requested */}
                                     </div>
                                     <textarea
                                         className="relative z-10 block w-full rounded-lg border-0 bg-[#3E425E]/70 p-3 text-white placeholder-gray-400 focus:ring-2 focus:ring-[#9b61ff]"
@@ -308,14 +295,10 @@ const NewScan = ({ navigate }) => {
                                         <span className="rounded-md bg-[#3E425E]/70 px-2 py-1 text-xs font-medium">{targets.split('\n').filter(t => t.trim()).length} targets defined</span>
                                     </div>
                                 </div>
-
-
                             </div>
                             <div className="grid grid-cols-1 gap-8 md:grid-cols-2">
                                 <div className="space-y-4">
                                     <h4 className="text-xl font-semibold">Interception Filters</h4>
-                                    {/* Filters Checks */}
-                                    {/* Filters Checks */}
                                     <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2">
                                         {interceptionFilters.map((item, i) => (
                                             <div key={i} className="glassmorphism-card flex items-start gap-4 rounded-xl p-4">
@@ -337,8 +320,6 @@ const NewScan = ({ navigate }) => {
 
                                 <div className="space-y-4">
                                     <h4 className="text-xl font-semibold">Logic Attack Vectors</h4>
-                                    {/* Modules Checks */}
-                                    {/* Modules Checks */}
                                     <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2">
                                         {activeScanModules.map((item, i) => (
                                             <div key={i} className="glassmorphism-card flex items-start gap-4 rounded-xl p-4">
@@ -353,7 +334,6 @@ const NewScan = ({ navigate }) => {
                                                         <h5 className="font-semibold">{item.name}</h5>
                                                         {item.hasSwitch && (
                                                             <div className="relative inline-block w-8 h-4 align-middle select-none transition duration-200 ease-in ml-2">
-                                                                {/* Functional Toggle Switch */}
                                                                 <div
                                                                     onClick={(e) => toggleSwitch(e, i)}
                                                                     className={`w-8 h-4 rounded-full cursor-pointer transition-colors duration-300 ${item.switchState ? 'bg-[#8B5CF6]' : 'bg-gray-600'}`}
@@ -378,9 +358,7 @@ const NewScan = ({ navigate }) => {
                                         <h3 className="text-lg font-semibold">Interception Source</h3>
                                     </div>
                                     <div className="flex items-center gap-4">
-                                        <div
-                                            className="flex flex-1 items-center justify-between rounded-lg bg-[#3E425E]/70 px-4 py-3 cursor-default"
-                                        >
+                                        <div className="flex flex-1 items-center justify-between rounded-lg bg-[#3E425E]/70 px-4 py-3 cursor-default">
                                             <div className="flex items-center gap-3">
                                                 <div className="relative inline-block w-10 h-6 align-middle select-none transition duration-200 ease-in">
                                                     <div
@@ -414,25 +392,11 @@ const NewScan = ({ navigate }) => {
                                 <div className="space-y-6">
                                     <div className="space-y-2">
                                         <div className="flex justify-between text-sm"><span>Request Rate</span> <span className="rounded-md bg-[#3E425E]/70 px-2 py-0.5 text-xs font-medium">{requestRate} req/s</span></div>
-                                        <input
-                                            className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-[#3E425E]/70 accent-[#9b61ff]"
-                                            max="1000"
-                                            min="0"
-                                            type="range"
-                                            value={requestRate}
-                                            onChange={(e) => setRequestRate(e.target.value)}
-                                        />
+                                        <input className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-[#3E425E]/70 accent-[#9b61ff]" max="1000" min="0" type="range" value={requestRate} onChange={(e) => setRequestRate(e.target.value)} />
                                     </div>
                                     <div className="space-y-2">
                                         <div className="flex justify-between text-sm"><span>Concurrency</span> <span className="rounded-md bg-[#3E425E]/70 px-2 py-0.5 text-xs font-medium">{concurrency} threads</span></div>
-                                        <input
-                                            className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-[#3E425E]/70 accent-[#9b61ff]"
-                                            max="100"
-                                            min="1"
-                                            type="range"
-                                            value={concurrency}
-                                            onChange={(e) => setConcurrency(e.target.value)}
-                                        />
+                                        <input className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-[#3E425E]/70 accent-[#9b61ff]" max="100" min="1" type="range" value={concurrency} onChange={(e) => setConcurrency(e.target.value)} />
                                     </div>
                                 </div>
                             </div>
