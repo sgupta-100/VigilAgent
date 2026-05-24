@@ -151,6 +151,10 @@ class GammaAgent(BaseAgent):
         """
         payload = event.payload
         url = payload.get('url', 'Unknown')
+        ctx = getattr(self.bus, "scan_contexts", {}).get(event.scan_id)
+        if ctx and hasattr(ctx, "transcript_text"):
+            payload = dict(payload)
+            payload["transcript_tail"] = ctx.transcript_text(tail=40)
         
         print(f"[{self.name}] Auditing Candidate Exploit on {url}")
         

@@ -17,6 +17,7 @@ from typing import Any
 from backend.agents.alpha_v6.models import stable_id
 from backend.core.config import settings
 from backend.core.database import db_manager
+from backend.core.queue import command_lane
 
 logger = logging.getLogger("alpha.interactsh")
 
@@ -61,12 +62,13 @@ class InteractshAdapter:
 
         # Start the client process
         try:
-            proc = await asyncio.create_subprocess_exec(
-                client_path, "-json", "-poll-interval", "5",
-                "-o", str(self.interaction_log),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            async with command_lane.slot():
+                proc = await asyncio.create_subprocess_exec(
+                    client_path, "-json", "-poll-interval", "5",
+                    "-o", str(self.interaction_log),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
             # Read the first line to get the URL
             first_line = await asyncio.wait_for(
                 proc.stdout.readline(), timeout=15)

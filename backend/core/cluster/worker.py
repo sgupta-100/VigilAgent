@@ -115,6 +115,9 @@ class WorkerNode:
                 interactions = []
                 from backend.api.socket_manager import publish_request_event
 
+                from backend.core.content_boundary import content_boundary
+                from backend.core.proxy import network_interceptor
+
                 async with aiohttp.ClientSession() as session:
                     for t in targets:
                         await publish_request_event({
@@ -128,23 +131,27 @@ class WorkerNode:
 
                         start_time = datetime.now()
                         try:
-                            async with session.request(t.method, t.url, json=t.payload, headers=t.headers, timeout=10) as resp:
-                                text = await resp.text()
-                                watched = await watch_output(text)
-                                text = watched.content
-                                latency = int((datetime.now() - start_time).total_seconds() * 1000)
-                                interactions.append((t, text))
+                            response = await network_interceptor.fetch(
+                                t.method, t.url, session=session, json=t.payload, headers=t.headers, timeout=10
+                            )
+                            text = content_boundary.wrap_http_response(
+                                response.status, response.headers, response.body, response.url
+                            )
+                            watched = await watch_output(text)
+                            text = watched.content
+                            latency = response.elapsed_ms
+                            interactions.append((t, text))
 
-                                await publish_request_event({
-                                    "timestamp": datetime.now().strftime("%H:%M:%S"),
-                                    "method": t.method,
-                                    "endpoint": t.url,
-                                    "payload": str(t.payload)[:50],
-                                    "status": resp.status,
-                                    "latency": latency,
-                                    "agent": self.id,
-                                    "result": "OK" if resp.status < 400 else "ERROR"
-                                }, scan_id=scan_id)
+                            await publish_request_event({
+                                "timestamp": datetime.now().strftime("%H:%M:%S"),
+                                "method": t.method,
+                                "endpoint": t.url,
+                                "payload": str(t.payload)[:50],
+                                "status": response.status,
+                                "latency": latency,
+                                "agent": self.id,
+                                "result": "OK" if response.status < 400 else "ERROR"
+                            }, scan_id=scan_id)
                         except Exception as e:
                             interactions.append((t, f"Error: {str(e)}"))
 

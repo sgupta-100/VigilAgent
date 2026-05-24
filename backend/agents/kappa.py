@@ -8,6 +8,7 @@ import time as _time
 from backend.core.hive import BaseAgent, EventType, HiveEvent
 from backend.core.protocol import JobPacket, ResultPacket, AgentID
 from backend.core.memory import memory_store, cosine_similarity
+from backend.core.sandbox import TempWorkspace
 
 class KappaAgent(BaseAgent):
     """
@@ -15,7 +16,7 @@ class KappaAgent(BaseAgent):
     Role: Knowledge & Memory.
     Capabilities:
     - Persistent Vector Memory for exploit history.
-    - AI-Driven Semantic Similarity Search.
+    - AI-Driven Semantic Similarity Search (via Gemini text-embedding-004).
     - Anomaly suppression via truth kernel.
     """
     def __init__(self, bus):
@@ -23,7 +24,7 @@ class KappaAgent(BaseAgent):
         base_dir = os.getcwd()
         self.memory_file = os.path.join(base_dir, "brain", "exploit_vectors.json")
         
-        # Initialize Cortex AI (Local Ollama)
+        # Initialize Cortex AI
         try:
             from backend.ai.cortex import CortexEngine, get_cortex_engine
             self.truth_kernel = get_cortex_engine()
@@ -43,23 +44,17 @@ class KappaAgent(BaseAgent):
         self.bus.subscribe(EventType.VULN_CONFIRMED, self.archive_victory)
 
     async def _get_embedding(self, text: str) -> list[float]:
-        """Generate vector embedding using Ollama."""
+        """Generate vector embedding using Gemini text-embedding-004."""
         if self._embeddings_disabled: return []
-        ollama_url = getattr(self.truth_kernel, 'ollama_url', "http://localhost:11434")
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(f"{ollama_url}/api/embeddings", json={
-                    "model": "nomic-embed-text", 
-                    "prompt": text
-                }, timeout=30) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data.get("embedding", [])
-                    elif resp.status == 404:
-                        self._embeddings_disabled = True
-                        return []
-                    else:
-                        print(f"[{self.name}] Embedding status error: {resp.status}")
+            from backend.ai.gemini import gemini_client
+            if not gemini_client.is_available:
+                self._embeddings_disabled = True
+                return []
+            embedding = await gemini_client.generate_embedding(text)
+            if not embedding:
+                self._embeddings_disabled = True
+            return embedding
         except Exception as e:
             self._embeddings_disabled = True
         return []
@@ -142,15 +137,18 @@ class KappaAgent(BaseAgent):
         if semantic_hits:
             return semantic_hits
 
-        with open(self.memory_file, "r") as f:
-            data = json.load(f)
+        async with TempWorkspace(prefix="kappa-recall") as workspace:
+            workspace.write_file("query.txt", query)
+            with open(self.memory_file, "r") as f:
+                data = json.load(f)
+            workspace.write_file("memory_record_count.txt", str(len(data)))
 
-        scored_records = []
-        for rec in data:
-            rec_vec = rec.get("vector", [])
-            if rec_vec:
-                sim = self._cosine_similarity(query_vec, rec_vec)
-                scored_records.append((sim, rec))
+            scored_records = []
+            for rec in data:
+                rec_vec = rec.get("vector", [])
+                if rec_vec:
+                    sim = self._cosine_similarity(query_vec, rec_vec)
+                    scored_records.append((sim, rec))
 
         scored_records.sort(key=lambda x: x[0], reverse=True)
         return [r for sim, r in scored_records[:top_k] if sim > 0.3]

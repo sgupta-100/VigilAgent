@@ -10,11 +10,12 @@ import aiohttp
 import time
 from datetime import datetime
 from backend.core.graph_engine import graph_engine
+from backend.core.content_boundary import content_boundary
+from backend.core.proxy import network_interceptor
 from backend.api.socket_manager import publish_request_event
 
 # Import Arsenals
 from backend.modules.tech.sqli import SQLInjectionProbe
-from backend.modules.tech.fuzzer import APIFuzzer
 from backend.modules.tech.jwt import JWTTokenCracker
 from backend.modules.tech.auth_bypass import AuthBypassTester
 from backend.modules.logic.tycoon import TheTycoon
@@ -50,7 +51,6 @@ class SigmaAgent(BaseAgent):
 
         self.arsenal = {
             "tech_sqli": SQLInjectionProbe(),
-            "tech_fuzzer": APIFuzzer(),
             "tech_jwt": JWTTokenCracker(),
             "tech_auth_bypass": AuthBypassTester(),
             "logic_tycoon": TheTycoon(),
@@ -117,29 +117,33 @@ class SigmaAgent(BaseAgent):
             if self.hybrid_token:
                  target.headers["Authorization"] = f"Bearer {self.hybrid_token}"
                 
-            async with self._session.request(target.method, target.url, headers=target.headers, **kwargs) as resp:
-                start_t = time.time()
-                chunks = []
-                async for chunk in resp.content.iter_chunked(1024 * 64):
-                    chunks.append(chunk)
-                    if sum(len(c) for c in chunks) > 5 * 1024 * 1024:
-                        break
-                text = b"".join(chunks).decode("utf-8", errors="replace")
-                latency = int((time.time() - start_t) * 1000)
-                
-                # [V7] Publish real-time telemetry for Sigma interactions
-                await publish_request_event({
-                    "timestamp": datetime.now().strftime("%H:%M:%S"),
-                    "method": target.method,
-                    "endpoint": target.url[-40:] if len(target.url) > 40 else target.url,
-                    "payload": str(target.payload)[:25],
-                    "status": resp.status,
-                    "latency": latency,
-                    "agent": "sigma_orchestrator",
-                    "result": "OK" if resp.status < 400 else "ERROR"
-                }, scan_id=scan_id)
-                
-                return target, text
+            response = await network_interceptor.fetch(
+                target.method,
+                target.url,
+                session=self._session,
+                headers=target.headers,
+                timeout=10,
+                **kwargs,
+            )
+            text = response.body[:5 * 1024 * 1024]
+            latency = response.elapsed_ms
+
+            # [V7] Publish real-time telemetry for Sigma interactions
+            await publish_request_event({
+                "timestamp": datetime.now().strftime("%H:%M:%S"),
+                "method": target.method,
+                "endpoint": target.url[-40:] if len(target.url) > 40 else target.url,
+                "payload": str(target.payload)[:25],
+                "status": response.status,
+                "latency": latency,
+                "agent": "sigma_orchestrator",
+                "result": "OK" if response.status < 400 else "ERROR"
+            }, scan_id=scan_id)
+
+            safe_text = content_boundary.wrap_http_response(
+                response.status, response.headers, text, response.url
+            )
+            return target, safe_text
         except Exception as e:
             return target, ""
 
@@ -207,34 +211,30 @@ class SigmaAgent(BaseAgent):
             print(f"[{self.name}] [EXECUTE] Dispatching {len(targets)} asynchronous network tasks...")
             
             # PERFORMANCE CONTROL: Concurrency & Rate Limiting (Phase 2)
-            concurrency = packet.config.params.get("concurrency", 50)
             rps = packet.config.params.get("rps", 100)
             
             # 1/rps = delay between starts to maintain ceiling
             rate_limit_delay = 1.0 / rps if rps > 0 else 0
             
-            semaphore = asyncio.Semaphore(concurrency)
-            
-            async def broadcast_fetch_with_limits(t):
-                async with semaphore:
-                    await self.bus.publish(HiveEvent(
-                        type=EventType.LIVE_ATTACK,
-                        source=self.name,
-                        scan_id=event.scan_id,
-                        payload={
-                            "url": t.url,
-                            "arsenal": module_id,
-                            "action": "Injecting mission-governed payload",
-                            "payload": str(t.payload)[:100] + ("..." if len(str(t.payload)) > 100 else "")
-                        }
-                    ))
-                    res = await self._fetch(t, scan_id=event.scan_id)
-                    # Enforce RPS gap
-                    if rate_limit_delay > 0:
-                        await asyncio.sleep(rate_limit_delay)
-                    return res
+            async def lane_fetch(t):
+                await self.bus.publish(HiveEvent(
+                    type=EventType.LIVE_ATTACK,
+                    source=self.name,
+                    scan_id=event.scan_id,
+                    payload={
+                        "url": t.url,
+                        "arsenal": module_id,
+                        "action": "Injecting mission-governed payload",
+                        "payload": str(t.payload)[:100] + ("..." if len(str(t.payload)) > 100 else "")
+                    }
+                ))
+                res = await self._fetch(t, scan_id=event.scan_id)
+                # Enforce RPS gap
+                if rate_limit_delay > 0:
+                    await asyncio.sleep(rate_limit_delay)
+                return res
 
-            results = await asyncio.gather(*[broadcast_fetch_with_limits(t) for t in targets])
+            results = await asyncio.gather(*[lane_fetch(t) for t in targets])
 
             
             # 3. OBSERVE: Analyze interactions
@@ -288,7 +288,8 @@ class SigmaAgent(BaseAgent):
                  ai_payloads = await self.ai.generate_attack_payloads(
                      target_url=packet.target.url,
                      attack_types=["XSS", "SQLi", "SSTI", "Path Traversal"],
-                     contextual_notes=master_guard
+                     contextual_notes=master_guard,
+                     scan_ctx=getattr(self.bus, "scan_contexts", {}).get(event.scan_id)
                  )
                  if ai_payloads:
                      generated_payloads.extend(ai_payloads)

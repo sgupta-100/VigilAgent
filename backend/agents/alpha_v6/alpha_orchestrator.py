@@ -416,13 +416,10 @@ class AlphaOrchestrator:
         parsed = urlparse(target_url if "://" in target_url else f"https://{target_url}")
         base_url = f"{parsed.scheme or 'https'}://{parsed.netloc or parsed.path}".rstrip("/")
         services: list[HTTPServiceFinding] = []
-        semaphore = asyncio.Semaphore(5)
-
         async def probe(path: str) -> None:
             url = normalize_url(urljoin(base_url + "/", path.lstrip("/")))
             try:
-                async with semaphore:
-                    record = await http_client.request("GET", url, scan_id=scan_id, timeout=10)
+                record = await http_client.request("GET", url, scan_id=scan_id, timeout=10)
                 headers = {str(k): str(v) for k, v in record.response_headers.items()}
                 services.append(HTTPServiceFinding(
                     url=url,

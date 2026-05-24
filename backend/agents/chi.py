@@ -95,6 +95,10 @@ class AgentChi(BaseAgent):
         
         # [NEW] Token Extraction Pipeline
         event_data = packet.target.payload or {}
+        ctx = getattr(self.bus, "scan_contexts", {}).get(event.scan_id)
+        if ctx and hasattr(ctx, "transcript_text"):
+            event_data = dict(event_data)
+            event_data["chronological_transcript_tail"] = ctx.transcript_text(tail=60)
         self._extract_and_store_tokens(event_data, packet.target.url)
 
         verdict = await self.judge_intent(event_data, packet.target.url)

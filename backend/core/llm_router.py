@@ -9,25 +9,32 @@ class ModelTier(str, Enum):
     LOW = "low"
 
 
+# ─── Agent-to-Tier Mapping ───────────────────────────────────────────────────
+# HIGH = Strategic reasoning (OpenRouter / GPT OSS 20B)
+# MID  = Tactical execution (Gemini 2.5 Flash)
+# LOW  = Fast/lightweight ops (Gemini 2.5 Flash)
 AGENT_TIERS = {
     "orchestrator": ModelTier.HIGH,
     "alpha": ModelTier.LOW,
-    "beta": ModelTier.HIGH,
+    "beta": ModelTier.MID,
     "gamma": ModelTier.MID,
     "sigma": ModelTier.MID,
     "omega": ModelTier.HIGH,
     "kappa": ModelTier.LOW,
     "zeta": ModelTier.MID,
-    "reporter": ModelTier.MID,
+    "reporter": ModelTier.HIGH,
     "recon": ModelTier.LOW,
     "exploit": ModelTier.HIGH,
     "analyst": ModelTier.HIGH,
 }
 
+# ─── Dual-LLM Tier Models ────────────────────────────────────────────────────
+# Provider 1: OpenRouter (GPT OSS 20B) — deep reasoning, arbitration, reporting
+# Provider 2: Gemini API — fast execution, payloads, validation, embeddings
 TIER_MODELS = {
-    ModelTier.HIGH: ["openai/gpt-5.5", "gemini/gemini-2.5-pro", "anthropic/claude-opus-4-7"],
-    ModelTier.MID: ["openai/gpt-5.4", "gemini/gemini-2.5-flash", "anthropic/claude-sonnet-4-6"],
-    ModelTier.LOW: ["openai/gpt-5-nano", "gemini/gemini-2.5-flash-lite", "anthropic/claude-haiku-4-5"],
+    ModelTier.HIGH: ["openrouter/gpt-oss-20b", "gemini/gemini-2.5-flash"],
+    ModelTier.MID: ["gemini/gemini-2.5-flash", "openrouter/gpt-oss-20b"],
+    ModelTier.LOW: ["gemini/gemini-2.5-flash"],
 }
 
 AGENT_TEMPERATURES = {

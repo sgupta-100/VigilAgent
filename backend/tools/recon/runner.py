@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.core.database import db_manager
+from backend.core.queue import ProcessRunner, command_lane
 from backend.core.stdout_watchdog import watch_output
 from backend.tools.recon.commands import ReconCommand
 from backend.tools.recon.guardrails import validate_command, validate_output_path
@@ -90,31 +91,29 @@ class ReconCommandRunner:
 
         started = time.time()
         try:
-            # 6. Create subprocess with proper isolation
-            proc = await asyncio.create_subprocess_exec(
-                *command.argv,
-                cwd=str(command.cwd) if command.cwd else None,
-                stdin=asyncio.subprocess.PIPE if command.stdin else None,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            # 6. Execute through the global CommandLane and ProcessRunner.
+            async with command_lane.slot():
+                proc_result = await ProcessRunner.run_exec(
+                    command.argv,
+                    cwd=command.cwd,
+                    stdin=command.stdin,
+                    no_output_timeout_ms=min(command.timeout_seconds * 1000, 30_000),
+                    max_runtime_ms=command.timeout_seconds * 1000,
+                )
+            if proc_result.timed_out:
+                command_lane.total_timed_out += 1
+                raise asyncio.TimeoutError()
+            stdout = proc_result.stdout
+            stderr = proc_result.stderr
 
-            # 7. Execute with timeout
-            stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(
-                    command.stdin.encode("utf-8") if command.stdin else None),
-                timeout=command.timeout_seconds)
-
-            stdout = stdout_b.decode("utf-8", errors="replace")
-            stderr = stderr_b.decode("utf-8", errors="replace")
-
-            # 8. Process and store output
+            # 7. Process and store output
             watched = await watch_output(stdout, max_bytes=10_000_000)
             command.output_path.write_text(
-                watched.content, encoding="utf-8", errors="replace")
+                watched.content, encoding="utf-8", errors="replace"
+            )
 
             sha256, size = _digest(command.output_path)
-            exit_code = proc.returncode or 0
+            exit_code = proc_result.exit_code or 0
             status = "finished" if exit_code == 0 else "failed"
             duration_ms = int((time.time() - started) * 1000)
 

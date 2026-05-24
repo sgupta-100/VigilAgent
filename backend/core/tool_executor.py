@@ -15,6 +15,11 @@ from backend.core.stdout_watchdog import watch_output
 from backend.core.telemetry import telemetry
 from backend.core.tool_registry import ToolDefinition, tool_registry
 from backend.core.tool_types import BarrierException
+from backend.core.queue import command_lane
+from backend.core.content_boundary import content_boundary
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -74,10 +79,18 @@ class ToolExecutor:
                 return ToolExecutionResult(call_id, tool_name, "approval_required", approval_id=ticket.id)
 
             try:
-                raw_result = await self._call(definition, args, scan_id=scan_id, agent=agent)
+                async with command_lane.slot():
+                    raw_result = await self._call(definition, args, scan_id=scan_id, agent=agent)
+                    
                 watched = await watch_output(raw_result) if definition.summarize_result else await watch_output(raw_result, max_bytes=10**9)
                 guard_layer.assert_safe_text(watched.content, output=True)
+                
                 result: Any = watched.content
+                if definition.store_result:
+                    result = content_boundary.wrap_scan_output(tool_name, str(result))
+                    
+                duration_ms = int((time.time() - started) * 1000)
+                logger.info(f"CommandLane telemetry: {command_lane.telemetry}")
                 duration_ms = int((time.time() - started) * 1000)
                 await db_manager.finish_toolcall(
                     call_id=call_id, status="finished", result=result, duration_ms=duration_ms,

@@ -5,6 +5,8 @@ from backend.core.protocol import JobPacket, ResultPacket, AgentID, TaskPriority
 
 from backend.ai.cortex import CortexEngine, get_cortex_engine
 import json
+from backend.core.content_boundary import content_boundary
+from backend.core.proxy import network_interceptor
 
 class BetaAgent(BaseAgent):
     """
@@ -111,7 +113,8 @@ class BetaAgent(BaseAgent):
         print(f"[{self.name}] Intercepted {len(payloads)} payloads from Sigma. Commencing RL Adaptive Execution.")
         try:
             import aiohttp
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async def execute_payload_rl(p, scan_id=None):
                     try:
                         await self.bus.publish(HiveEvent(
@@ -145,7 +148,6 @@ class BetaAgent(BaseAgent):
 
     async def _execute_real_attack(self, url: str, payload_str: str, scan_id: str = None):
         """Execute a real HTTP attack against the target with the given payload."""
-        import aiohttp
         import time
         from datetime import datetime
         from backend.api.socket_manager import publish_request_event
@@ -154,70 +156,69 @@ class BetaAgent(BaseAgent):
         await self.bus.publish(HiveEvent(
             type=EventType.LIVE_ATTACK,
             source=self.name,
+            scan_id=scan_id or "GLOBAL",
             payload={"url": url, "arsenal": "Polyglot Injector", "action": "Injecting Payload", "payload": payload_str[:50]}
         ))
         
         start_t = time.time()
         try:
             target = url + ("&" if "?" in url else "?") + f"test={payload_str}"
-            timeout = aiohttp.ClientTimeout(total=10)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(target) as resp:
-                    text = await resp.text()
-                    status = resp.status
-                    latency = int((time.time() - start_t) * 1000)
-                    
-                    anomaly = False
-                    result = "OK"
-                    text_lower = text.lower()
-                    p_lower = payload_str.lower()
-                    from backend.core.exploit_engine import MultiLayerVerifier
-                    base_status = 200; base_text = ""
-                    try:
-                        async with session.get(url.split("?")[0], timeout=5) as b_resp:
-                            base_status = b_resp.status; base_text = await b_resp.text()
-                    except Exception: pass
-                    
-                    verified, confidence, signals = MultiLayerVerifier.verify(
-                        {"status": base_status, "response": base_text},
-                        {"status": status, "body": text}
-                    )
+            import aiohttp
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                response = await network_interceptor.fetch("GET", target, session=session, timeout=10)
+                text = response.body
+                status = response.status
+                latency = response.elapsed_ms
 
-                    # [NEW] Strict mathematical payload verification
-                    if not verified or signals < 2:
-                        return # Strict Drop
+                anomaly = False
+                result = "OK"
+                from backend.core.exploit_engine import MultiLayerVerifier
+                base_status = 200
+                base_text = ""
+                try:
+                    base_response = await network_interceptor.fetch("GET", url.split("?")[0], session=session, timeout=5)
+                    base_status = base_response.status; base_text = base_response.body
+                except Exception: pass
 
-                    anomaly = True
-                    result = f"EXPLOIT VERIFIED (Signals: {signals})"
-                    
-                    # Publish live telemetry
-                    try:
-                        await publish_request_event({
-                            "timestamp": datetime.now().strftime("%H:%M:%S"),
-                            "method": "GET",
-                            "endpoint": url.split("?")[0][-30:] if len(url) > 30 else url,
-                            "payload": payload_str[:25],
-                            "status": status,
-                            "latency": latency,
-                            "result": result,
-                            "anomaly": anomaly
-                        }, scan_id=scan_id)
-                    except Exception:
-                        pass
-                    
-                    if anomaly:
-                        evidence = f"HTTP {status} with payload '{payload_str[:80]}' triggered anomalous response."
-                        await self.bus.publish(HiveEvent(
-                            type=EventType.VULN_CANDIDATE,
-                            source=self.name,
-                            payload={
-                                "url": url,
-                                "payload": payload_str,
-                                "description": text[:800],
-                                "evidence": evidence
-                            }
-                        ))
-                        print(f"[{self.name}] [HIT] Anomaly detected on {url}: {result}")
+                verified, confidence, signals = MultiLayerVerifier.verify(
+                    {"status": base_status, "response": base_text},
+                    {"status": status, "body": text}
+                )
+
+                # Strict mathematical payload verification.
+                if not verified or signals < 2:
+                    return
+
+                anomaly = True
+                result = f"EXPLOIT VERIFIED (Signals: {signals})"
+
+                try:
+                    await publish_request_event({
+                        "timestamp": datetime.now().strftime("%H:%M:%S"),
+                        "method": "GET",
+                        "endpoint": url.split("?")[0][-30:] if len(url) > 30 else url,
+                        "payload": payload_str[:25],
+                        "status": status,
+                        "latency": latency,
+                        "result": result,
+                        "anomaly": anomaly
+                    }, scan_id=scan_id)
+                except Exception:
+                    pass
+
+                evidence = content_boundary.wrap_http_response(status, response.headers, text, response.url)
+                await self.bus.publish(HiveEvent(
+                    type=EventType.VULN_CANDIDATE,
+                    source=self.name,
+                    scan_id=scan_id or "GLOBAL",
+                    payload={
+                        "url": url,
+                        "payload": payload_str,
+                        "description": evidence[:1200],
+                        "evidence": f"HTTP {status} with payload '{payload_str[:80]}' triggered anomalous response."
+                    }
+                ))
+                print(f"[{self.name}] [HIT] Anomaly detected on {url}: {result}")
         except Exception as e:
             print(f"[{self.name}] [ATTACK ERROR] {e}")
 
@@ -231,92 +232,86 @@ class BetaAgent(BaseAgent):
         try:
             # We assume a GET request with query params for this example, but it scales
             target = url + ("&" if "?" in url else "?") + f"test={p}"
-            async with session.get(target, timeout=10) as resp:
-                text = await resp.text()
-                status = resp.status
-                latency = int((time.time() - start_t) * 1000)
-                
-                reward = 0
-                evidence = ""
-                text_lower = text.lower()
-                anomaly = False
-                result = "OK"
-                p_lower = p.lower()
-                is_malicious_payload = any(k in p_lower for k in ["'", '"', "<", ">", "script", "union", "select", "etc/passwd", "sleep(", "drop "])
-                
-                from backend.core.exploit_engine import MultiLayerVerifier
-                base_status = 200; base_text = ""
+            response = await network_interceptor.fetch("GET", target, session=session, timeout=10)
+            text = response.body
+            status = response.status
+            latency = response.elapsed_ms
+
+            reward = 0
+            evidence = ""
+            anomaly = False
+            result = "OK"
+
+            from backend.core.exploit_engine import MultiLayerVerifier
+            base_status = 200
+            base_text = ""
+            try:
+                base_response = await network_interceptor.fetch("GET", url.split("?")[0], session=session, timeout=5)
+                base_status = base_response.status; base_text = base_response.body
+            except Exception: pass
+
+            verified, conf, signals = MultiLayerVerifier.verify(
+                {"status": base_status, "response": base_text},
+                {"status": status, "body": text}
+            )
+
+            if verified and signals >= 2:
+                reward = 1.0
+                evidence = f"Mathematical verification via Jaccard metrics passed. Confidence: {conf}%. Signals: {signals}"
+                anomaly = True
+                result = "HARD_VERIFIED"
+            else:
+                return 0
+
+            try:
+                await publish_request_event({
+                    "timestamp": datetime.now().strftime("%H:%M:%S"),
+                    "method": "GET",
+                    "endpoint": url.split("?")[0][-30:] if len(url) > 30 else url,
+                    "payload": p[:25],
+                    "status": status,
+                    "latency": latency,
+                    "result": result,
+                    "anomaly": anomaly
+                }, scan_id=scan_id)
+            except Exception:
+                pass
+
+            if reward > 0:
+                safe_response = content_boundary.wrap_http_response(status, response.headers, text, response.url)
                 try:
-                    async with session.get(url.split("?")[0], timeout=5) as b_resp:
-                        base_status = b_resp.status; base_text = await b_resp.text()
-                except Exception: pass
+                    vuln_id = await self.db.report_vulnerability(
+                        scan_id=scan_id or "GLOBAL",
+                        endpoint=url,
+                        vuln_type=result,
+                        severity="HIGH" if reward >= 1 else "MEDIUM",
+                        evidence={"payload": p, "response_excerpt": safe_response[:800], "reward": reward},
+                        validated_by=self.name
+                    )
 
-                verified, conf, signals = MultiLayerVerifier.verify(
-                    {"status": base_status, "response": base_text},
-                    {"status": status, "body": text}
-                )
-
-                # [NEW] Strict mathematical evaluation for RL reward
-                if verified and signals >= 2:
-                    reward = 1.0
-                    evidence = f"Mathematical verification via Jaccard metrics passed. Confidence: {conf}%. Signals: {signals}"
-                    anomaly = True
-                    result = "HARD_VERIFIED"
-                else:
-                    return 0 # Strict Return
-                    
-                # Publish Live Threat Telemetry
-                try:
-                    await publish_request_event({
-                        "timestamp": datetime.now().strftime("%H:%M:%S"),
-                        "method": "GET",
-                        "endpoint": url.split("?")[0][-30:] if len(url) > 30 else url,
-                        "payload": p[:25],
-                        "status": status,
-                        "latency": latency,
-                        "result": result,
-                        "anomaly": anomaly
-                    }, scan_id=scan_id)
-                except Exception:
-                    pass
-                    
-                if reward > 0:
-                    # [NEW] Log Exploit Evidence to Supabase Intelligence Backbone
-                    # We report a 'VULN_CANDIDATE' which Gamma will audit, 
-                    # but we also log the raw exploit interaction for forensic evidence.
-                    try:
-                        # Report to Supabase vulnerabilities (deduplicated)
-                        vuln_id = await self.db.report_vulnerability(
-                            scan_id=scan_id or "GLOBAL",
-                            endpoint=url,
-                            vuln_type=result,
-                            severity="HIGH" if reward >= 1 else "MEDIUM",
-                            evidence={"payload": p, "response_excerpt": text[:500], "reward": reward},
-                            validated_by=self.name
-                        )
-                        
-                        if vuln_id and vuln_id != "CACHED":
-                            await self.db.log_exploit_result(vuln_id, {
-                                "payload": p,
-                                "worker_id": self.name,
-                                "status": "EXPLOITED" if reward >= 1 else "PARTIAL",
-                                "response": text[:1000],
-                                "time_ms": latency
-                            })
-                    except Exception as db_err:
-                        print(f"[{self.name}] DB Logging Error: {db_err}")
-
-                    await self.bus.publish(HiveEvent(
-                        type=EventType.VULN_CANDIDATE,
-                        source=self.name,
-                        payload={
-                            "url": url,
+                    if vuln_id and vuln_id != "CACHED":
+                        await self.db.log_exploit_result(vuln_id, {
                             "payload": p,
-                            "description": text[:800],
-                            "evidence": evidence
-                        }
-                    ))
-                return reward
+                            "worker_id": self.name,
+                            "status": "EXPLOITED" if reward >= 1 else "PARTIAL",
+                            "response": safe_response[:1200],
+                            "time_ms": latency
+                        })
+                except Exception as db_err:
+                    print(f"[{self.name}] DB Logging Error: {db_err}")
+
+                await self.bus.publish(HiveEvent(
+                    type=EventType.VULN_CANDIDATE,
+                    source=self.name,
+                    scan_id=scan_id or "GLOBAL",
+                    payload={
+                        "url": url,
+                        "payload": p,
+                        "description": safe_response[:1200],
+                        "evidence": evidence
+                    }
+                ))
+            return reward
         except Exception as e:
             return 0
 

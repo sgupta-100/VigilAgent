@@ -204,6 +204,8 @@ class GuardLayer:
 
     def sanitize_payload(self, payload: Any, *, max_text_chars: int = 16384) -> Any:
         if isinstance(payload, str):
+            if "<EXTERNAL_UNTRUSTED_CONTENT" in payload and "</EXTERNAL_UNTRUSTED_CONTENT" in payload:
+                return payload if len(payload) <= max_text_chars else payload[:max_text_chars] + "\n[TRUNCATED_BY_GUARD_LAYER]"
             self.assert_safe_text(payload)
             return payload if len(payload) <= max_text_chars else payload[:max_text_chars] + "\n[TRUNCATED_BY_GUARD_LAYER]"
         if isinstance(payload, list):

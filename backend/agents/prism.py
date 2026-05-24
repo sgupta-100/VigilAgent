@@ -12,6 +12,7 @@ from backend.core.hive import BaseAgent, EventType, HiveEvent
 from backend.core.protocol import JobPacket, ResultPacket, AgentID, Vulnerability, TaskPriority
 from backend.ai.cortex import CortexEngine, get_cortex_engine
 from backend.core.config import ConfigManager
+from backend.core.content_boundary import content_boundary
 
 
 class AgentPrism(BaseAgent):
@@ -149,6 +150,11 @@ class AgentPrism(BaseAgent):
             if re.search(pattern, text, re.IGNORECASE):
                 risk_score += 90
                 threats.append(f"Prompt Injection Signature: {pattern}")
+
+        suspicious, reasons = content_boundary.is_suspicious_content(text)
+        if suspicious:
+            risk_score += 90
+            threats.extend(reasons)
 
         # 3. CORTEX AI: Semantic Injection Detection (catches novel attacks)
         if self.ai and self.ai.enabled and len(text) > 10:

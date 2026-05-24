@@ -6,8 +6,10 @@ from typing import Any
 
 import aiohttp
 
+from backend.core.content_boundary import content_boundary
 from backend.core.database import db_manager
 from backend.core.knowledge_graph import knowledge_graph
+from backend.core.proxy import network_interceptor
 from backend.core.scope import ScopePolicy
 from backend.core.stdout_watchdog import watch_output
 from backend.core.tool_types import enforce_state_change_barrier
@@ -86,35 +88,44 @@ class ReplayHTTPClient:
             self.cookie_jar = aiohttp.CookieJar(unsafe=True)
         start = time.time()
         async with aiohttp.ClientSession(cookie_jar=self.cookie_jar) as session:
-            async with session.request(method, url, headers=headers, json=json, data=data, timeout=timeout) as resp:
-                body = await resp.text()
-                watched = await watch_output(body)
-                record = HTTPRecord(
-                    id=self.history.next_id(),
-                    method=method.upper(),
-                    url=url,
-                    request_headers=headers or {},
-                    request_body=json if json is not None else data,
-                    status=resp.status,
-                    response_headers=dict(resp.headers),
-                    response_body=watched.content,
-                    elapsed_ms=int((time.time() - start) * 1000),
-                )
-                self.history.add(record)
-                await db_manager.log_http_exchange(
-                    scan_id=scan_id,
-                    request_id=record.id,
-                    method=record.method,
-                    url=record.url,
-                    request_headers=record.request_headers,
-                    request_body=record.request_body,
-                    status=record.status,
-                    response_headers=record.response_headers,
-                    response_body=record.response_body,
-                    elapsed_ms=record.elapsed_ms,
-                )
-                knowledge_graph.ingest_http_record(record, scan_id=scan_id)
-                return record
+            response = await network_interceptor.fetch(
+                method,
+                url,
+                session=session,
+                headers=headers,
+                json=json,
+                data=data,
+                timeout=timeout,
+            )
+            body = response.body
+            safe_body = content_boundary.wrap_http_response(response.status, response.headers, body, response.url)
+            watched = await watch_output(safe_body)
+            record = HTTPRecord(
+                id=self.history.next_id(),
+                method=method.upper(),
+                url=url,
+                request_headers=headers or {},
+                request_body=json if json is not None else data,
+                status=response.status,
+                response_headers=response.headers,
+                response_body=watched.content,
+                elapsed_ms=response.elapsed_ms,
+            )
+            self.history.add(record)
+            await db_manager.log_http_exchange(
+                scan_id=scan_id,
+                request_id=record.id,
+                method=record.method,
+                url=record.url,
+                request_headers=record.request_headers,
+                request_body=record.request_body,
+                status=record.status,
+                response_headers=record.response_headers,
+                response_body=record.response_body,
+                elapsed_ms=record.elapsed_ms,
+            )
+            knowledge_graph.ingest_http_record(record, scan_id=scan_id)
+            return record
 
     async def replay(self, record_id: str, **overrides: Any) -> HTTPRecord:
         record = self.history.get(record_id)

@@ -3,6 +3,8 @@ import aiohttp
 from backend.core.hive import BaseAgent, EventType, HiveEvent
 from backend.core.protocol import JobPacket, ResultPacket, AgentID, ModuleConfig, TaskTarget
 from backend.core.config import settings
+from backend.core.content_boundary import content_boundary
+from backend.core.proxy import network_interceptor
 from backend.agents.alpha_v6 import AlphaOrchestrator
 
 # Hybrid AI Engine
@@ -107,79 +109,91 @@ class AlphaAgent(BaseAgent):
         
         start_t = time.time()
         try:
-            async with session.get(url, allow_redirects=True) as resp:
-                text = await resp.text()
-                status = resp.status
-                latency = int((time.time() - start_t) * 1000)
-                
-                # Classify the response
-                result = "OK" if status == 200 else f"HTTP {status}"
-                anomaly = False
-                severity = "INFO"
-                
-                if status == 200:
-                    text_lower = text.lower()
-                    # Check for interesting content
-                    if any(k in text_lower for k in ["api", "endpoint", "swagger", "openapi"]):
-                        severity = "MEDIUM"
-                        result = "API DISCOVERED"
-                        anomaly = True
-                    if any(k in text_lower for k in ["password", "secret", "token", "key", "credential"]):
-                        severity = "HIGH"
-                        result = "SENSITIVE DATA"
-                        anomaly = True
-                    if any(k in text_lower for k in ["error", "stack trace", "debug", "exception"]):
-                        severity = "MEDIUM"
-                        result = "INFO LEAK"
-                        anomaly = True
-                
-                # Broadcast RECON_PACKET for dashboard
+            response = await network_interceptor.fetch(
+                "GET",
+                url,
+                session=session,
+                allow_redirects=True,
+                timeout=10,
+            )
+            text = response.body
+            safe_text = content_boundary.wrap_http_response(response.status, response.headers, text, response.url)
+            status = response.status
+            latency = int((time.time() - start_t) * 1000)
+
+            # Classify the response
+            result = "OK" if status == 200 else f"HTTP {status}"
+            anomaly = False
+            severity = "INFO"
+
+            if status == 200:
+                text_lower = text.lower()
+                # Check for interesting content
+                if any(k in text_lower for k in ["api", "endpoint", "swagger", "openapi"]):
+                    severity = "MEDIUM"
+                    result = "API DISCOVERED"
+                    anomaly = True
+                if any(k in text_lower for k in ["password", "secret", "token", "key", "credential"]):
+                    severity = "HIGH"
+                    result = "SENSITIVE DATA"
+                    anomaly = True
+                if any(k in text_lower for k in ["error", "stack trace", "debug", "exception"]):
+                    severity = "MEDIUM"
+                    result = "INFO LEAK"
+                    anomaly = True
+
+            # Broadcast RECON_PACKET for dashboard
+            await self.bus.publish(HiveEvent(
+                type=EventType.RECON_PACKET,
+                source=self.name,
+                scan_id=scan_id or "GLOBAL",
+                payload={
+                    "url": url,
+                    "status": status,
+                    "severity": severity,
+                    "risk_score": {"INFO": 10, "LOW": 25, "MEDIUM": 50, "HIGH": 75, "CRITICAL": 95}.get(severity, 10),
+                    "evidence": safe_text[:1200],
+                }
+            ))
+
+            # Broadcast live attack feed
+            await self.bus.publish(HiveEvent(
+                type=EventType.LIVE_ATTACK,
+                source=self.name,
+                scan_id=scan_id or "GLOBAL",
+                payload={
+                    "url": url,
+                    "arsenal": "Recon Engine",
+                    "action": f"{context}: HTTP {status}",
+                    "payload": f"Response: {len(text)} bytes, {latency}ms"
+                }
+            ))
+
+            # Publish request event for telemetry
+            try:
+                await publish_request_event({
+                    "timestamp": datetime.now().strftime("%H:%M:%S"),
+                    "method": "GET",
+                    "endpoint": url[-40:] if len(url) > 40 else url,
+                    "payload": "RECON",
+                    "status": status,
+                    "latency": latency,
+                    "result": result,
+                    "anomaly": anomaly
+                }, scan_id=scan_id)
+            except Exception:
+                pass
+
+            # If interesting, publish as VULN_CANDIDATE
+            if anomaly:
                 await self.bus.publish(HiveEvent(
-                    type=EventType.RECON_PACKET,
+                    type=EventType.VULN_CANDIDATE,
                     source=self.name,
-                    payload={
-                        "url": url,
-                        "severity": severity,
-                        "risk_score": {"INFO": 10, "LOW": 25, "MEDIUM": 50, "HIGH": 75, "CRITICAL": 95}.get(severity, 10)
-                    }
+                    scan_id=scan_id or "GLOBAL",
+                    payload={"url": url, "tag": "API", "description": safe_text[:800], "status": status}
                 ))
-                
-                # Broadcast live attack feed
-                await self.bus.publish(HiveEvent(
-                    type=EventType.LIVE_ATTACK,
-                    source=self.name,
-                    payload={
-                        "url": url,
-                        "arsenal": "Recon Engine",
-                        "action": f"{context}: HTTP {status}",
-                        "payload": f"Response: {len(text)} bytes, {latency}ms"
-                    }
-                ))
-                
-                # Publish request event for telemetry
-                try:
-                    await publish_request_event({
-                        "timestamp": datetime.now().strftime("%H:%M:%S"),
-                        "method": "GET",
-                        "endpoint": url[-40:] if len(url) > 40 else url,
-                        "payload": "RECON",
-                        "status": status,
-                        "latency": latency,
-                        "result": result,
-                        "anomaly": anomaly
-                    }, scan_id=scan_id)
-                except Exception:
-                    pass
-                
-                # If interesting, publish as VULN_CANDIDATE
-                if anomaly:
-                    await self.bus.publish(HiveEvent(
-                        type=EventType.VULN_CANDIDATE,
-                        source=self.name,
-                        payload={"url": url, "tag": "API", "description": text[:500], "status": status}
-                    ))
-                    
-                return status, text
+
+            return status, text
         except asyncio.TimeoutError:
             return 0, ""
         except Exception as e:

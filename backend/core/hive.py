@@ -145,7 +145,7 @@ class EventBus:
             return
             
         ctx = self.get_or_create_context(event.scan_id)
-        
+
         # CRITICAL FIX 1: Exact-once deduplication window (FIFO)
         if not hasattr(ctx, "_recent_events_fifo"):
             ctx._recent_events_fifo = collections.deque(maxlen=1000)
@@ -162,7 +162,11 @@ class EventBus:
                 oldest = ctx._recent_events_fifo.popleft()
                 ctx._recent_events.discard(oldest)
             except IndexError: pass
-            
+
+        # OpenClaw-style no-blackboard chronology: every scan-local event becomes
+        # a linear transcript block before any agent consumes it.
+        ctx.append_event(event)
+
         # Enqueue for causal execution
         await ctx.event_queue.put(event)
 

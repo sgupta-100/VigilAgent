@@ -83,7 +83,7 @@ class OmegaAgent(BaseAgent):
         }
     }
 
-    def _select_strategy(self, target_url: str, ai_strategy: str = None) -> str:
+    def _select_strategy(self, target_url: str, ai_strategy: str = None, scan_id: str = "GLOBAL") -> str:
         """Selects optimal strategy based on AI recommendation and graph intelligence."""
         
         # 1. If AI gave a valid recommendation, use it
@@ -96,12 +96,22 @@ class OmegaAgent(BaseAgent):
             return "GRAPH_DRIVEN"
 
         # 3. Nash Equilibrium mixed strategy (game-theoretic randomization)
-        return self._generate_mixed_strategy()
+        return self._generate_mixed_strategy(self._defense_pressure(scan_id))
 
-    def _generate_mixed_strategy(self) -> str:
+    def _generate_mixed_strategy(self, defense_pressure: float = 0.0) -> str:
         strategies = ["BLITZKRIEG", "LOW_AND_SLOW", "MULTI_STEP_EXPLOIT", "E_COMMERCE_BLITZ"]
         weights = [0.15, 0.25, 0.40, 0.20]
+        if defense_pressure >= 0.15:
+            weights = [0.05, 0.55, 0.30, 0.10]
         return random.choices(strategies, weights=weights, k=1)[0]
+
+    def _defense_pressure(self, scan_id: str) -> float:
+        ctx = getattr(self.bus, "scan_contexts", {}).get(scan_id)
+        transcript = ctx.transcript_text(tail=120).lower() if ctx and hasattr(ctx, "transcript_text") else ""
+        if not transcript:
+            return 0.0
+        block_markers = transcript.count("403") + transcript.count("429") + transcript.count("blocked")
+        return min(1.0, block_markers / 20.0)
 
     def _build_graph_driven_modules(self, target_url: str) -> list:
         """Queries the attack graph for the highest-confidence next modules."""
@@ -249,7 +259,7 @@ class OmegaAgent(BaseAgent):
             except Exception as e:
                 print(f"[{self.name}] CORTEX strategy failed: {e}")
         
-        strategy_name = self._select_strategy(target_url, ai_strategy)
+        strategy_name = self._select_strategy(target_url, ai_strategy, scan_id)
         profile = self.STRATEGY_PROFILES[strategy_name]
         
         # Update campaign state

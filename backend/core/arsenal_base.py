@@ -60,18 +60,13 @@ class BaseArsenalModule(ABC):
                 return f"Error reading file: {e}"
         else:
             import aiohttp
-            MAX_RESPONSE_SIZE = 5 * 1024 * 1024  # 5MB cap
+            from backend.core.content_boundary import content_boundary
+            from backend.core.proxy import network_interceptor
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout, sock_read=timeout)) as resp:
-                        chunks = []
-                        bytes_read = 0
-                        async for chunk in resp.content.iter_chunked(65536):
-                            bytes_read += len(chunk)
-                            if bytes_read > MAX_RESPONSE_SIZE:
-                                break
-                            chunks.append(chunk)
-                        return b"".join(chunks).decode("utf-8", errors="replace")
+                    response = await network_interceptor.fetch("GET", url, session=session, timeout=timeout)
+                    body = response.body[:5 * 1024 * 1024]
+                    return content_boundary.wrap_http_response(response.status, response.headers, body, response.url)
             except asyncio.TimeoutError:
                 return f"Error: Request timed out after {timeout}s (Possible Tarpit)"
             except Exception as e:

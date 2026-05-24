@@ -1,12 +1,77 @@
+from __future__ import annotations
+
 import asyncio
 import os
 import shlex
+import shutil
 import uuid
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import gettempdir
 
 from backend.core.guard_layer import guard_layer
+from backend.core.queue import command_lane
 from backend.core.stdout_watchdog import watch_output
+
+logger = logging.getLogger(__name__)
+
+temp_workspace_root = Path(os.getenv("ANTIGRAVITY_WORKSPACE_ROOT", Path(gettempdir()) / "antigravity-workspaces"))
+
+class TempWorkspace:
+    """
+    RAII pattern for isolated temporary workspaces.
+    Ensures safe file system I/O and clutter prevention by strictly enforcing
+    cleanup of artifacts when the context manager exits, mirroring OpenClaw's
+    private-temp-workspace.ts.
+    """
+    def __init__(self, prefix: str = "workspace"):
+        self.workspace_id = f"{prefix}-{uuid.uuid4().hex[:12]}"
+        self.path = temp_workspace_root / self.workspace_id
+
+    async def __aenter__(self):
+        # Create isolated directory with 0o700 permissions (only owner can read/write/execute)
+        self.path.mkdir(parents=True, exist_ok=True)
+        self.path.chmod(0o700)
+        logger.debug(f"Created isolated TempWorkspace: {self.path}")
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.path.exists():
+            try:
+                shutil.rmtree(self.path)
+                logger.debug(f"Cleaned up TempWorkspace: {self.path}")
+            except Exception as e:
+                logger.error(f"Failed to clean up TempWorkspace {self.path}: {e}")
+
+    def write_file(self, name: str, content: str | bytes) -> Path:
+        """Writes a file inside the isolated workspace."""
+        file_path = self.path / name
+        # Prevent path traversal outside workspace
+        if not str(file_path.resolve()).startswith(str(self.path.resolve())):
+            raise PermissionError(f"Path traversal attempt: {name}")
+            
+        mode = "wb" if isinstance(content, bytes) else "w"
+        encoding = None if isinstance(content, bytes) else "utf-8"
+        with open(file_path, mode, encoding=encoding) as f:
+            f.write(content)
+        return file_path
+
+    def read_file(self, name: str) -> str | bytes:
+        """Reads a file from the isolated workspace."""
+        file_path = self.path / name
+        if not str(file_path.resolve()).startswith(str(self.path.resolve())):
+            raise PermissionError(f"Path traversal attempt: {name}")
+            
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found in workspace: {name}")
+            
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except UnicodeDecodeError:
+            with open(file_path, "rb") as f:
+                return f.read()
 
 
 @dataclass
@@ -54,12 +119,13 @@ class DockerSandbox:
             "sh", "-lc", command,
         ]
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *docker_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            async with command_lane.slot():
+                proc = await asyncio.create_subprocess_exec(
+                    *docker_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             stdout = stdout_b.decode("utf-8", errors="replace")
             stderr = stderr_b.decode("utf-8", errors="replace")
             watched = await watch_output(stdout)

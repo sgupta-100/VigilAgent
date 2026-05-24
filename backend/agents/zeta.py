@@ -6,6 +6,7 @@ from typing import List, Dict, Any
 from collections import deque
 from backend.core.hive import BaseAgent, EventType, HiveEvent
 from backend.core.protocol import JobPacket
+from backend.core.queue import command_lane
 # Hybrid AI Engine
 from backend.ai.cortex import CortexEngine, get_cortex_engine
 
@@ -36,6 +37,14 @@ class ZetaAgent(BaseAgent):
 
     async def setup(self):
         self.bus.subscribe(EventType.JOB_COMPLETED, self.handle_job_completion)
+        self.bus.subscribe(EventType.RECON_PACKET, self.handle_recon_packet)
+
+    async def handle_recon_packet(self, event: HiveEvent):
+        status = str(event.payload.get("status", event.payload.get("http_status", "")))
+        evidence = str(event.payload.get("evidence", "")).lower()
+        if status in {"403", "429"} or "forbidden" in evidence or "rate limit" in evidence:
+            self.error_window.append(True)
+            self.error_budget_current = max(0, self.error_budget_current - 2)
 
     async def handle_job_completion(self, event: HiveEvent):
         payload = event.payload
@@ -96,6 +105,13 @@ class ZetaAgent(BaseAgent):
             print(f"[{self.name}] ANOMALY DETECTED: {reason}")
             await self.broadcast_signal("THROTTLE", {"level": "CRITICAL", "reason": reason})
             self.error_budget_current -= 10  # Severe penalty for triggering defensive mechanisms
+
+        telemetry = command_lane.telemetry
+        if telemetry["active_count"] >= telemetry["max_concurrent"] or telemetry["total_timed_out"] > 0:
+            await self.broadcast_signal("THROTTLE", {
+                "level": "HIGH",
+                "reason": f"CommandLane pressure active={telemetry['active_count']} timed_out={telemetry['total_timed_out']}"
+            })
 
     def detect_anomalies(self) -> tuple[bool, str]:
         """SOTA: Z-Score Statistical Anomaly Detection for WAF/Firewall triggers."""

@@ -4,6 +4,7 @@ import aiohttp
 import os
 from backend.core.hive import BaseAgent, EventType, HiveEvent
 from backend.core.protocol import JobPacket, ResultPacket, AgentID, TaskTarget
+from backend.core.sandbox import TempWorkspace
 from backend.integrations.pinchtab_client import PinchTabClient
 
 class AgentDelta(BaseAgent):
@@ -84,10 +85,12 @@ class AgentDelta(BaseAgent):
              
     async def execute_pinchtab_flow(self, packet: JobPacket):
         target_url = packet.target.url
-        async with aiohttp.ClientSession() as session:
-            success = await self._pinch_nav(session, target_url)
+        async with TempWorkspace(prefix="delta-pinchtab") as workspace:
+            success = await self._pinch_nav(None, target_url)
             if not success: return
-            dom_data = await self._pinch_text(session)
+            dom_data = await self._pinch_text(None)
+            workspace.write_file("dom_text.txt", dom_data.get("text", ""))
+            workspace.write_file("snapshot.json", str(dom_data.get("snapshot", {})))
             semantic_state = self._semantic_refine(dom_data)
             token = self._extract_token(dom_data.get("text", ""))
             

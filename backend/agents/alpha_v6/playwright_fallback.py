@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.agents.alpha_v6.models import stable_id
+from backend.core.queue import command_lane
 from backend.parsers.recon.base import ParsedEntity
 
 logger = logging.getLogger("alpha.playwright_fallback")
@@ -155,11 +156,10 @@ class PlaywrightFallback:
     async def batch_capture(self, urls: list[str], *,
                              max_concurrent: int = 3) -> list[dict[str, Any]]:
         """Capture multiple pages with concurrency control."""
-        sem = asyncio.Semaphore(max_concurrent)
         results = []
 
         async def _capture(url):
-            async with sem:
+            async with command_lane.slot():
                 return await self.capture_page(url)
 
         tasks = [_capture(u) for u in urls[:30]]
