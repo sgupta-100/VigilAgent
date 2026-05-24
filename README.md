@@ -130,10 +130,14 @@ python -m pytest tests/ -v --tb=short
 ### Development
 - **[Scripts](scripts/)** - Development and maintenance scripts ([README](scripts/README.md))
 - **[Tests](testsprite_tests/)** - Comprehensive test suite ([README](testsprite_tests/README.md))
+- **[Configuration](config/)** - Build and tool configuration files ([README](config/README.md))
 
-### Data & Configuration
-- **[Data Files](data/)** - Runtime data and scan results
+### Data & Reports
+- **[Data Files](data/)** - Runtime data and scan results ([README](data/README.md))
 - **[Configuration](data/config/)** - User configuration files
+- **[Reports](reports/)** - Generated scan reports (~420 PDFs) ([README](reports/README.md))
+- **[Brain](brain/)** - AI memory and knowledge base
+- **[Scan States](scan_states/)** - Scan execution logs and state
 
 ## License
 
