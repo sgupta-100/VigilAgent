@@ -22,6 +22,7 @@ from backend.core.state import stats_db_manager
 from backend.api.endpoints import recon, attack, reports, dashboard, ai, runtime
 from backend.api.endpoints.code_analysis import router as code_analysis_router
 from backend.api.endpoints.data import router as data_router
+from backend.api.endpoints.self_awareness import router as self_awareness_router
 from backend.api import defense
 from backend.core.task_manager import TaskManager
 from backend.core.rate_limiter import start_cleanup_task
@@ -144,6 +145,7 @@ app.include_router(dashboard.router, prefix="/api/dashboard", tags=["Dashboard"]
 app.include_router(ai.router, prefix="/api/ai", tags=["AI"])
 app.include_router(code_analysis_router, prefix="/api", tags=["Code Analysis"])  # PROBLEM 18
 app.include_router(data_router, prefix="/api/data", tags=["Data"])
+app.include_router(self_awareness_router, prefix="/api/self-awareness", tags=["Self-Awareness"])
 
 # Alpha Recon API
 from backend.agents.alpha_v6.api_routes import router as alpha_recon_router

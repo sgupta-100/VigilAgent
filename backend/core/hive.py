@@ -385,7 +385,35 @@ class BaseAgent:
         self._last_task_time = time.time()
         self._task_count = 0
         self._task_success_count = 0
+        
+        # Self-awareness (optional)
+        self.self_awareness = None
+        self._init_self_awareness()
 
+    def _init_self_awareness(self):
+        """Initialize self-awareness if enabled"""
+        try:
+            from backend.core.feature_flags import feature_flags
+            from backend.core.self_awareness_module import SelfAwarenessModule
+            from backend.core.self_awareness_config import SelfAwarenessConfig
+            
+            # Check if self-awareness is enabled for this agent
+            if not feature_flags.is_enabled("self_awareness_enabled"):
+                return
+            
+            agent_flag = f"self_awareness_{self.name.lower()}"
+            if not feature_flags.is_enabled(agent_flag):
+                return
+            
+            # Initialize self-awareness module
+            config = SelfAwarenessConfig()
+            self.self_awareness = SelfAwarenessModule(agent=self, config=config)
+            logging.info(f"[BaseAgent] Self-awareness enabled for {self.name}")
+            
+        except Exception as e:
+            logging.error(f"[BaseAgent] Failed to initialize self-awareness: {e}")
+            self.self_awareness = None
+    
     async def start(self):
         """Wakes the agent up."""
         self.active = True
@@ -396,6 +424,10 @@ class BaseAgent:
         await self.db.initialize()
         
         logging.info(f"🤖 {self.name} is ONLINE. Intelligence backbone synced.")
+        
+        # Initialize self-awareness
+        if self.self_awareness:
+            await self.self_awareness.initialize()
         
         # Subscribe to relevant events
         await self.setup()
@@ -422,6 +454,10 @@ class BaseAgent:
         """Puts the agent to sleep."""
         self.active = False
         self.status = "OFFLINE"
+        
+        # Shutdown self-awareness
+        if self.self_awareness:
+            await self.self_awareness.shutdown()
         
         # Shutdown AI Engine if it exists (CortexEngine holds aiohttp session)
         for attr in ["cortex", "ai"]:

@@ -94,6 +94,111 @@ class LoginRequest(BaseModel):
     totp_code: str = ""
     token: str = ""
 
+
+# --- SELF-AWARENESS HELPER ---
+
+async def _get_self_awareness_summary():
+    """Get self-awareness metrics summary for dashboard"""
+    try:
+        from backend.core.hive import hive
+        
+        summary = {
+            "enabled": False,
+            "agents": [],
+            "total_self_aware": 0,
+            "avg_success_rate": 0.0,
+            "stuck_agents": 0,
+            "recent_decisions": [],
+            "recent_adaptations": []
+        }
+        
+        # Get all agents
+        all_agents = hive.get_all_agents()
+        
+        if not all_agents:
+            return summary
+        
+        total_success_rate = 0.0
+        self_aware_count = 0
+        
+        for agent in all_agents:
+            # Check if agent has self-awareness
+            if not hasattr(agent, 'self_awareness') or not agent.self_awareness:
+                continue
+            
+            self_aware_count += 1
+            summary["enabled"] = True
+            
+            try:
+                # Get performance metrics
+                performance_tracker = agent.self_awareness.performance_tracker
+                metrics = await performance_tracker.get_metrics_summary()
+                
+                # Check stuck state
+                stuck_info = await performance_tracker.detect_stuck_state()
+                
+                # Get proficiency scores
+                capability_assessor = agent.self_awareness.capability_assessor
+                skill_map = await capability_assessor.get_skill_map()
+                
+                agent_summary = {
+                    "agent_id": agent.agent_id,
+                    "success_rate": metrics.get("success_rate", 0.0),
+                    "total_actions": metrics.get("total_actions", 0),
+                    "is_stuck": stuck_info is not None,
+                    "top_skills": dict(sorted(skill_map.items(), key=lambda x: x[1], reverse=True)[:3]) if skill_map else {}
+                }
+                
+                summary["agents"].append(agent_summary)
+                total_success_rate += metrics.get("success_rate", 0.0)
+                
+                if stuck_info:
+                    summary["stuck_agents"] += 1
+                
+                # Get recent decisions (limit to 5 per agent)
+                decision_logger = agent.self_awareness.decision_logger
+                recent_decisions = await decision_logger.query_decisions(
+                    agent_id=agent.agent_id,
+                    limit=5
+                )
+                
+                for decision in recent_decisions:
+                    summary["recent_decisions"].append({
+                        "agent_id": decision.agent_id,
+                        "timestamp": decision.timestamp.isoformat(),
+                        "action_type": decision.action_type,
+                        "confidence": decision.confidence,
+                        "rationale": decision.rationale[:100] + "..." if len(decision.rationale) > 100 else decision.rationale
+                    })
+                
+            except Exception as e:
+                logger.error(f"Error getting self-awareness data for {agent.agent_id}: {e}")
+                continue
+        
+        # Calculate average success rate
+        if self_aware_count > 0:
+            summary["avg_success_rate"] = total_success_rate / self_aware_count
+            summary["total_self_aware"] = self_aware_count
+        
+        # Sort recent decisions by timestamp (most recent first)
+        summary["recent_decisions"].sort(key=lambda x: x["timestamp"], reverse=True)
+        summary["recent_decisions"] = summary["recent_decisions"][:10]  # Limit to 10 most recent
+        
+        return summary
+        
+    except Exception as e:
+        logger.error(f"Error getting self-awareness summary: {e}")
+        return {
+            "enabled": False,
+            "agents": [],
+            "total_self_aware": 0,
+            "avg_success_rate": 0.0,
+            "stuck_agents": 0,
+            "recent_decisions": [],
+            "recent_adaptations": []
+        }
+
+
 # --- ENDPOINTS ---
 
 # --- TC011 Performance Caching ---
@@ -142,6 +247,9 @@ async def get_dashboard_stats(request: Request, authorization: str = Header(None
                 "risk_score": payload.get("data", {}).get("risk_score", 50)
             })
 
+    # Add self-awareness metrics
+    self_awareness_data = await _get_self_awareness_summary()
+    
     _stats_cache = {
         "metrics": {
             "total_scans": len(scans),
@@ -151,7 +259,8 @@ async def get_dashboard_stats(request: Request, authorization: str = Header(None
         },
         "graph_data": stats.get("history", []),
         "recent_activity": recent[:5],
-        "historical_threats": historical_threats[:60]
+        "historical_threats": historical_threats[:60],
+        "self_awareness": self_awareness_data
     }
     _stats_last_updated = time.time()
     return _stats_cache

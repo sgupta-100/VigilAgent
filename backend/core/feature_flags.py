@@ -24,6 +24,20 @@ class FeatureFlags:
     enable_intelligent_routing: bool = False
     enable_unified_knowledge_graph: bool = False
     
+    # Self-awareness features
+    enable_self_awareness: bool = False  # Start disabled
+    enable_self_awareness_alpha: bool = False
+    enable_self_awareness_beta: bool = False
+    enable_self_awareness_gamma: bool = False
+    enable_self_awareness_delta: bool = False
+    enable_self_awareness_chi: bool = False
+    enable_self_awareness_kappa: bool = False
+    enable_self_awareness_lambda: bool = False
+    enable_self_awareness_omega: bool = False
+    enable_self_awareness_prism: bool = False
+    enable_self_awareness_sigma: bool = False
+    enable_self_awareness_zeta: bool = False
+    
     # Rollout percentages (0-100)
     browser_learning_rollout_pct: int = 0
     cross_healing_rollout_pct: int = 0
@@ -54,6 +68,20 @@ class FeatureFlags:
             enable_forensic_learning=cls._get_bool_env("ENABLE_FORENSIC_LEARNING", False),
             enable_intelligent_routing=cls._get_bool_env("ENABLE_INTELLIGENT_ROUTING", False),
             enable_unified_knowledge_graph=cls._get_bool_env("ENABLE_UNIFIED_KNOWLEDGE_GRAPH", False),
+            
+            # Self-awareness features
+            enable_self_awareness=cls._get_bool_env("ENABLE_SELF_AWARENESS", False),
+            enable_self_awareness_alpha=cls._get_bool_env("ENABLE_SELF_AWARENESS_ALPHA", False),
+            enable_self_awareness_beta=cls._get_bool_env("ENABLE_SELF_AWARENESS_BETA", False),
+            enable_self_awareness_gamma=cls._get_bool_env("ENABLE_SELF_AWARENESS_GAMMA", False),
+            enable_self_awareness_delta=cls._get_bool_env("ENABLE_SELF_AWARENESS_DELTA", False),
+            enable_self_awareness_chi=cls._get_bool_env("ENABLE_SELF_AWARENESS_CHI", False),
+            enable_self_awareness_kappa=cls._get_bool_env("ENABLE_SELF_AWARENESS_KAPPA", False),
+            enable_self_awareness_lambda=cls._get_bool_env("ENABLE_SELF_AWARENESS_LAMBDA", False),
+            enable_self_awareness_omega=cls._get_bool_env("ENABLE_SELF_AWARENESS_OMEGA", False),
+            enable_self_awareness_prism=cls._get_bool_env("ENABLE_SELF_AWARENESS_PRISM", False),
+            enable_self_awareness_sigma=cls._get_bool_env("ENABLE_SELF_AWARENESS_SIGMA", False),
+            enable_self_awareness_zeta=cls._get_bool_env("ENABLE_SELF_AWARENESS_ZETA", False),
             
             # Rollout percentages
             browser_learning_rollout_pct=cls._get_int_env("BROWSER_LEARNING_ROLLOUT_PCT", 0),
@@ -136,7 +164,42 @@ class FeatureFlags:
             "forensic_learning": self.enable_forensic_learning,
             "routing": self.enable_intelligent_routing,
             "knowledge_graph": self.enable_unified_knowledge_graph,
+            "self_awareness": self.enable_self_awareness,
         }.get(feature, False)
+    
+    def is_self_awareness_enabled_for_agent(self, agent_name: str) -> bool:
+        """
+        Check if self-awareness is enabled for a specific agent.
+        
+        Args:
+            agent_name: Agent name (e.g., "agent_alpha", "Alpha", "ALPHA")
+            
+        Returns:
+            True if self-awareness is enabled for this agent
+        """
+        # Normalize agent name
+        agent_name_lower = agent_name.lower().replace("agent_", "")
+        
+        # Check global flag first
+        if not self.enable_self_awareness:
+            return False
+        
+        # Check agent-specific flag
+        agent_flag_map = {
+            "alpha": self.enable_self_awareness_alpha,
+            "beta": self.enable_self_awareness_beta,
+            "gamma": self.enable_self_awareness_gamma,
+            "delta": self.enable_self_awareness_delta,
+            "chi": self.enable_self_awareness_chi,
+            "kappa": self.enable_self_awareness_kappa,
+            "lambda": self.enable_self_awareness_lambda,
+            "omega": self.enable_self_awareness_omega,
+            "prism": self.enable_self_awareness_prism,
+            "sigma": self.enable_self_awareness_sigma,
+            "zeta": self.enable_self_awareness_zeta,
+        }
+        
+        return agent_flag_map.get(agent_name_lower, False)
     
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization"""
@@ -147,6 +210,20 @@ class FeatureFlags:
                 "forensic_learning": self.enable_forensic_learning,
                 "intelligent_routing": self.enable_intelligent_routing,
                 "unified_knowledge_graph": self.enable_unified_knowledge_graph,
+            },
+            "self_awareness_features": {
+                "enabled": self.enable_self_awareness,
+                "alpha": self.enable_self_awareness_alpha,
+                "beta": self.enable_self_awareness_beta,
+                "gamma": self.enable_self_awareness_gamma,
+                "delta": self.enable_self_awareness_delta,
+                "chi": self.enable_self_awareness_chi,
+                "kappa": self.enable_self_awareness_kappa,
+                "lambda": self.enable_self_awareness_lambda,
+                "omega": self.enable_self_awareness_omega,
+                "prism": self.enable_self_awareness_prism,
+                "sigma": self.enable_self_awareness_sigma,
+                "zeta": self.enable_self_awareness_zeta,
             },
             "rollout_percentages": {
                 "browser_learning": self.browser_learning_rollout_pct,
