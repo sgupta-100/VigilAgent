@@ -535,6 +535,978 @@ class ContinuousLearningEngine:
             await self.consolidate_patterns()
         
         self._save_metrics()
+    
+    # ------------------------------------------------------------------
+    # Browser-vulnerability learning (deep-system-integration spec, R1.1, R2.1-2.4)
+    # ------------------------------------------------------------------
+    #
+    # Contract (must stay stable — IntegrationCoordinator depends on it):
+    #     async def learn_from_browser_vulnerability(
+    #         vuln_data: Dict[str, Any], scan_id: str
+    #     ) -> bool
+    #
+    # Returns True when a new pattern is recorded (or an existing one is
+    # reinforced); False when the input is a duplicate seen recently.
+    #
+    # Architecture invariants honoured here:
+    #   §11 two-LLM exclusivity   — no LLM calls are made; pattern extraction is
+    #                                purely structural.
+    #   §17 ≥2-signal evidence    — this method does NOT re-verify the vuln.
+    #                                It assumes the caller (IntegrationCoordinator)
+    #                                already ran the ≥2-signal gate.
+    #   §29.13 non-blocking       — disk writes are dispatched via
+    #                                ``asyncio.to_thread`` so the event loop
+    #                                stays responsive under burst load.
+    #   §9 scope-is-law           — the target host is stored as evidence
+    #                                metadata only; it never becomes a scope
+    #                                grant token.
+    # ------------------------------------------------------------------
+    async def learn_from_browser_vulnerability(
+        self,
+        vuln_data: Dict[str, Any],
+        scan_id: str,
+    ) -> bool:
+        """Learn a browser-confirmed vulnerability pattern.
+        
+        Extracts the browser-specific shape of the finding (engine, framework,
+        stealth/headless flags, viewport, execution requirements) and stores it
+        as a ``browser_vulnerability`` pattern that the rest of the learning
+        loop (Skill promotion, get_browser_recommendations, intelligent router)
+        can reuse.
+        
+        The method is idempotent against a stable fingerprint of the
+        ``(url, vuln_type, payload, method, browser_engine)`` tuple — replaying
+        the same finding inside a 5-minute window returns ``False`` without
+        side effects.
+        """
+        if not isinstance(vuln_data, dict):
+            return False
+        
+        vuln_type = (vuln_data.get("type") or vuln_data.get("vuln_type") or "").strip()
+        url = (vuln_data.get("url") or "").strip()
+        if not vuln_type or not url:
+            # Cannot learn anything useful without these two anchors.
+            return False
+        
+        # ---- 1. Idempotency fingerprint -------------------------------
+        idem_key = self._browser_vuln_fingerprint(vuln_data)
+        lock_key = f"lock:{idem_key}"
+        if not await self._acquire_browser_learn_lock(lock_key, ttl_seconds=300):
+            return False
+        
+        try:
+            # ---- 2. Build the browser-tagged pattern ------------------
+            browser_context = self._extract_browser_context(vuln_data)
+            execution_requirements = self._extract_execution_requirements(vuln_data)
+            evidence_metadata = self._extract_evidence_metadata(vuln_data, url)            
+            pattern_data: Dict[str, Any] = {
+                "vuln_type": vuln_type,
+                "url": url,
+                "url_pattern": self._extract_url_pattern(url),
+                "method": (vuln_data.get("method") or "GET").upper(),
+                "payload": (vuln_data.get("payload") or "")[:500],
+                "framework": vuln_data.get("framework"),
+                # Tag: this pattern requires a browser to re-execute.
+                "execution_context": "browser_required",
+                # R2.1: browser context (engine, framework, headless, viewport, stealth)
+                "browser_context": browser_context,
+                # R2.3: execution requirements so a future agent can re-execute
+                "execution_requirements": execution_requirements,
+                # R1.1 / R2.2: scope is recorded as evidence metadata only,
+                #              never as an authorization grant (§9).
+                "evidence_metadata": evidence_metadata,
+                # Provenance
+                "source": "browser_vulnerability",
+                "scan_id": scan_id,
+            }
+            
+            pattern_id = self._generate_pattern_id("browser_vulnerability", {
+                # Stable subset for ID — full pattern_data carries volatile
+                # fields (scan_id) that would otherwise spawn duplicate IDs.
+                "vuln_type": vuln_type,
+                "url_pattern": pattern_data["url_pattern"],
+                "method": pattern_data["method"],
+                "browser_engine": browser_context.get("engine"),
+                "framework": pattern_data["framework"],
+            })
+            
+            now = time.time()
+            existing = self.patterns.get(pattern_id)
+            if existing is not None:
+                existing.success_count += 1
+                existing.scan_count += 1
+                existing.last_seen = now
+                # Refresh volatile fields (latest scan_id, latest payload sample).
+                existing.pattern_data["scan_id"] = scan_id
+                if pattern_data["payload"]:
+                    existing.pattern_data["payload"] = pattern_data["payload"]
+                existing.update_confidence()
+            else:
+                pattern = LearningPattern(
+                    pattern_id=pattern_id,
+                    pattern_type="browser_vulnerability",
+                    pattern_data=pattern_data,
+                    confidence=0.7,  # browser-confirmed → high prior
+                    success_count=1,
+                    failure_count=0,
+                    last_seen=now,
+                    first_seen=now,
+                    scan_count=1,
+                )
+                pattern.update_confidence()
+                self.patterns[pattern_id] = pattern
+            
+            # ---- 3. Update top-level metrics --------------------------
+            self.metrics.total_vulns_learned += 1
+            self.metrics.last_updated = now
+            
+            # ---- 4. Persist off the event loop (§29.13) ---------------
+            # Both writes are best-effort — failure to persist must not
+            # propagate into the IntegrationCoordinator's circuit breaker.
+            try:
+                await asyncio.to_thread(self._save_patterns)
+                await asyncio.to_thread(self._save_metrics)
+            except Exception as e:  # pragma: no cover - disk hiccup
+                print(f"[LearningEngine] browser-vuln persist failed: {e}")
+            
+            return True
+        except Exception as e:
+            # Hard failure — clear the slot so a future retry isn't blocked
+            # by stale idempotency state.
+            self._clear_browser_learn_lock(lock_key)
+            print(f"[LearningEngine] learn_from_browser_vulnerability failed: {e}")
+            return False
+        finally:
+            await self._release_browser_learn_lock(lock_key)
+    
+    # ---- helpers (browser-vulnerability) ------------------------------
+    def _browser_vuln_fingerprint(self, vuln_data: Dict[str, Any]) -> str:
+        """Stable fingerprint for idempotency checking."""
+        import hashlib
+        key_data = {
+            "url": vuln_data.get("url", ""),
+            "type": vuln_data.get("type") or vuln_data.get("vuln_type", ""),
+            "payload": (vuln_data.get("payload") or "")[:200],
+            "method": (vuln_data.get("method") or "GET").upper(),
+            "engine": (
+                vuln_data.get("browser_engine")
+                or (vuln_data.get("browser_context") or {}).get("engine")
+                or "chromium"
+            ),
+        }
+        data_str = json.dumps(key_data, sort_keys=True)
+        return f"vuln:{hashlib.sha256(data_str.encode()).hexdigest()}"
+    
+    async def _acquire_browser_learn_lock(self, lock_key: str, ttl_seconds: int = 300) -> bool:
+        """Reserve a per-fingerprint slot.
+        
+        Acts as both a concurrency lock AND an idempotency record: if the same
+        fingerprint reappears within ``ttl_seconds`` we return False so the
+        caller skips the re-learn. Redis path uses ``SET NX EX``; in-memory
+        fallback uses a timestamp map with lazy expiry.
+        """
+        if self.redis_client is None:
+            now = time.time()
+            existing = self._learning_cache.get(lock_key)
+            # _learning_cache may store either bool (legacy) or float timestamp.
+            if isinstance(existing, (int, float)):
+                if (now - float(existing)) < ttl_seconds:
+                    return False  # still within idempotency window
+                # expired — fall through and refresh
+            elif existing:
+                # Legacy bool entry from BrowserLearningExtension; treat as fresh.
+                return False
+            self._learning_cache[lock_key] = now
+            return True
+        try:
+            # SET NX EX in a worker thread — redis-py is sync-blocking.
+            result = await asyncio.to_thread(
+                self.redis_client.set, lock_key, "1", **{"nx": True, "ex": ttl_seconds}
+            )
+            return bool(result)
+        except Exception as e:
+            print(f"[LearningEngine] lock acquire failed: {e}")
+            # Fail-open on Redis error — better to over-learn than to drop signal.
+            return True
+    
+    async def _release_browser_learn_lock(self, lock_key: str) -> None:
+        """Release happens only on failure paths.
+        
+        On the success path the slot is intentionally retained until TTL
+        expiry — that's what gives us idempotency across replays. We only
+        clear it explicitly when learning aborts so a retry can proceed.
+        """
+        # No-op by default. Callers that want to permit immediate retry can
+        # invoke ``_clear_browser_learn_lock`` instead.
+        return None
+    
+    def _clear_browser_learn_lock(self, lock_key: str) -> None:
+        """Force-clear a lock slot (used only on hard failure to allow retry)."""
+        if self.redis_client is None:
+            self._learning_cache.pop(lock_key, None)
+            return
+        try:
+            self.redis_client.delete(lock_key)
+        except Exception as e:
+            print(f"[LearningEngine] lock clear failed: {e}")
+    
+    def _extract_browser_context(self, vuln_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Capture the browser environment that produced the finding.
+        
+        Honours R2.1: engine, framework, headless flag, viewport, stealth mode.
+        """
+        ctx_in = vuln_data.get("browser_context") or {}
+        return {
+            "engine": (
+                vuln_data.get("browser_engine")
+                or ctx_in.get("engine")
+                or "chromium"
+            ),
+            "framework": vuln_data.get("framework") or ctx_in.get("framework"),
+            "headless": bool(
+                vuln_data.get("headless", ctx_in.get("headless", True))
+            ),
+            "stealth": bool(
+                vuln_data.get("stealth_required", ctx_in.get("stealth", False))
+            ),
+            "viewport": ctx_in.get("viewport") or vuln_data.get("viewport"),
+            "user_agent": ctx_in.get("user_agent") or vuln_data.get("user_agent"),
+            "session_required": bool(
+                vuln_data.get("session_required", ctx_in.get("session_required", False))
+            ),
+        }
+    
+    def _extract_execution_requirements(self, vuln_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Capture what an agent needs to re-execute this finding.
+        
+        Honours R2.3: browser engine, JS execution, network interception flags.
+        """
+        req_in = vuln_data.get("execution_requirements") or {}
+        return {
+            "browser_engine": (
+                vuln_data.get("browser_engine")
+                or req_in.get("browser_engine")
+                or "chromium"
+            ),
+            "javascript_execution": bool(
+                req_in.get("javascript_execution", vuln_data.get("requires_js", True))
+            ),
+            "network_interception": bool(
+                req_in.get(
+                    "network_interception",
+                    vuln_data.get("requires_network_intercept", False),
+                )
+            ),
+            "dom_required": bool(
+                req_in.get("dom_required", vuln_data.get("requires_dom", True))
+            ),
+            "websocket_required": bool(
+                req_in.get(
+                    "websocket_required",
+                    vuln_data.get("vuln_type") == "websocket"
+                    or vuln_data.get("type") == "websocket",
+                )
+            ),
+            "auth_required": bool(
+                req_in.get("auth_required", vuln_data.get("requires_auth", False))
+            ),
+        }
+    
+    def _extract_evidence_metadata(self, vuln_data: Dict[str, Any], url: str) -> Dict[str, Any]:
+        """Capture host + evidence pointers WITHOUT granting scope (§9).
+        
+        Honours R2.2: queryable by browser context.
+        """
+        from urllib.parse import urlparse
+        try:
+            host = urlparse(url).hostname or ""
+        except Exception:
+            host = ""
+        return {
+            "host": host,  # informational — NOT a scope grant
+            "screenshot": vuln_data.get("screenshot_path"),
+            "har": vuln_data.get("har_path"),
+            "console_log": vuln_data.get("console_log_path"),
+            "evidence_count": int(vuln_data.get("evidence_count", 0) or 0),
+            "confirmed_by": vuln_data.get("confirmed_by", "browser_agent"),
+        }
+    
+    # ------------------------------------------------------------------
+    # Browser-workflow learning (deep-system-integration spec, R16.1, R16.6)
+    # ------------------------------------------------------------------
+    #
+    # Contract (must stay stable — IntegrationCoordinator + Beta/Sigma replay
+    # depend on it; tasks 2.4 / 3.6 read this same shape):
+    #     async def learn_browser_workflow(
+    #         workflow: Dict[str, Any], scan_id: str
+    #     ) -> bool
+    #
+    # ``workflow`` carries:
+    #     name           (str, required)
+    #     steps          (list[dict], required, each with at least ``action``;
+    #                     optional ``selector``, ``payload``, ``wait_for``,
+    #                     ``validates``)
+    #     preconditions  (dict, optional: ``auth_required``, ``framework``,
+    #                     ``browser_engine``, ``viewport``)
+    #     outcome        (str: "success" | "partial" | "failure", required)
+    #     vuln_type      (str, optional)
+    #     framework      (str, optional)
+    #
+    # Returns True on first record or successful reinforcement; False on
+    # idempotent replay (within 5-minute window) or invalid input.
+    #
+    # Architecture invariants honoured here:
+    #   §11 two-LLM exclusivity   — purely structural extraction, no LLM calls.
+    #   §17 ≥2-signal evidence    — reinforcement happens regardless of outcome
+    #                                count; this method does NOT re-verify.
+    #                                The caller is responsible for any gating.
+    #   §29.13 non-blocking       — ``_save_patterns`` / ``_save_metrics`` run
+    #                                via ``asyncio.to_thread``.
+    #   §9 scope-is-law           — the workflow's target URL is stored as a
+    #                                pattern hint only; it never grants scope.
+    # ------------------------------------------------------------------
+    async def learn_browser_workflow(
+        self,
+        workflow: Dict[str, Any],
+        scan_id: str,
+    ) -> bool:
+        """Learn a multi-step browser workflow as a reusable pattern.
+        
+        Captures the ordered steps, preconditions, and outcome of a workflow
+        that Beta/Sigma can later replay against similar targets. Idempotent
+        against a stable fingerprint of ``(name, len(steps), framework,
+        sorted step action types)`` — replays inside a 5-minute window are
+        rejected, replays after the window reinforce the existing pattern's
+        success/failure counters (R16.6).
+        """
+        if not isinstance(workflow, dict):
+            return False
+        
+        name = (workflow.get("name") or "").strip()
+        raw_steps = workflow.get("steps")
+        if not name or not isinstance(raw_steps, list) or not raw_steps:
+            return False
+        
+        outcome = (workflow.get("outcome") or "").strip().lower()
+        if outcome not in {"success", "partial", "failure"}:
+            return False
+        
+        steps = self._sanitize_workflow_steps(raw_steps)
+        if not steps:
+            # Every step was malformed — nothing replayable left.
+            return False
+        
+        framework = (
+            workflow.get("framework")
+            or (workflow.get("preconditions") or {}).get("framework")
+        )
+        step_types = sorted({s["action"] for s in steps})
+        
+        # ---- 1. Idempotency fingerprint (stable subset only) ---------
+        fingerprint_data: Dict[str, Any] = {
+            "name": name,
+            "step_count": len(steps),
+            "framework": framework or "",
+            "step_types": step_types,
+        }
+        idem_key = self._browser_workflow_fingerprint(fingerprint_data)
+        lock_key = f"lock:{idem_key}"
+        if not await self._acquire_browser_learn_lock(lock_key, ttl_seconds=300):
+            return False
+        
+        try:
+            # ---- 2. Build the pattern --------------------------------
+            preconditions = self._extract_workflow_preconditions(workflow)
+            url = (workflow.get("url") or "").strip()
+            
+            pattern_data: Dict[str, Any] = {
+                "name": name,
+                "url": url,
+                "url_pattern": self._extract_url_pattern(url) if url else "",
+                "steps": steps,
+                "step_types": step_types,
+                "preconditions": preconditions,
+                "outcome": outcome,
+                "last_outcome": outcome,
+                "vuln_type": workflow.get("vuln_type"),
+                "framework": framework,
+                # Tag: workflow replay needs a real browser.
+                "execution_context": "browser_required",
+                # Provenance
+                "source": "browser_workflow",
+                "scan_id": scan_id,
+            }
+            
+            # Pattern ID is derived from the SAME stable subset as the
+            # idempotency fingerprint, so the pattern_id stays the same
+            # across reinforcements.
+            pattern_id = self._generate_pattern_id(
+                "browser_workflow", fingerprint_data
+            )
+            
+            now = time.time()
+            existing = self.patterns.get(pattern_id)
+            if existing is not None:
+                # Reinforcement (R16.6): bump the right counter, recompute
+                # confidence, refresh volatile fields.
+                if outcome == "success":
+                    existing.success_count += 1
+                else:
+                    existing.failure_count += 1
+                existing.scan_count += 1
+                existing.last_seen = now
+                existing.pattern_data["scan_id"] = scan_id
+                existing.pattern_data["last_outcome"] = outcome
+                existing.update_confidence()
+            else:
+                # First record: confidence prior 0.6 (workflow patterns
+                # are higher-signal than raw recon, lower than a confirmed
+                # vuln, which uses 0.7).
+                pattern_data["first_outcome"] = outcome
+                pattern = LearningPattern(
+                    pattern_id=pattern_id,
+                    pattern_type="browser_workflow",
+                    pattern_data=pattern_data,
+                    confidence=0.6,
+                    success_count=1 if outcome == "success" else 0,
+                    failure_count=0 if outcome == "success" else 1,
+                    last_seen=now,
+                    first_seen=now,
+                    scan_count=1,
+                )
+                pattern.update_confidence()
+                self.patterns[pattern_id] = pattern
+            
+            # ---- 3. Update top-level metrics -------------------------
+            self.metrics.last_updated = now
+            
+            # ---- 4. Persist off the event loop (§29.13) --------------
+            try:
+                await asyncio.to_thread(self._save_patterns)
+                await asyncio.to_thread(self._save_metrics)
+            except Exception as e:  # pragma: no cover - disk hiccup
+                print(f"[LearningEngine] browser-workflow persist failed: {e}")
+            
+            return True
+        except Exception as e:
+            # Hard failure — clear the slot so a future retry isn't blocked
+            # by stale idempotency state.
+            self._clear_browser_learn_lock(lock_key)
+            print(f"[LearningEngine] learn_browser_workflow failed: {e}")
+            return False
+        finally:
+            await self._release_browser_learn_lock(lock_key)
+    
+    # ---- helpers (browser-workflow) -----------------------------------
+    def _browser_workflow_fingerprint(self, fingerprint_data: Dict[str, Any]) -> str:
+        """Stable SHA-256 fingerprint over the workflow's identity-defining fields.
+        
+        Identity = ``(name, len(steps), framework, sorted step action types)``.
+        Selectors and payloads are intentionally excluded so the same workflow
+        shape reinforces a single pattern even when concrete values drift.
+        """
+        import hashlib
+        data_str = json.dumps(fingerprint_data, sort_keys=True)
+        return f"workflow:{hashlib.sha256(data_str.encode()).hexdigest()}"
+    
+    def _sanitize_workflow_steps(self, raw_steps: List[Any]) -> List[Dict[str, Any]]:
+        """Normalize and bound the workflow step list.
+        
+        Caps at 50 steps; truncates string fields to keep persisted patterns
+        small. Drops entries that aren't dicts or that lack an ``action``.
+        """
+        sanitized: List[Dict[str, Any]] = []
+        for raw in raw_steps[:50]:
+            if not isinstance(raw, dict):
+                continue
+            action = (raw.get("action") or "").strip()
+            if not action:
+                continue
+            step: Dict[str, Any] = {"action": action}
+            if raw.get("selector"):
+                step["selector"] = str(raw.get("selector"))[:200]
+            if raw.get("payload") is not None:
+                step["payload"] = str(raw.get("payload"))[:500]
+            if raw.get("wait_for"):
+                step["wait_for"] = str(raw.get("wait_for"))[:200]
+            validates = raw.get("validates")
+            if validates is not None:
+                # Keep structured validators (list/dict) as-is; flatten
+                # everything else to a bounded string.
+                step["validates"] = (
+                    validates
+                    if isinstance(validates, (list, dict))
+                    else str(validates)[:200]
+                )
+            sanitized.append(step)
+        return sanitized
+    
+    def _extract_workflow_preconditions(
+        self, workflow: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Capture the preconditions needed to replay the workflow (R16.1).
+        
+        Contract surface for downstream tasks 2.4 / 3.6:
+            ``auth_required``, ``framework``, ``browser_engine``, ``viewport``.
+        """
+        pre_in = workflow.get("preconditions") or {}
+        return {
+            "auth_required": bool(
+                pre_in.get(
+                    "auth_required",
+                    workflow.get("requires_auth", False),
+                )
+            ),
+            "framework": pre_in.get("framework") or workflow.get("framework"),
+            "browser_engine": (
+                pre_in.get("browser_engine")
+                or workflow.get("browser_engine")
+                or "chromium"
+            ),
+            "viewport": pre_in.get("viewport") or workflow.get("viewport"),
+        }
+    
+    # ------------------------------------------------------------------
+    # Browser-recommendation surface (deep-system-integration spec, Task 2.4 / R2.5/R2.6)
+    # ------------------------------------------------------------------
+    #
+    # Contract (must stay stable — IntelligentRouter and the dashboard's
+    # /api/dashboard/integration consume this shape):
+    #     async def get_browser_recommendations(
+    #         target: Dict[str, Any],
+    #         framework: Optional[str] = None,
+    #     ) -> Dict[str, Any]
+    #
+    # ``target`` carries (at minimum) ``url`` (str). May also carry
+    # ``vuln_type`` (str), ``confidence_floor`` (float), and arbitrary
+    # other recon hints.
+    #
+    # Returns a dict-shaped recommendation pack pulled from the three
+    # browser-aware pattern types written by tasks 2.1, 2.3, and 2.6:
+    #     {
+    #         "workflows":           [...top 5 by success_rate],
+    #         "payloads":            [...top 5 by confidence],
+    #         "framework_specific":  [...patterns matching framework],
+    #         "confidence":          float,
+    #     }
+    #
+    # Each ``workflows`` entry:  pattern_id, name, steps, success_rate,
+    #                            confidence, framework, vuln_type
+    # Each ``payloads`` entry:   pattern_id, vuln_type, payload, framework,
+    #                            confidence, success_rate, execution_requirements
+    # Each ``framework_specific`` entry: pattern_id, framework, routes,
+    #                                   route_patterns, confidence,
+    #                                   success_rate
+    #
+    # Filtering: patterns below ``self.min_confidence_threshold`` (0.3)
+    # are excluded. Caller may raise the floor via ``target['confidence_floor']``.
+    #
+    # Caching: a small per-instance LRU keyed by
+    # ``(target_url_pattern, framework_norm, confidence_floor)`` is used
+    # because the public signature takes a dict (unhashable) and so cannot
+    # use ``functools.lru_cache`` directly — see ``_browser_reco_cache``.
+    # The cache is invalidated whenever ``len(self.patterns)`` or
+    # ``self.metrics.last_updated`` changes (any learn_* call bumps both).
+    #
+    # Architecture invariants honoured here:
+    #   §11 two-LLM exclusivity   — pure read-side ranking, no LLM calls.
+    #   §17 ≥2-signal evidence    — recommendations are ADVISORY only;
+    #                                callers must still gate execution.
+    #   §29.13 non-blocking       — read path operates on the in-memory
+    #                                ``self.patterns`` dict, no I/O.
+    #   §9 scope-is-law           — emitted ``url_pattern`` is informational;
+    #                                it is NOT a scope grant for any caller.
+    # ------------------------------------------------------------------
+    async def get_browser_recommendations(
+        self,
+        target: Dict[str, Any],
+        framework: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return browser-aware recommendation pack for ``target``.
+        
+        See class-level contract block above for shape.
+        """
+        empty: Dict[str, Any] = {
+            "workflows": [],
+            "payloads": [],
+            "framework_specific": [],
+            "confidence": 0.0,
+        }
+        if not isinstance(target, dict):
+            return empty
+        target_url = (target.get("url") or "").strip()
+        if not target_url:
+            return empty
+        
+        target_pattern = self._extract_url_pattern(target_url)
+        framework_norm = (framework or "").strip().lower() or None
+        try:
+            floor = float(
+                target.get("confidence_floor", self.min_confidence_threshold)
+            )
+        except (TypeError, ValueError):
+            floor = self.min_confidence_threshold
+        floor = max(self.min_confidence_threshold, floor)
+        
+        # ---- Cache hit path ------------------------------------------
+        cache_key = (target_pattern, framework_norm, round(floor, 4))
+        cached = self._browser_reco_cache_get(cache_key)
+        if cached is not None:
+            return cached
+        
+        workflows: List[Dict[str, Any]] = []
+        payloads: List[Dict[str, Any]] = []
+        framework_specific: List[Dict[str, Any]] = []
+        confidence_pool: List[float] = []
+        
+        for pattern in self.patterns.values():
+            ptype = pattern.pattern_type
+            if ptype not in (
+                "browser_vulnerability",
+                "browser_workflow",
+                "framework_pattern",
+            ):
+                continue
+            if pattern.confidence < floor:
+                continue
+            
+            data = pattern.pattern_data or {}
+            
+            # URL match check for URL-bound rows. framework_pattern rows
+            # have no URL and apply universally per framework.
+            if ptype != "framework_pattern":
+                pattern_url = data.get("url_pattern") or (
+                    self._extract_url_pattern(data.get("url") or "")
+                    if data.get("url") else ""
+                )
+                # Empty url_pattern == universal; only filter when both sides
+                # have a value AND they don't match.
+                if pattern_url and target_pattern and pattern_url != target_pattern:
+                    continue
+            
+            entry_framework = (data.get("framework") or "")
+            entry_framework_norm = entry_framework.strip().lower() if entry_framework else None
+            framework_match = (
+                framework_norm is not None
+                and entry_framework_norm == framework_norm
+            )
+            
+            confidence_pool.append(float(pattern.confidence))
+            
+            if ptype == "browser_workflow":
+                workflows.append({
+                    "pattern_id": pattern.pattern_id,
+                    "name": data.get("name", ""),
+                    "steps": list(data.get("steps") or []),
+                    "success_rate": float(pattern.success_rate or 0.0),
+                    "confidence": float(pattern.confidence),
+                    "framework": entry_framework or None,
+                    "vuln_type": data.get("vuln_type"),
+                    "framework_match": framework_match,
+                })
+            elif ptype == "browser_vulnerability":
+                payloads.append({
+                    "pattern_id": pattern.pattern_id,
+                    "vuln_type": data.get("vuln_type"),
+                    "payload": data.get("payload", ""),
+                    "framework": entry_framework or None,
+                    "confidence": float(pattern.confidence),
+                    "success_rate": float(pattern.success_rate or 0.0),
+                    "execution_requirements": data.get("execution_requirements") or {},
+                    "framework_match": framework_match,
+                })
+                # If the pattern's framework lines up with the requested one,
+                # the payload also surfaces in framework_specific.
+                if framework_match:
+                    framework_specific.append({
+                        "pattern_id": pattern.pattern_id,
+                        "type": "browser_vulnerability",
+                        "framework": entry_framework,
+                        "vuln_type": data.get("vuln_type"),
+                        "payload": data.get("payload", ""),
+                        "confidence": float(pattern.confidence),
+                        "success_rate": float(pattern.success_rate or 0.0),
+                    })
+            elif ptype == "framework_pattern":
+                # framework_pattern only surfaces if the caller asked for a
+                # framework AND the pattern's framework matches.
+                if framework_match:
+                    framework_specific.append({
+                        "pattern_id": pattern.pattern_id,
+                        "type": "framework_pattern",
+                        "framework": entry_framework,
+                        "routes": list(data.get("routes") or []),
+                        "route_patterns": list(data.get("route_patterns") or []),
+                        "confidence": float(pattern.confidence),
+                        "success_rate": float(pattern.success_rate or 0.0),
+                    })
+        
+        # ---- Rank + truncate ---------------------------------------
+        # Workflows: top 5 by success_rate, tie-break on confidence.
+        workflows.sort(
+            key=lambda w: (w["success_rate"], w["confidence"], w["framework_match"]),
+            reverse=True,
+        )
+        workflows = workflows[:5]
+        for w in workflows:
+            w.pop("framework_match", None)
+        
+        # Payloads: top 5 by confidence, tie-break on success_rate.
+        payloads.sort(
+            key=lambda p: (p["confidence"], p["success_rate"], p["framework_match"]),
+            reverse=True,
+        )
+        payloads = payloads[:5]
+        for p in payloads:
+            p.pop("framework_match", None)
+        
+        # Framework-specific: keep all (already filtered to framework match);
+        # rank by confidence then success_rate.
+        framework_specific.sort(
+            key=lambda f: (
+                float(f.get("confidence", 0.0)),
+                float(f.get("success_rate", 0.0)),
+            ),
+            reverse=True,
+        )
+        
+        overall_conf = (
+            sum(confidence_pool) / len(confidence_pool)
+            if confidence_pool else 0.0
+        )
+        
+        result = {
+            "workflows": workflows,
+            "payloads": payloads,
+            "framework_specific": framework_specific,
+            "confidence": round(overall_conf, 4),
+        }
+        self._browser_reco_cache_put(cache_key, result)
+        return result
+    
+    # ---- recommendation cache ----------------------------------------
+    # Manual instance-level LRU because ``target`` is a dict and cannot be
+    # used as a ``functools.lru_cache`` key. The cache is keyed by the
+    # hashable derived tuple ``(target_url_pattern, framework_norm, floor)``
+    # and is invalidated whenever the pattern pool mutates.
+    def _browser_reco_cache_signature(self) -> tuple:
+        """Tuple stamp that changes whenever the pattern pool mutates."""
+        return (len(self.patterns), float(self.metrics.last_updated or 0.0))
+    
+    def _browser_reco_cache_get(self, key: tuple) -> Optional[Dict[str, Any]]:
+        cache: Dict = getattr(self, "_browser_reco_cache", None)
+        if cache is None:
+            self._browser_reco_cache = {}
+            self._browser_reco_cache_stamp = self._browser_reco_cache_signature()
+            return None
+        # Invalidate on pattern-pool change.
+        if getattr(self, "_browser_reco_cache_stamp", None) != \
+                self._browser_reco_cache_signature():
+            cache.clear()
+            self._browser_reco_cache_stamp = self._browser_reco_cache_signature()
+            return None
+        return cache.get(key)
+    
+    def _browser_reco_cache_put(
+        self, key: tuple, value: Dict[str, Any]
+    ) -> None:
+        cache: Dict = getattr(self, "_browser_reco_cache", None)
+        if cache is None:
+            self._browser_reco_cache = {}
+            cache = self._browser_reco_cache
+            self._browser_reco_cache_stamp = self._browser_reco_cache_signature()
+        # Bound the cache to 64 entries (LRU-ish: oldest insertion drops first).
+        if len(cache) >= 64:
+            try:
+                oldest = next(iter(cache))
+                cache.pop(oldest, None)
+            except StopIteration:
+                pass
+        cache[key] = value
+    
+    # ------------------------------------------------------------------
+    # Framework-pattern learning (deep-system-integration spec, R2.1)
+    # ------------------------------------------------------------------
+    #
+    # Contract (must stay stable — IntegrationCoordinator's discovery batch
+    # at backend/core/integration_coordinator.py:411 invokes this method):
+    #     async def learn_framework_pattern(
+    #         framework: Optional[str], routes: List[str]
+    #     ) -> bool
+    #
+    # Returns True on first record or successful reinforcement; False on
+    # invalid input (missing framework) or idempotent replay (within
+    # 5-minute window).
+    #
+    # Architecture invariants honoured here:
+    #   §11 two-LLM exclusivity   — purely structural extraction, no LLM calls.
+    #   §17 ≥2-signal evidence    — discovery rows are ADVISORY; this method
+    #                                does NOT promote anything to "confirmed".
+    #   §29.13 non-blocking       — disk writes go through ``asyncio.to_thread``.
+    #   §9 scope-is-law           — routes are stored as recon hints only;
+    #                                they never grant scope to any caller.
+    # ------------------------------------------------------------------
+    async def learn_framework_pattern(
+        self,
+        framework: Optional[str],
+        routes: List[str],
+    ) -> bool:
+        """Learn a framework's route fingerprint as a reusable pattern.
+        
+        ``framework`` is the JS framework label (React, Vue, Angular, etc.).
+        ``routes`` is the list of routes the BrowserOrchestrator surfaced for
+        that framework on this target.
+        
+        Idempotent against ``(framework_lower, sorted(routes))`` SHA-256 —
+        replays inside 5 minutes return ``False``; replays after the window
+        reinforce the existing pattern's success counter.
+        """
+        # Graceful no-op: IntegrationCoordinator forwards whatever the
+        # discovery event carried, including None / "" frameworks.
+        if not framework or not isinstance(framework, str):
+            return False
+        framework_norm = framework.strip()
+        if not framework_norm:
+            return False
+        
+        # Normalize + dedup routes; tolerate List[str] or anything iterable.
+        if not isinstance(routes, (list, tuple, set)):
+            return False
+        unique_routes: List[str] = []
+        seen: set = set()
+        for r in routes:
+            if not isinstance(r, str):
+                continue
+            r_clean = r.strip()
+            if not r_clean or r_clean in seen:
+                continue
+            seen.add(r_clean)
+            unique_routes.append(r_clean)
+        if not unique_routes:
+            # No usable routes — nothing to learn, but treat as no-op rather
+            # than a hard failure so the discovery batch keeps flowing.
+            return False
+        unique_routes.sort()
+        
+        # ---- 1. Idempotency fingerprint ------------------------------
+        # Per Task 2.6 spec: fingerprint is taken over the regex-extracted
+        # ``route_patterns`` (not raw routes), so that ``/users/42/x`` and
+        # ``/users/9999/x`` collide on a single ``/users/{id}/x`` row even
+        # when concrete IDs drift between scans.
+        route_patterns = self._extract_framework_route_patterns(unique_routes)
+        idem_key = self._framework_pattern_fingerprint(
+            framework_norm, route_patterns
+        )
+        lock_key = f"lock:{idem_key}"
+        if not await self._acquire_browser_learn_lock(lock_key, ttl_seconds=300):
+            return False
+        
+        try:
+            # ---- 2. Build the pattern --------------------------------
+            pattern_data: Dict[str, Any] = {
+                "framework": framework_norm,
+                "routes": unique_routes,
+                "route_count": len(unique_routes),
+                # Light pattern extraction: replace numeric/UUID segments
+                # so future matches aren't blocked by trivial id drift.
+                "route_patterns": route_patterns,
+                # Tag: replay needs a real browser to walk the SPA.
+                "execution_context": "browser_required",
+                "source": "framework_pattern",
+            }
+            
+            # Pattern ID is derived from the SAME stable subset as the
+            # idempotency fingerprint so reinforcements collide on one row.
+            pattern_id = self._generate_pattern_id(
+                "framework_pattern",
+                {
+                    "framework": framework_norm.lower(),
+                    "route_patterns": route_patterns,
+                },
+            )
+            
+            now = time.time()
+            existing = self.patterns.get(pattern_id)
+            if existing is not None:
+                existing.success_count += 1
+                existing.scan_count += 1
+                existing.last_seen = now
+                existing.update_confidence()
+            else:
+                pattern = LearningPattern(
+                    pattern_id=pattern_id,
+                    pattern_type="framework_pattern",
+                    pattern_data=pattern_data,
+                    confidence=0.5,  # discovery prior — lower than vuln/workflow
+                    success_count=1,
+                    failure_count=0,
+                    last_seen=now,
+                    first_seen=now,
+                    scan_count=1,
+                )
+                pattern.update_confidence()
+                self.patterns[pattern_id] = pattern
+            
+            # ---- 3. Update top-level metrics -------------------------
+            self.metrics.last_updated = now
+            
+            # ---- 4. Persist off the event loop (§29.13) --------------
+            try:
+                await asyncio.to_thread(self._save_patterns)
+                await asyncio.to_thread(self._save_metrics)
+            except Exception as e:  # pragma: no cover - disk hiccup
+                print(f"[LearningEngine] framework-pattern persist failed: {e}")
+            
+            return True
+        except Exception as e:
+            self._clear_browser_learn_lock(lock_key)
+            print(f"[LearningEngine] learn_framework_pattern failed: {e}")
+            return False
+        finally:
+            await self._release_browser_learn_lock(lock_key)
+    
+    # ---- helpers (framework-pattern) ----------------------------------
+    def _framework_pattern_fingerprint(
+        self, framework: str, sorted_route_patterns: List[str]
+    ) -> str:
+        """Stable SHA-256 fingerprint over ``(framework_lower, sorted_route_patterns)``.
+        
+        Per Task 2.6: keying on ``route_patterns`` (regex-extracted) instead
+        of raw routes lets ``/users/42`` and ``/users/9999`` collapse to a
+        single ``/users/{id}`` row. Lower-cased framework collapses
+        "React" / "react" / "REACT".
+        """
+        import hashlib
+        data_str = json.dumps(
+            {
+                "framework": framework.lower(),
+                "route_patterns": sorted_route_patterns,
+            },
+            sort_keys=True,
+        )
+        return f"framework:{hashlib.sha256(data_str.encode()).hexdigest()}"
+    
+    def _extract_framework_route_patterns(
+        self, routes: List[str]
+    ) -> List[str]:
+        """Generalize concrete routes into reusable patterns.
+        
+        Replaces UUIDs, hex hashes, and numeric segments with placeholders so
+        ``/users/42/posts/9c6f...`` and ``/users/13/posts/a1b2...`` match the
+        same ``/users/{id}/posts/{uuid}`` pattern. Result is deduplicated and
+        sorted for stable persistence.
+        """
+        patterns: set = set()
+        for route in routes:
+            p = re.sub(
+                r'/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}',
+                '/{uuid}',
+                route,
+            )
+            p = re.sub(r'/[a-f0-9]{32}', '/{hash}', p)
+            p = re.sub(r'/\d+', '/{id}', p)
+            patterns.add(p)
+        return sorted(patterns)
 
 
 # Global learning engine instance

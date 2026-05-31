@@ -35,11 +35,23 @@ class PinchTabIntelligence:
         self._seen = SeenSet()
 
     async def is_available(self) -> tuple[bool, str]:
+        """Check whether the PinchTab control plane is reachable.
+
+        Uses the client's cached availability probe so we don't spam the network
+        when the control plane is offline. Returns ``(True, "")`` when the
+        daemon is online, otherwise ``(False, reason)`` where ``reason`` is
+        one of:
+          - ``"pinchtab_daemon_not_running"`` — control plane not reachable
+            (the common case in local labs that don't ship the daemon).
+          - ``"pinchtab_unavailable:<ExcType>"`` — probe raised unexpectedly.
+        """
         try:
-            await self.client.health()
-            return True, ""
+            ok = await self.client.is_available()
         except Exception as exc:
-            return False, f"pinchtab_unavailable:{exc}"
+            return False, f"pinchtab_unavailable:{type(exc).__name__}"
+        if ok:
+            return True, ""
+        return False, "pinchtab_daemon_not_running"
 
     async def full_capture(self, targets: list[str], *, max_targets: int = 20,
                             profile_name: str = "") -> dict[str, Any]:

@@ -93,6 +93,28 @@ class StateManager:
             # Final flush on shutdown
             if self._dirty:
                 self._save_sync()
+            raise
+
+    async def shutdown(self) -> None:
+        """Cancel the background writer cleanly and flush any pending writes.
+
+        Eliminates the Windows warning ``Task was destroyed but it is pending``
+        seen in the unified lifecycle (Architecture §29.13). Safe to call
+        multiple times; safe to call when the writer was never started.
+        """
+        task = self._task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._task = None
+        # Final flush (synchronous) — best effort.
+        try:
+            self.flush_immediate()
+        except Exception:
+            pass
 
     def _mark_dirty(self) -> None:
         self._dirty = True
@@ -108,14 +130,23 @@ class StateManager:
             self._save_sync()
 
     def flush_immediate(self) -> None:
-        """Immediately force-save state to disk (Critical for report readiness)."""
-        # Always save synchronously — asyncio scheduling is unreliable here
-        # because this is often called during shutdown or from non-async contexts
-        with self._sync_lock:
-            try:
-                self._save_sync()
-            except Exception as e:
-                print(f"[StateManager] flush_immediate error: {e}")
+        """Immediately force-save state to disk (Critical for report readiness).
+
+        WHY: Previously this acquired ``_sync_lock`` then called
+        ``_save_sync`` which *also* acquires ``_sync_lock``. ``threading.Lock``
+        is non-reentrant, so the second acquisition blocked forever and every
+        ``complete_scan`` / ``mark_report_ready`` deadlocked the calling
+        thread. ``_save_sync`` already takes the lock itself, so we just
+        delegate to it.
+
+        WHEN: Triggered every time a scan finishes (``complete_scan``,
+        ``sync_complete_scan``, ``mark_report_ready``) or during shutdown
+        flush.
+        """
+        try:
+            self._save_sync()
+        except Exception as e:
+            print(f"[StateManager] flush_immediate error: {e}")
 
     async def _async_save(self) -> None:
         async with self._lock:
@@ -163,7 +194,21 @@ class StateManager:
             self._save()
 
     async def add_scan_event(self, scan_id: str, event: Dict[str, Any]) -> None:
-        """Append a live event to a specific scan record with auto-pruning (Max 500)."""
+        """Append a live event to a specific scan record with auto-pruning (Max 500).
+
+        WHY: Previously this set ``self._dirty = True`` directly — bypassing
+        ``_mark_dirty`` — so the background writer task was never started for
+        scans whose first persistence happened to be an event (writer is
+        spawned lazily by ``_mark_dirty``). Result: 1000-event scans
+        accumulated everything in memory and only flushed when something
+        else in the codebase happened to call ``_save()``. Now we route
+        through ``_mark_dirty`` which (a) ensures the 2-second debounced
+        writer is alive so 1000 events become a handful of disk syncs, and
+        (b) honours ``VULAGENT_TEST_MODE`` like every other path.
+
+        WHEN: Every scan event (DOM mutation, network probe, AI thought,
+        etc.). On a typical scan that is 100s–1000s of events per minute.
+        """
         async with self._lock:
             for s in self._stats["scans"]:
                 if s["id"] == scan_id:
@@ -175,34 +220,51 @@ class StateManager:
                     # [V7] Auto-Pruning REMOVED as per user request for "Show All"
                     # We keep all events for the current active session.
                     
-                    self._dirty = True
+                    # Route through _mark_dirty so the background writer
+                    # is guaranteed alive and writes are debounced (2s).
+                    self._mark_dirty()
                     break
 
     async def increment_request_count(self, count: int = 1) -> None:
         """Atomically increment the global request counter for performance tracking."""
         async with self._lock:
             self._stats["total_requests"] += count
-            self._dirty = True
+            # Use _mark_dirty to ensure the background writer is alive; a
+            # raw ``self._dirty = True`` would silently no-op when nothing
+            # else has triggered the writer yet.
+            self._mark_dirty()
 
 
     async def record_finding(self, scan_id: str, severity: str = "Medium", signature_data: Dict[str, Any] = None) -> None:
-        """Real-time update for a found vulnerability with async-safe deduplication."""
+        """Real-time update for a found vulnerability with async-safe deduplication.
+
+        Persists the finding in BOTH places:
+          * Global counters (``stats.vulnerabilities`` / ``stats.critical``).
+          * The scan record itself under ``scan["findings"]`` so the
+            ``GET /api/scans/{scan_id}/findings`` endpoint can surface it
+            mid-scan (Architecture §22). Without this, findings only become
+            visible after ``complete_scan`` writes ``scan["results"]``.
+        """
         async with self._lock:
+            is_duplicate = False
             if signature_data:
                 # Generate stable signature
                 sig_str = json.dumps(signature_data, sort_keys=True, default=str)
                 sig = hashlib.sha256(sig_str.encode()).hexdigest()
-                
+
                 if scan_id not in self._seen_signatures:
                     self._seen_signatures[scan_id] = set()
-                
+
                 if sig in self._seen_signatures[scan_id]:
-                    return # Skip duplicate
-                
-                self._seen_signatures[scan_id].add(sig)
+                    is_duplicate = True
+                else:
+                    self._seen_signatures[scan_id].add(sig)
+
+            if is_duplicate:
+                return  # Skip duplicate
 
             self._stats["vulnerabilities"] += 1
-            
+
             if severity.upper() in ["CRITICAL", "HIGH"]:
                 self._stats["critical"] += 1
 
@@ -211,8 +273,26 @@ class StateManager:
             self._stats["history"].append(current_total)
             if len(self._stats["history"]) > 30:
                 self._stats["history"].pop(0)
-            
-            self._dirty = True
+
+            # Persist to per-scan ``findings`` so GET /api/scans/{id}/findings
+            # surfaces this immediately, not just after the scan completes.
+            if signature_data:
+                finding_record = {
+                    "url": signature_data.get("url", ""),
+                    "type": signature_data.get("type", ""),
+                    "severity": severity,
+                    "data": signature_data.get("data", ""),
+                }
+                for s in self._stats.get("scans", []):
+                    if s.get("id") == scan_id or s.get("scan_id") == scan_id:
+                        if "findings" not in s:
+                            s["findings"] = []
+                        s["findings"].append(finding_record)
+                        break
+
+            # Route through _mark_dirty so the background writer is alive
+            # and writes are debounced (see add_scan_event).
+            self._mark_dirty()
 
     async def record_threat(self, threat_type: str, risk_score: int) -> None:
         """V6: Record a detected threat for metrics (Async-Safe)."""

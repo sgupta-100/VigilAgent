@@ -98,3 +98,70 @@ async def recovery_status():
     """Recovery engine metrics: healing + error recovery (Architecture §14)."""
     from backend.core.recovery_engine import recovery_engine
     return recovery_engine.get_metrics()
+
+
+@router.get("/health")
+async def runtime_health() -> dict:
+    """Live runtime status for the Live Monitor sidebar.
+
+    Polled by the frontend every ~10s. Returns:
+
+      * ``browser`` — output of ``BrowserOrchestrator.health_check()``
+        (engine status + remediation hints if anything is offline).
+      * ``active_scans`` — count of scans currently in
+        Initializing/Running/Finalizing.
+      * ``total_scans`` — lifetime scan count from the StateManager.
+      * ``agents`` — system health summary
+        (total/active agents, avg health score, alert counts).
+      * ``alerts`` — most recent 20 alerts, newest last.
+
+    The endpoint is best-effort: any individual subsystem error degrades
+    that field to a structured ``error`` payload instead of failing the
+    whole call. The Live Monitor must always render *something*.
+    """
+    from backend.core.browser_orchestrator import get_browser_orchestrator
+    from backend.core.agent_health_monitor import health_monitor
+    from backend.core.state import stats_db_manager
+
+    # Browser health (best-effort).
+    try:
+        browser_health = await get_browser_orchestrator().health_check()
+    except Exception as exc:
+        browser_health = {
+            "openclaw": "unavailable",
+            "pinchtab": "unavailable",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    # Scan counters from the StateManager. ``get_stats()`` returns the
+    # live dict; we copy out only what the sidebar needs to keep the
+    # response small.
+    try:
+        stats = stats_db_manager.get_stats()
+        active_scans = int(stats.get("active_scans", 0))
+        total_scans = int(stats.get("total_scans", 0))
+    except Exception as exc:
+        active_scans = 0
+        total_scans = 0
+        scan_error = f"{type(exc).__name__}: {exc}"
+    else:
+        scan_error = None
+
+    # Agent health summary + most recent alerts.
+    try:
+        agents_summary = health_monitor.get_system_health_summary()
+        recent_alerts = health_monitor.get_alerts(limit=20)
+    except Exception as exc:
+        agents_summary = {"error": f"{type(exc).__name__}: {exc}"}
+        recent_alerts = []
+
+    response = {
+        "browser": browser_health,
+        "active_scans": active_scans,
+        "total_scans": total_scans,
+        "agents": agents_summary,
+        "alerts": recent_alerts,
+    }
+    if scan_error:
+        response["scan_error"] = scan_error
+    return response

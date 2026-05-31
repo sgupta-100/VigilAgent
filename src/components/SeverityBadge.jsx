@@ -1,25 +1,46 @@
 import React from 'react';
 
 /**
- * Reusable severity badge component.
- * Eliminates duplicated badge logic across scan and report views.
+ * SeverityBadge — pill-style severity indicator.
  *
- * @param {{ severity: string, className?: string }} props
+ * Uses the canonical report color tokens so badge color matches generated PDFs:
+ *   CRITICAL = #C0392B   HIGH = #E67E22   MEDIUM = #F1C40F   LOW = #27AE60
+ *
+ * @typedef {Object} SeverityBadgeProps
+ * @property {'CRITICAL'|'HIGH'|'MEDIUM'|'LOW'|'INFO'|string} severity
+ * @property {'sm'|'md'} [size]      Default 'sm'.
+ * @property {string}    [className]
+ *
+ * @param {SeverityBadgeProps} props
  */
 const SEVERITY_STYLES = {
-    CRITICAL: 'bg-red-500 text-black',
-    HIGH:     'bg-orange-500 text-black',
-    MEDIUM:   'bg-yellow-500 text-black',
-    LOW:      'bg-green-500 text-black',
-    INFO:     'bg-blue-500 text-black',
+    CRITICAL: { bg: 'bg-[#C0392B]', text: 'text-white' },
+    HIGH:     { bg: 'bg-[#E67E22]', text: 'text-black' },
+    MEDIUM:   { bg: 'bg-[#F1C40F]', text: 'text-black' },
+    LOW:      { bg: 'bg-[#27AE60]', text: 'text-black' },
+    INFO:     { bg: 'bg-[#3498DB]', text: 'text-white' },
 };
 
-function SeverityBadge({ severity, className = '' }) {
+const SIZE_CLASSES = {
+    sm: 'px-2 py-0.5 text-[10px]',
+    md: 'px-2.5 py-1 text-xs',
+};
+
+function SeverityBadge({ severity, size = 'sm', className = '' }) {
     const upper = (severity || 'INFO').toUpperCase();
     const style = SEVERITY_STYLES[upper] || SEVERITY_STYLES.INFO;
+    const sizeCls = SIZE_CLASSES[size] || SIZE_CLASSES.sm;
 
     return (
-        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${style} ${className}`}>
+        <span
+            role="status"
+            aria-label={`Severity: ${upper}`}
+            className={`
+                inline-flex items-center justify-center
+                rounded font-bold tracking-wide uppercase
+                ${style.bg} ${style.text} ${sizeCls} ${className}
+            `}
+        >
             {upper}
         </span>
     );

@@ -15,8 +15,13 @@ from backend.core.payload_delivery import (
     PayloadDeliveryEngine, payload_bandit, payload_family, HTTP_VECTORS,
 )
 from backend.core.exploit_engine import MultiLayerVerifier
+from backend.agents._shared import (
+    ControlSignalMixin,
+    ScanContextRecorderMixin,
+    SkillRecallMixin,
+)
 
-class BetaAgent(BrowserEnabledAgent):
+class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, BrowserEnabledAgent):
     """
     AGENT BETA: THE BREAKER
     Role: Heavy Offensive Operations with Browser Exploitation.
@@ -65,43 +70,23 @@ class BetaAgent(BrowserEnabledAgent):
         # These subscribes used to be stranded after a `return` inside
         # _skill_recommendations and silently never fired — fixed.
         self.bus.subscribe(EventType.JOB_COMPLETED, self.handle_sigma_payloads)
-        self.bus.subscribe(EventType.CONTROL_SIGNAL, self.handle_control_signal)
+        # Wired via the shared ControlSignalMixin so the THROTTLE/RESUME
+        # behaviour stays identical across every agent that opts in.
+        self.subscribe_control(self.bus)
 
     def _skill_recommendations(self, target_url: str, vuln_class: str) -> list:
         """Consume skill recommendations for this vuln class (Architecture §29.9:
-        skills consumed by Beta). Cached per (target, class) to avoid rework."""
-        key = (target_url, vuln_class)
-        cache = getattr(self, "_skill_rec_cache", None)
-        if cache is None:
-            cache = self._skill_rec_cache = {}
-        if key in cache:
-            return cache[key]
-        recs = []
-        try:
-            from backend.core.skill_library import skill_library
-            recs = skill_library.get_recommendations(
-                target_url=target_url, vuln_class=vuln_class, limit=5)
-        except Exception:
-            recs = []
-        cache[key] = recs
-        return recs
-
-    async def handle_control_signal(self, event: HiveEvent):
-        """Respond to Zeta governance signals."""
-        signal = event.payload.get("signal", "")
-        if signal in ["THROTTLE", "STEALTH_MODE"]:
-            self._throttled = True
-            print(f"[{self.name}] Governance: {signal} received. Throttling attacks.")
-        elif signal == "RESUME":
-            self._throttled = False
+        skills consumed by Beta). Cached per (target, class) — now backed by
+        the shared ``SkillRecallMixin.recall_skills`` helper. Beta keeps the
+        original limit of 5 per class."""
+        return self.recall_skills(target_url=target_url, vuln_classes=[vuln_class], limit=5)
 
     async def handle_candidate(self, event: HiveEvent):
         # Handle polyglot injections on candidate detection
         payload = event.payload
         # ScanContext: record event for transcript causality
-        if hasattr(self.bus, "get_or_create_context"):
-            _ctx = self.bus.get_or_create_context(getattr(event, "scan_id", "GLOBAL"))
-            _ctx.append_event(event)
+        # (now via the shared ScanContextRecorderMixin — same behaviour).
+        self.record(event)
         url = payload.get("url")
         tag = payload.get("tag")
         
@@ -130,9 +115,13 @@ class BetaAgent(BrowserEnabledAgent):
 
             mutated_polyglot = await self.waf_mutate(best_payload)
             print(f"[{self.name}] >> AI Mutation Strategy: {mutated_polyglot}")
-            
-            # FIXED: Actually execute the attack via real HTTP requests
-            await self._execute_real_attack(url, mutated_polyglot, scan_id=event.scan_id)
+
+            # FIXED: Actually execute the attack via real HTTP requests. Carry
+            # any auth headers exposed in the candidate (Sigma/Orchestrator may
+            # have included them so the cookie/Bearer reaches the target).
+            cand_headers = payload.get("headers") or payload.get("target_headers") or {}
+            await self._execute_real_attack(url, mutated_polyglot, scan_id=event.scan_id,
+                                            headers=cand_headers)
 
     async def handle_job(self, event: HiveEvent):
         payload = event.payload
@@ -143,19 +132,32 @@ class BetaAgent(BrowserEnabledAgent):
         if packet.config.agent_id != AgentID.BETA:
             return
 
+        # Governance: if Zeta has throttled the swarm, drop direct-assault
+        # dispatch this round. Sigma still feeds us payloads via
+        # handle_sigma_payloads when it's safe to fire.
+        if self._throttled:
+            print(f"[{self.name}] [THROTTLE] Direct assault on {packet.target.url} skipped under governance signal.")
+            return
+
         print(f"[{self.name}] Received Breaker Job {packet.id}. Executing direct assault on {packet.target.url}")
 
         if packet.config.module_id == "sigma_payload_handoff":
             payloads = packet.config.params.get("payloads", []) if packet.config.params else []
-            await self._execute_payload_batch(packet.target.url, payloads, event.scan_id)
+            await self._execute_payload_batch(packet.target.url, payloads, event.scan_id,
+                                              base_headers=dict(packet.target.headers or {}))
             return
-        
+
         # FIXED: Beta now executes attacks directly when receiving its own jobs
-        # Execute polyglot payloads directly against the target
+        # Execute polyglot payloads directly against the target. Crucially, we
+        # thread packet.target.headers through so the seeder's auth Cookie
+        # actually reaches DVWA — without this the polyglot path landed on the
+        # login redirect and never tested the vulnerable endpoint.
         target_url = packet.target.url
+        base_headers = dict(packet.target.headers or {})
         for polyglot in self.polyglots:
             mutated = await self.waf_mutate(polyglot)
-            await self._execute_real_attack(target_url, mutated, scan_id=event.scan_id)
+            await self._execute_real_attack(target_url, mutated, scan_id=event.scan_id,
+                                            headers=base_headers)
 
     async def handle_sigma_payloads(self, event: HiveEvent):
         """Intercepts Sigma's payload shipments and executes the assault."""
@@ -167,9 +169,15 @@ class BetaAgent(BrowserEnabledAgent):
         
         target_url = payload.get("target_url")
         if not target_url: return
-        
+
+        # Sigma's JOB_COMPLETED carries target_url but may also carry the
+        # original auth headers under "target_headers" (orchestrator threads
+        # them in seeded packets). Fall back to whatever Sigma echoed.
+        base_headers = dict(payload.get("target_headers") or {})
+
         payloads = data["generated_payloads"]
-        await self._execute_payload_batch(target_url, payloads, event.scan_id)
+        await self._execute_payload_batch(target_url, payloads, event.scan_id,
+                                          base_headers=base_headers)
 
     def _normalize_payloads(self, payloads) -> list[str]:
         """Keep only concrete payload strings Beta can safely execute."""
@@ -192,10 +200,17 @@ class BetaAgent(BrowserEnabledAgent):
             normalized.append(value)
         return normalized
 
-    async def _execute_payload_batch(self, target_url: str, payloads, scan_id: str = None):
+    async def _execute_payload_batch(self, target_url: str, payloads, scan_id: str = None,
+                                     base_headers: dict | None = None):
         payloads = self._normalize_payloads(payloads)
         if not target_url or not payloads:
             return
+
+        # Governance throttle: Zeta may have asked the swarm to slow down.
+        # Halve the dispatch fan-out instead of sleeping blindly.
+        if self._throttled and len(payloads) > 4:
+            payloads = payloads[: max(2, len(payloads) // 2)]
+            print(f"[{self.name}] [THROTTLE] Trimmed payload batch to {len(payloads)} under governance signal.")
 
         digest = hashlib.sha256(
             json.dumps({"target": target_url, "payloads": payloads}, sort_keys=True).encode("utf-8")
@@ -219,7 +234,8 @@ class BetaAgent(BrowserEnabledAgent):
                             payload={"url": target_url, "arsenal": "Adaptive Fuzzer",
                                      "action": "Executing Payload", "payload": p[:50]}
                         ))
-                        success = await self._deliver_and_verify(session, target_url, p, scan_id=scan_id)
+                        success = await self._deliver_and_verify(session, target_url, p, scan_id=scan_id,
+                                                                 base_headers=base_headers)
                         if not success and index < 3:
                             # Mutation fallback for early payloads (WAF evasion).
                             mutated = await self.waf_mutate(p)
@@ -231,7 +247,8 @@ class BetaAgent(BrowserEnabledAgent):
                                     payload={"url": target_url, "arsenal": "WAF Mutation",
                                              "action": "Retrying Mutated Payload", "payload": mutated[:50]}
                                 ))
-                                await self._deliver_and_verify(session, target_url, mutated, scan_id=scan_id)
+                                await self._deliver_and_verify(session, target_url, mutated, scan_id=scan_id,
+                                                               base_headers=base_headers)
                     except Exception as payload_err:
                         print(f"[{self.name}] [PAYLOAD ERROR] Skipping payload: {payload_err}")
 
@@ -240,7 +257,8 @@ class BetaAgent(BrowserEnabledAgent):
         except Exception as session_err:
             print(f"[{self.name}] [SESSION ERROR] Failed to create HTTP session: {session_err}")
 
-    async def _deliver_and_verify(self, session, target_url: str, payload_str: str, scan_id: str = None) -> bool:
+    async def _deliver_and_verify(self, session, target_url: str, payload_str: str, scan_id: str = None,
+                                  base_headers: dict | None = None) -> bool:
         """Deliver a payload across a bandit-selected HTTP vector, verify the
         result differentially, and update the bandit with the REAL outcome
         (Architecture §5.2, §6, §29.6)."""
@@ -264,6 +282,7 @@ class BetaAgent(BrowserEnabledAgent):
         baseline = await self.delivery.baseline(target_url, session=session)
         results = await self.delivery.deliver(
             target_url, payload_str, vectors=[vector], session=session, action="validate",
+            base_headers=base_headers or {},
         )
         if not results:
             self.bandit.update(vuln_class, vector, family, False)
@@ -277,9 +296,11 @@ class BetaAgent(BrowserEnabledAgent):
         test_obj = {"status": res.status, "body": res.body}
 
         # Full §17 verification: baseline+test, negative control, repeatability.
-        neg = await self.delivery.negative_control(target_url, payload_str, vector, session=session)
+        neg = await self.delivery.negative_control(target_url, payload_str, vector, session=session,
+                                                   base_headers=base_headers or {})
         neg_obj = {"status": neg.status, "body": neg.body} if neg else None
-        repeats = await self.delivery.repeat(target_url, payload_str, vector, times=2, session=session)
+        repeats = await self.delivery.repeat(target_url, payload_str, vector, times=2, session=session,
+                                             base_headers=base_headers or {})
         repeat_objs = [{"status": r.status, "body": r.body} for r in repeats]
 
         verdict = MultiLayerVerifier.verify_full(
@@ -353,12 +374,20 @@ class BetaAgent(BrowserEnabledAgent):
                   f"({signals} signals, controls={controls})")
         return success
 
-    async def _execute_real_attack(self, url: str, payload_str: str, scan_id: str = None):
-        """Execute a real HTTP attack against the target with the given payload."""
+    async def _execute_real_attack(self, url: str, payload_str: str, scan_id: str = None,
+                                   headers: dict | None = None):
+        """Execute a real HTTP attack against the target with the given payload.
+
+        ``headers`` carries the seeder's authenticated context (Cookie /
+        Authorization). Without it the polyglot path landed on DVWA's login
+        redirect and could never trigger the vulnerable handler.
+        """
         import time
         from datetime import datetime
         from backend.api.socket_manager import publish_request_event
-        
+
+        outbound_headers = dict(headers or {})
+
         # Broadcast attack intent
         await self.bus.publish(HiveEvent(
             type=EventType.LIVE_ATTACK,
@@ -366,13 +395,15 @@ class BetaAgent(BrowserEnabledAgent):
             scan_id=scan_id or "GLOBAL",
             payload={"url": url, "arsenal": "Polyglot Injector", "action": "Injecting Payload", "payload": payload_str[:50]}
         ))
-        
+
         start_t = time.time()
         try:
             target = url + ("&" if "?" in url else "?") + f"test={payload_str}"
             import aiohttp
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-                response = await network_interceptor.fetch("GET", target, session=session, timeout=10)
+                response = await network_interceptor.fetch(
+                    "GET", target, session=session,
+                    headers=outbound_headers or None, timeout=10)
                 text = response.body
                 status = response.status
                 latency = response.elapsed_ms
@@ -383,7 +414,9 @@ class BetaAgent(BrowserEnabledAgent):
                 base_status = 200
                 base_text = ""
                 try:
-                    base_response = await network_interceptor.fetch("GET", url.split("?")[0], session=session, timeout=5)
+                    base_response = await network_interceptor.fetch(
+                        "GET", url.split("?")[0], session=session,
+                        headers=outbound_headers or None, timeout=5)
                     base_status = base_response.status; base_text = base_response.body
                 except Exception: pass
 

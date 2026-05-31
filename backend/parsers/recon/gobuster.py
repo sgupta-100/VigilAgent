@@ -4,13 +4,18 @@ from pathlib import Path
 import re
 from backend.parsers.recon.base import ParsedEntity, safe_lines
 
+# Hoisted to module scope so we don't recompile on every input line.
+_GOBUSTER_LINE_RE = re.compile(
+    r'^(https?://\S+|/\S+)\s+\(Status:\s*(\d+)\)(?:\s+\[Size:\s*(\d+)])?'
+)
+
 
 def parse_gobuster_lines(path: Path | str) -> list[ParsedEntity]:
     entities: list[ParsedEntity] = []
     seen: set[str] = set()
     for line in safe_lines(path):
         # Gobuster format: /path (Status: 200) [Size: 1234]
-        m = re.match(r'^(https?://\S+|/\S+)\s+\(Status:\s*(\d+)\)(?:\s+\[Size:\s*(\d+)])?', line)
+        m = _GOBUSTER_LINE_RE.match(line)
         if m:
             url = m.group(1)
             status = int(m.group(2))

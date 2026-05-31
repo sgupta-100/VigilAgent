@@ -345,7 +345,10 @@ class CortexEngine:
         if scan_ctx and hasattr(scan_ctx, "transcript_text"):
             transcript = scan_ctx.transcript_text(tail=80)
         elif scan_ctx and getattr(scan_ctx, "transcript", None):
-            transcript = "\n\n".join(scan_ctx.transcript[-80:])
+            # Honour the bounded ring buffer (deque doesn't support slice
+            # syntax, so use list() + tail-cap instead of ``[-80:]``).
+            tail_items = list(scan_ctx.transcript)[-80:]
+            transcript = "\n\n".join(tail_items)
         if not transcript:
             return prompt
         return (

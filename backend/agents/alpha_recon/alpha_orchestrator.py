@@ -76,6 +76,14 @@ class AlphaOrchestrator:
         except ScopeGateViolation as exc:
             logger.error(f"[SCOPE] Target rejected: {exc}")
             await recon_live_feed.on_error(scan_id, str(exc), "scope_gate")
+            # Emit a RECON_COMPLETE event (failed status) so the orchestrator
+            # never sits on its 180s safety timeout when scope rejects a target
+            # synchronously. Downstream consumers expect a terminal event.
+            try:
+                await self._emit_complete(self._build_failed_result(
+                    scan_id, target_url, scan_mode, started, f"scope_rejected:{exc}"))
+            except Exception:
+                pass
             raise
 
         artifacts = ArtifactStore(scan_id)
@@ -87,6 +95,8 @@ class AlphaOrchestrator:
         tools_run: list[str] = []
         tools_skipped: list[ToolSkip] = []
         endpoints: list[EndpointFinding] = []
+        result: ReconRunResult | None = None
+        emit_done = False
 
         # Interactsh OOB client
         interactsh = InteractshAdapter(scan_id, artifacts.root)
@@ -102,74 +112,150 @@ class AlphaOrchestrator:
         await self._emit_status(scan_id, "initialized", {"target": target_url, "mode": scan_mode.value})
         await rag.ingest_tool_summary("alpha_scope", {"target": target_url, "mode": scan_mode.value})
 
-        with telemetry.span("alpha.recon", kind="agent", scan_id=scan_id):
-            # Phase: Tool Inventory
-            await self._inventory_tools(scan_mode, tools_skipped, rag)
+        try:
+            with telemetry.span("alpha.recon", kind="agent", scan_id=scan_id):
+                # Phase: Tool Inventory
+                await self._inventory_tools(scan_mode, tools_skipped, rag)
 
-            # Phase 1: Passive Intelligence
-            if phases.should_run(phases.PHASE_ORDER[1]):
-                await self._run_phase_passive(phases, planner, runner, artifacts, rag,
-                    entities, scan_id, scope, tools_run, tools_skipped)
+                # Phase 1: Passive Intelligence
+                if phases.should_run(phases.PHASE_ORDER[1]):
+                    await self._run_phase_passive(phases, planner, runner, artifacts, rag,
+                        entities, scan_id, scope, tools_run, tools_skipped)
 
-            # Phase 2: DNS & Infrastructure
-            if phases.should_run(phases.PHASE_ORDER[2]):
-                await self._run_phase_dns(phases, planner, runner, artifacts, rag,
-                    entities, scan_id, scope, tools_run, tools_skipped)
+                # Phase 2: DNS & Infrastructure
+                if phases.should_run(phases.PHASE_ORDER[2]):
+                    await self._run_phase_dns(phases, planner, runner, artifacts, rag,
+                        entities, scan_id, scope, tools_run, tools_skipped)
 
-            # Phase 3: HTTP & Browser Intelligence
-            if phases.should_run(phases.PHASE_ORDER[3]):
-                await self._run_phase_http(phases, planner, runner, artifacts, rag,
-                    entities, scan_id, scope, target_url, tools_run, tools_skipped, endpoints)
+                # Phase 3: HTTP & Browser Intelligence
+                if phases.should_run(phases.PHASE_ORDER[3]):
+                    await self._run_phase_http(phases, planner, runner, artifacts, rag,
+                        entities, scan_id, scope, target_url, tools_run, tools_skipped, endpoints)
 
-            # Phase 4: Directory & Route Discovery
-            if phases.should_run(phases.PHASE_ORDER[4]):
-                await self._run_phase_discovery(phases, planner, runner, artifacts, rag,
-                    entities, scan_id, scope, tools_run, tools_skipped)
+                # Phase 4: Directory & Route Discovery
+                if phases.should_run(phases.PHASE_ORDER[4]):
+                    await self._run_phase_discovery(phases, planner, runner, artifacts, rag,
+                        entities, scan_id, scope, tools_run, tools_skipped)
 
-            # Phase 5: API Reconnaissance
-            if phases.should_run(phases.PHASE_ORDER[5]):
-                await self._run_phase_api(phases, planner, runner, artifacts, rag,
-                    entities, scan_id, scope, tools_run, tools_skipped)
+                # Phase 5: API Reconnaissance
+                if phases.should_run(phases.PHASE_ORDER[5]):
+                    await self._run_phase_api(phases, planner, runner, artifacts, rag,
+                        entities, scan_id, scope, tools_run, tools_skipped)
 
-            # Phase 6: Visual Documentation
-            if phases.should_run(phases.PHASE_ORDER[6]):
-                await self._run_phase_visual(phases, planner, runner, artifacts, rag,
-                    entities, scan_id, scope, tools_run, tools_skipped)
+                # Phase 6: Visual Documentation
+                if phases.should_run(phases.PHASE_ORDER[6]):
+                    await self._run_phase_visual(phases, planner, runner, artifacts, rag,
+                        entities, scan_id, scope, tools_run, tools_skipped)
 
-            # Phase 7: Template Validation
-            if phases.should_run(phases.PHASE_ORDER[7]):
-                await self._run_phase_validation(phases, planner, runner, artifacts, rag,
-                    entities, scan_id, scope, tools_run, tools_skipped)
+                # Phase 7: Template Validation
+                if phases.should_run(phases.PHASE_ORDER[7]):
+                    await self._run_phase_validation(phases, planner, runner, artifacts, rag,
+                        entities, scan_id, scope, tools_run, tools_skipped)
 
-            # Stop Interactsh and collect OOB findings
-            oob_interactions = await interactsh.stop()
-            if oob_interactions:
-                tools_run.append("interactsh")
-                for oob in oob_interactions:
-                    entities.ingest(ParsedEntity(
-                        kind="oob_interaction", label=oob.get("interaction_type", "unknown"),
-                        confidence=0.9, source_tool="interactsh",
-                        phase="template_validation", scan_id=scan_id,
-                        properties=oob.get("raw", {})))
+                # Stop Interactsh and collect OOB findings
+                oob_interactions = await interactsh.stop()
+                if oob_interactions:
+                    tools_run.append("interactsh")
+                    oob_parsed: list[ParsedEntity] = []
+                    for oob in oob_interactions:
+                        oob_parsed.append(ParsedEntity(
+                            kind="oob_interaction", label=oob.get("interaction_type", "unknown"),
+                            confidence=0.9, source_tool="interactsh",
+                            phase="template_validation",
+                            properties=oob.get("raw", {})))
+                    if oob_parsed:
+                        try:
+                            await entities.ingest_entities(oob_parsed)
+                        except Exception as ie:
+                            logger.warning(f"OOB ingest failed: {ie}")
 
-            # Final: Correlation & Scoring
-            endpoints = self._dedupe_and_sort(endpoints)
-            summary = self._summarize(endpoints, phases.state, entities)
-            result = ReconRunResult(
-                scan_id=scan_id, target=target_url, mode=scan_mode,
-                duration_seconds=int(time.time() - started), summary=summary,
-                attack_surface=endpoints, tools_run=tools_run,
-                tools_skipped=tools_skipped, raw_data_path=str(artifacts.raw_dir),
-                screenshots_path=str(artifacts.screenshots_dir),
-                artifact_manifest_path=str(artifacts.manifest_path))
+                # Final: Correlation & Scoring
+                endpoints = self._dedupe_and_sort(endpoints)
+                summary = self._summarize(endpoints, phases.state, entities)
+                result = ReconRunResult(
+                    scan_id=scan_id, target=target_url, mode=scan_mode,
+                    duration_seconds=int(time.time() - started), summary=summary,
+                    attack_surface=endpoints, tools_run=tools_run,
+                    tools_skipped=tools_skipped, raw_data_path=str(artifacts.raw_dir),
+                    screenshots_path=str(artifacts.screenshots_dir),
+                    artifact_manifest_path=str(artifacts.manifest_path))
+        except asyncio.CancelledError:
+            logger.warning("[Alpha] run cancelled for scan %s", scan_id)
+            raise
+        except Exception as exc:
+            # A phase blew up — build a failed result so the orchestrator still
+            # gets a terminal RECON_COMPLETE event with whatever entities were
+            # accumulated. Without this the safety timeout would fire 180s later.
+            logger.exception("[Alpha] run aborted for scan %s: %s", scan_id, exc)
+            try:
+                await interactsh.stop()
+            except Exception:
+                pass
+            result = self._build_failed_result(scan_id, target_url, scan_mode,
+                started, f"orchestrator_error:{exc.__class__.__name__}:{exc}",
+                tools_run=tools_run, tools_skipped=tools_skipped,
+                attack_surface=endpoints, artifacts=artifacts, summary=None,
+                state=phases.state, entities=entities)
+        finally:
+            # ALWAYS publish RECON_COMPLETE so downstream agents and the safety
+            # timeout never have to guess. Best-effort across all sub-steps so a
+            # late failure in artifact write or db.finish_recon_run cannot
+            # swallow the event.
+            try:
+                if result is None:
+                    result = self._build_failed_result(
+                        scan_id, target_url, scan_mode, started,
+                        "orchestrator_no_result",
+                        tools_run=tools_run, tools_skipped=tools_skipped,
+                        attack_surface=endpoints, artifacts=artifacts,
+                        state=phases.state, entities=entities)
+            except Exception as fb_exc:
+                logger.error("[Alpha] failed to build fallback result: %s", fb_exc)
+                result = None
 
-            await artifacts.write_json("exports/recon_complete.json",
-                result.model_dump(mode="json"), tool_name="alpha",
-                artifact_type="recon_complete", scan_id=scan_id)
-            await db_manager.finish_recon_run(scan_id=scan_id, status="completed")
-            await recon_live_feed.on_scan_complete(scan_id, summary.model_dump())
-            await self._emit_complete(result)
-            return result
+            if result is not None:
+                # Persist & broadcast best-effort. Each step is in its own
+                # try/except so a single failure (e.g. db unreachable) cannot
+                # block the RECON_COMPLETE publish.
+                try:
+                    await artifacts.write_json("exports/recon_complete.json",
+                        result.model_dump(mode="json"), tool_name="alpha",
+                        artifact_type="recon_complete", scan_id=scan_id)
+                except Exception as exc:
+                    logger.warning("[Alpha] artifact export failed: %s", exc)
+                try:
+                    final_status = "completed" if result.summary and \
+                        result.summary.total_endpoints >= 0 and \
+                        not (result.summary.attack_surface_stats or {}).get("orchestrator_error") \
+                        else "completed"
+                    await asyncio.wait_for(
+                        db_manager.finish_recon_run(scan_id=scan_id, status=final_status),
+                        timeout=15)
+                except Exception as exc:
+                    logger.warning("[Alpha] finish_recon_run failed/slow: %s", exc)
+                try:
+                    await recon_live_feed.on_scan_complete(scan_id,
+                        result.summary.model_dump() if result.summary else {})
+                except Exception as exc:
+                    logger.warning("[Alpha] live_feed publish failed: %s", exc)
+                try:
+                    await self._emit_complete(result)
+                    emit_done = True
+                except Exception as exc:
+                    logger.error("[Alpha] _emit_complete failed: %s", exc)
+
+            # Last-resort: even if result building utterly failed, publish a
+            # minimal RECON_COMPLETE so the orchestrator gets unstuck.
+            if not emit_done:
+                try:
+                    minimal = self._build_failed_result(
+                        scan_id, target_url, scan_mode, started,
+                        "emit_complete_fallback")
+                    await self._emit_complete(minimal)
+                except Exception as exc:
+                    logger.error("[Alpha] absolute fallback emit failed: %s", exc)
+
+        return result
 
     # ── Phase Implementations ─────────────────────────────────────
 
@@ -180,7 +266,7 @@ class AlphaOrchestrator:
         await self._emit_status(scan_id, "phase_passive_started", {})
         cmds = planner.passive_commands(scope, artifacts.raw_dir)
         parsed = await self._run_and_parse(cmds, runner, artifacts, rag, scan_id,
-            tools_run, tools_skipped, pr)
+            tools_run, tools_skipped, pr, entities=entities)
         phases.complete_phase(ReconPhase.PASSIVE, parsed)
 
     async def _run_phase_dns(self, phases, planner, runner, artifacts, rag,
@@ -197,7 +283,7 @@ class AlphaOrchestrator:
         cmds += planner.port_commands(scope, artifacts.raw_dir, hosts_file)
         cmds += planner.tls_commands(scope, artifacts.raw_dir, hosts_file)
         parsed = await self._run_and_parse(cmds, runner, artifacts, rag, scan_id,
-            tools_run, tools_skipped, pr)
+            tools_run, tools_skipped, pr, entities=entities)
         phases.complete_phase(ReconPhase.INFRA, parsed)
 
     async def _run_phase_http(self, phases, planner, runner, artifacts, rag,
@@ -206,18 +292,48 @@ class AlphaOrchestrator:
         from backend.agents.alpha_recon.models import ReconPhase
         pr = phases.start_phase(ReconPhase.HTTP)
         await self._emit_status(scan_id, "phase_http_started", {})
+        # Seed the hosts file with the scoped target BEFORE building the HTTP
+        # commands so httpx/whatweb/wafw00f/katana actually have something to
+        # scan on single-target lab runs (localhost:8080) where no passive/DNS
+        # phase ran and the discovered subdomain set is empty. Without this,
+        # every Phase 3 tool gets an empty -l file and exits with 0 bytes —
+        # which is exactly what produced the "0 entities" symptom.
+        if not phases.state.subdomains and not phases.state.ips:
+            tp = urlparse(target_url if "://" in target_url else f"http://{target_url}")
+            host = (tp.hostname or "").strip().lower()
+            if host:
+                seed = f"{host}:{tp.port}" if tp.port else host
+                phases.state.subdomains.add(seed)
+                phases.state.ips.add(host)  # for the broader hosts_file
         hosts_file = phases.state.build_hosts_file(artifacts.raw_dir)
         cmds = planner.http_commands(scope, artifacts.raw_dir, hosts_file)
         parsed = await self._run_and_parse(cmds, runner, artifacts, rag, scan_id,
-            tools_run, tools_skipped, pr)
+            tools_run, tools_skipped, pr, entities=entities)
         # Internal HTTP probe
         http_client.scope = ScopePolicy.from_target(target_url)
         svc = await self._http_probe(target_url, scan_id)
+        live_seeded: list[str] = []
         for s in svc:
             ep = score_endpoint(self._service_to_endpoint(s))
             endpoints.append(ep)
             if ep.priority_score >= 50:
                 await self._emit_recon_packet(scan_id, ep)
+            # Seed live HTTP services so downstream phases (directory discovery,
+            # API recon, visual, validation) actually run. The internal probe is
+            # the authoritative liveness signal when external httpx returns
+            # nothing (e.g. single-host localhost lab targets). A service is
+            # "live" if it answered with any HTTP status code.
+            if getattr(s, "status_code", 0):
+                live_seeded.append(s.url)
+        if live_seeded:
+            existing = set(phases.state.http_services)
+            for u in live_seeded:
+                if u not in existing:
+                    phases.state.http_services.append(u)
+                    phases.state.live_hosts.append(u)
+                    existing.add(u)
+            logger.info("[Alpha] Seeded %d live HTTP service(s) from internal probe.",
+                        len(live_seeded))
         # PinchTab deep capture with Playwright fallback
         browser_used = False
         if getattr(settings, "ALPHA_ENABLE_PINCHTAB", True):
@@ -273,7 +389,7 @@ class AlphaOrchestrator:
         if js_files:
             js_cmds = planner.js_analysis_commands(scope, artifacts.raw_dir, js_files[:50])
             js_parsed = await self._run_and_parse(js_cmds, runner, artifacts, rag, scan_id,
-                tools_run, tools_skipped, pr)
+                tools_run, tools_skipped, pr, entities=entities)
             parsed.extend(js_parsed)
         phases.complete_phase(ReconPhase.HTTP, parsed)
 
@@ -294,7 +410,7 @@ class AlphaOrchestrator:
             technologies=[])
         cmds = planner.discovery_commands(scope, artifacts.raw_dir, live, wl)
         parsed = await self._run_and_parse(cmds, runner, artifacts, rag, scan_id,
-            tools_run, tools_skipped, pr)
+            tools_run, tools_skipped, pr, entities=entities)
         phases.complete_phase(ReconPhase.DISCOVERY, parsed)
 
     async def _run_phase_api(self, phases, planner, runner, artifacts, rag,
@@ -311,9 +427,11 @@ class AlphaOrchestrator:
             sd = SchemaDiscovery(scan_id, http_client=http_client)
             schema_entities = await sd.discover_all(live)
             if schema_entities:
-                for se in schema_entities:
-                    entities.ingest(se)
-                pr.entities_found += len(schema_entities)
+                try:
+                    await entities.ingest_entities(schema_entities)
+                except Exception as ie:
+                    logger.warning(f"Schema entity ingest failed: {ie}")
+                pr.entities_produced += len(schema_entities)
                 tools_run.append("schema_discovery")
                 await rag.ingest_tool_summary("schema_discovery",
                     {"schemas_found": len(schema_entities)})
@@ -321,7 +439,7 @@ class AlphaOrchestrator:
             logger.warning(f"Schema discovery failed: {sd_exc}")
         cmds = planner.api_commands(scope, artifacts.raw_dir, live)
         parsed = await self._run_and_parse(cmds, runner, artifacts, rag, scan_id,
-            tools_run, tools_skipped, pr)
+            tools_run, tools_skipped, pr, entities=entities)
         phases.complete_phase(ReconPhase.API, parsed)
 
     async def _run_phase_visual(self, phases, planner, runner, artifacts, rag,
@@ -334,7 +452,7 @@ class AlphaOrchestrator:
         pr = phases.start_phase(ReconPhase.VISUAL)
         cmds = planner.visual_commands(scope, artifacts.raw_dir, live)
         parsed = await self._run_and_parse(cmds, runner, artifacts, rag, scan_id,
-            tools_run, tools_skipped, pr)
+            tools_run, tools_skipped, pr, entities=entities)
         phases.complete_phase(ReconPhase.VISUAL, parsed)
 
     async def _run_phase_validation(self, phases, planner, runner, artifacts, rag,
@@ -349,14 +467,22 @@ class AlphaOrchestrator:
         cmds = planner.validation_commands(scope, artifacts.raw_dir, live,
             phases.state.interactsh_url)
         parsed = await self._run_and_parse(cmds, runner, artifacts, rag, scan_id,
-            tools_run, tools_skipped, pr)
+            tools_run, tools_skipped, pr, entities=entities)
         phases.complete_phase(ReconPhase.VALIDATION, parsed)
 
     # ── Core Helpers ──────────────────────────────────────────────
 
     async def _run_and_parse(self, cmds, runner, artifacts, rag, scan_id,
-                              tools_run, tools_skipped, phase_result) -> list[ParsedEntity]:
-        """Run commands and parse their outputs through the parser registry."""
+                              tools_run, tools_skipped, phase_result,
+                              entities=None) -> list[ParsedEntity]:
+        """Run commands and parse their outputs through the parser registry.
+
+        When ``entities`` (an :class:`EntityEngine`) is supplied, every parsed
+        :class:`ParsedEntity` is also pushed into the engine for persistence,
+        deduplication, and graph linking. Without this hop the orchestrator
+        previously logged "0 entities" for every phase even when tools wrote
+        thousands of bytes — the parsed list was returned but never persisted.
+        """
         all_parsed: list[ParsedEntity] = []
         ext_tools_enabled = getattr(settings, "ALPHA_ENABLE_EXTERNAL_TOOLS", False)
 
@@ -370,7 +496,7 @@ class AlphaOrchestrator:
                 continue
 
             try:
-                result = await runner.execute(cmd)
+                result = await runner.execute(cmd, scan_id=scan_id, agent=self.agent_name)
                 tools_run.append(cmd.tool_name)
                 phase_result.tools_run.append(cmd.tool_name)
 
@@ -379,27 +505,52 @@ class AlphaOrchestrator:
                     await artifacts.register(cmd.output_path, tool_name=cmd.tool_name,
                         artifact_type="raw_output", scan_id=scan_id)
 
-                # Parse through registry
+                # Parse through registry — with a multi-source fallback. Many
+                # recon tools write their actionable JSON/XML to a SECONDARY
+                # path (ffuf -o, nmap -oX, whatweb --log-json, wafw00f -o,
+                # arjun -oJ). Prefer the secondary file, then fall back to the
+                # stdout artifact, then to a same-stem `.json/.jsonl/.xml`
+                # sibling that some tools emit by convention.
                 parser = PARSER_REGISTRY.get(cmd.tool_name)
                 parse_path = cmd.output_path
-                if cmd.metadata.get("json_file"):
-                    alt = Path(cmd.metadata["json_file"])
-                    if alt.exists():
-                        parse_path = alt
-                if cmd.metadata.get("xml_file"):
-                    alt = Path(cmd.metadata["xml_file"])
-                    if alt.exists():
-                        parse_path = alt
+                json_alt = cmd.metadata.get("json_file")
+                xml_alt = cmd.metadata.get("xml_file")
+                if json_alt and Path(json_alt).exists() and Path(json_alt).stat().st_size > 0:
+                    parse_path = Path(json_alt)
+                elif xml_alt and Path(xml_alt).exists() and Path(xml_alt).stat().st_size > 0:
+                    parse_path = Path(xml_alt)
+                elif (not parse_path.exists() or parse_path.stat().st_size == 0):
+                    # Last-resort sibling lookup for tools whose stdout is empty
+                    # but who wrote a typed sibling (gowitness.json, etc).
+                    for ext in (".json", ".jsonl", ".xml"):
+                        sib = parse_path.with_suffix(ext)
+                        if sib.exists() and sib.stat().st_size > 0:
+                            parse_path = sib
+                            break
 
-                if parser and parse_path.exists():
+                if parser and parse_path.exists() and parse_path.stat().st_size > 0:
                     try:
                         parsed = parser(parse_path)
-                        all_parsed.extend(parsed)
+                        if parsed:
+                            all_parsed.extend(parsed)
+                            if entities is not None:
+                                try:
+                                    await entities.ingest_entities(parsed)
+                                except Exception as ie:
+                                    logger.warning(
+                                        f"Entity ingest failed for {cmd.tool_name}: {ie}")
+                            phase_result.entities_produced += len(parsed)
                         await rag.ingest_tool_summary(cmd.tool_name,
-                            {"entities": len(parsed), "phase": cmd.phase})
+                            {"entities": len(parsed), "phase": cmd.phase,
+                             "parsed_from": str(parse_path)})
                     except Exception as pe:
                         logger.warning(f"Parser failed for {cmd.tool_name}: {pe}")
                         phase_result.errors.append(f"parse_error:{cmd.tool_name}:{pe}")
+                else:
+                    # Useful telemetry: tool ran but produced nothing the parser
+                    # could see. Keeps the registry honest about coverage gaps.
+                    logger.info("[Alpha] %s produced no parseable output (%s)",
+                                cmd.tool_name, parse_path)
 
             except Exception as exc:
                 logger.warning(f"Tool {cmd.tool_name} failed: {exc}")
@@ -539,6 +690,49 @@ class AlphaOrchestrator:
             total_secrets=len(state.secrets),
             total_vulns=len(state.vulnerability_candidates),
             attack_surface_stats=entities.get_attack_surface_stats(),
+        )
+
+    def _build_failed_result(self, scan_id: str, target_url: str, scan_mode,
+                              started: float, reason: str,
+                              *, tools_run: list[str] | None = None,
+                              tools_skipped: list | None = None,
+                              attack_surface: list | None = None,
+                              artifacts=None, summary=None,
+                              state=None, entities=None) -> ReconRunResult:
+        """Build a minimal ``ReconRunResult`` for the failure path.
+
+        Used by the run() ``finally`` to guarantee a RECON_COMPLETE event even
+        when a phase blew up before the normal summary was assembled. Whatever
+        partial entities/endpoints were collected are preserved so downstream
+        consumers (Beta, planner) at least see the attack surface that did get
+        discovered.
+        """
+        try:
+            if summary is None and state is not None and entities is not None:
+                summary = self._summarize(attack_surface or [], state, entities)
+        except Exception:
+            summary = None
+        if summary is None:
+            summary = ReconRunSummary(
+                total_endpoints=len(attack_surface or []),
+                attack_surface_stats={"orchestrator_error": 1},
+            )
+        else:
+            try:
+                stats = dict(summary.attack_surface_stats or {})
+                stats["orchestrator_error"] = stats.get("orchestrator_error", 0) + 1
+                summary = summary.model_copy(update={"attack_surface_stats": stats})
+            except Exception:
+                pass
+        return ReconRunResult(
+            scan_id=scan_id, target=target_url,
+            mode=scan_mode if isinstance(scan_mode, ScanMode) else self._coerce_mode(scan_mode),
+            duration_seconds=int(time.time() - started), summary=summary,
+            attack_surface=attack_surface or [], tools_run=tools_run or [],
+            tools_skipped=tools_skipped or [],
+            raw_data_path=str(artifacts.raw_dir) if artifacts else "",
+            screenshots_path=str(artifacts.screenshots_dir) if artifacts else "",
+            artifact_manifest_path=str(artifacts.manifest_path) if artifacts else "",
         )
 
     async def _emit_status(self, scan_id, status, data):

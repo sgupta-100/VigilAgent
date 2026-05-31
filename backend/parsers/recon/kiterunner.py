@@ -4,13 +4,18 @@ import re
 from pathlib import Path
 from backend.parsers.recon.base import ParsedEntity, safe_lines
 
+# Hoisted to module scope so we don't recompile on every input line.
+_KITE_LINE_RE = re.compile(
+    r'(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(\d+)\s+\[\s*(\d+)[^\]]*\]\s+(https?://\S+)'
+)
+
 
 def parse_kiterunner_lines(path: Path | str) -> list[ParsedEntity]:
     entities: list[ParsedEntity] = []
     seen: set[str] = set()
     for line in safe_lines(path):
         # Kiterunner: METHOD STATUS_CODE LENGTH URL
-        m = re.match(r'(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(\d+)\s+\[\s*(\d+)[^\]]*\]\s+(https?://\S+)', line)
+        m = _KITE_LINE_RE.match(line)
         if m:
             method, status, length, url = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4)
         else:

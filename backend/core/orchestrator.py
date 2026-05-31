@@ -18,6 +18,7 @@ from playwright.async_api import async_playwright
 from backend.core.hive import EventBus, DistributedEventBus, EventType, HiveEvent
 from backend.core.protocol import ModuleConfig, AgentID, TaskPriority, TaskTarget, JobPacket
 from backend.core.state import stats_db_manager
+from backend.core.agent_roles import role_for as _role_for
 from backend.core.database import db_manager # [NEW] Distributed Intelligence Backbone
 from backend.core.config import settings
 from backend.api.socket_manager import manager
@@ -27,6 +28,18 @@ from backend.core.stdout_watchdog import watch_output
 from backend.core.scope import ScopePolicy
 from backend.modules.tech.http_client import http_client
 from backend.core.task_manager import TaskManager
+from backend.core.broadcast_throttle import BroadcastThrottle
+
+
+# Cached CVSS calculator class — imported once at module load instead of
+# per VULN_CONFIRMED event. The class itself is cheap to instantiate; it's
+# the ``importlib.import_module`` call (called ~1500 times per scan) that
+# was hot. We keep the per-finding instance because it's stateless and
+# tiny — the win is in the import side-effect.
+try:
+    from backend.reporting.cvss_engine import CVSSCalculator as _CachedCVSSCalculator
+except Exception:  # pragma: no cover - import-time defensive fallback
+    _CachedCVSSCalculator = None  # type: ignore[assignment]
 
 # V6 Lifecycle Management
 from backend.core.phase_gate import PhaseGate, ScanPhase
@@ -268,9 +281,23 @@ class HiveOrchestrator:
         # --- REPORTING LINK ---
         scan_events = []
         alpha_recon_complete = asyncio.Event()
+        # Per-scan broadcast throttle: drops repeated (type, url, agent)
+        # broadcasts that fire within 500ms of the last one. The synthetic
+        # WebSocket batcher already coalesces frames at ~50fps, but we
+        # were pushing the same logical event into the queue 1500+ times
+        # during real scans. Suppressing duplicates *before* they hit the
+        # queue cuts JSON serialization + send overhead by an order of
+        # magnitude on noisy scans without changing the public broadcast
+        # contract (event types/payload shapes are unchanged).
+        broadcast_throttle = BroadcastThrottle(window_ms=500)
         async def event_listener(event: HiveEvent):
             # [CRITICAL SYNC: V6] Persist every event to the scan's hot buffer for LiveMonitor/Reports
-            event_data = event.model_dump()
+            # IMPORTANT: serialize with mode="json" so the EventType enum is
+            # rendered as a plain string ("VULN_CONFIRMED"), not its repr
+            # (`<EventType.VULN_CONFIRMED: 'VULN_CONFIRMED'>`). The scans
+            # findings API filters events by ``str(ev["type"]).upper()`` and
+            # would otherwise miss every confirmed finding.
+            event_data = event.model_dump(mode="json")
             scan_events.append(event_data)
             await stats_db_manager.add_scan_event(scan_id, event_data)
 
@@ -299,28 +326,50 @@ class HiveOrchestrator:
                 }
                 
                 # [NEW] Distributed Intelligence Injection (Supabase Backbone)
-                await db_manager.initialize()
-                await db_manager.report_vulnerability(
-                    scan_id=scan_id,
-                    endpoint=sig_data["url"],
-                    vuln_type=sig_data["type"],
-                    severity=severity,
-                    evidence=real_payload,
-                    validated_by=event.source
-                )
+                # Schedule the Supabase write off the listener's critical path
+                # so 1500+ VULN_CONFIRMED events don't serialize behind HTTPS
+                # round-trips. Errors are absorbed inside report_vulnerability
+                # and surface in db_manager logs.
+                async def _persist_vuln():
+                    try:
+                        await db_manager.initialize()
+                        await db_manager.report_vulnerability(
+                            scan_id=scan_id,
+                            endpoint=sig_data["url"],
+                            vuln_type=sig_data["type"],
+                            severity=severity,
+                            evidence=real_payload,
+                            validated_by=event.source,
+                        )
+                    except Exception as _persist_err:
+                        logger.warning(
+                            "[Orchestrator] Deferred vuln persist failed: %s",
+                            _persist_err,
+                        )
+
+                _persist_task = asyncio.create_task(_persist_vuln())
+                HiveOrchestrator._orphaned_tasks.add(_persist_task)
+                _persist_task.add_done_callback(
+                    HiveOrchestrator._orphaned_tasks.discard)
 
                 await stats_db_manager.record_finding(scan_id, severity, sig_data)
 
                 # PROBLEM 7 FIX: Live CVSS scoring at confirmation time (not just report time)
+                # Optimization: import the calculator class once at module load
+                # (see _CachedCVSSCalculator above) and run the synchronous
+                # math via asyncio.to_thread so the event loop isn't blocked
+                # on the (cheap, but cumulative) calculation when 1500+
+                # findings arrive in a tight burst.
                 try:
-                    from backend.reporting.cvss_engine import CVSSCalculator
-                    cvss_calc = CVSSCalculator(
+                    if _CachedCVSSCalculator is None:
+                        raise RuntimeError("cvss_engine import failed at startup")
+                    cvss_calc = _CachedCVSSCalculator(
                         success_count=1,
                         body_content=str(real_payload.get('data', '')),
                         target_url=sig_data["url"],
                         vuln_type=sig_data["type"]
                     )
-                    cvss_score, cvss_vector = cvss_calc.calculate()
+                    cvss_score, cvss_vector = await asyncio.to_thread(cvss_calc.calculate)
                     # Inject CVSS into payload for downstream consumers
                     real_payload["cvss_score"] = cvss_score
                     real_payload["cvss_vector"] = cvss_vector
@@ -336,19 +385,25 @@ class HiveOrchestrator:
                     logger.warning(f"Live CVSS scoring failed: {cvss_err}")
                 
                 # Broadcast authoritative stats to UI
+                # Throttle: VULN_UPDATE is just dashboard counters; emitting
+                # one per finding floods the WebSocket with redundant frames.
+                # 500ms window keeps the dashboard reactive while collapsing
+                # bursts. The throttle key is per-scan so two scans don't
+                # mask each other's metric updates.
                 current_stats = stats_db_manager.get_stats()
-                await manager.broadcast({
-                    "type": "VULN_UPDATE", 
-                    "payload": {
-                        "metrics": {
-                            "vulnerabilities": current_stats["vulnerabilities"],
-                            "critical": current_stats["critical"],
-                            "active_scans": current_stats["active_scans"], 
-                            "total_scans": current_stats["total_scans"]
-                        },
-                        "graph_data": current_stats["history"]
-                    }
-                })
+                if broadcast_throttle.should_emit(("VULN_UPDATE", scan_id, "_metrics")):
+                    await manager.broadcast({
+                        "type": "VULN_UPDATE",
+                        "payload": {
+                            "metrics": {
+                                "vulnerabilities": current_stats["vulnerabilities"],
+                                "critical": current_stats["critical"],
+                                "active_scans": current_stats["active_scans"],
+                                "total_scans": current_stats["total_scans"]
+                            },
+                            "graph_data": current_stats["history"]
+                        }
+                    })
 
                 # V6: Persist Threat Metrics (Async Fix)
                 threat_type = real_payload.get("type", "Unknown Threat")
@@ -359,35 +414,51 @@ class HiveOrchestrator:
                 # Broadcast LIVE THREAT LOG (New Feature)
                 log_payload = {
                         "agent": event.source,
+                        "agent_role": _role_for(str(event.source)),
                         "threat_type": threat_type,
                         "url": real_payload.get("url", "Unknown Source"),
                         "severity": severity,
                         "timestamp": datetime.now().strftime("%H:%M:%S"),
                         "risk_score": risk_score
                     }
-                await manager.broadcast({
-                    "type": "LIVE_THREAT_LOG",
-                    "scan_id": scan_id, # [V7] Isolation Injection
-                    "payload": log_payload
-                })
+                # Throttle key: (event_type, url, agent) — same triple
+                # firing inside 500ms is treated as the same logical
+                # alert. Persistence to the scan buffer still happens so
+                # report builders see every event.
+                _threat_key = ("LIVE_THREAT_LOG",
+                               log_payload["url"], log_payload["agent"])
+                if broadcast_throttle.should_emit(_threat_key):
+                    await manager.broadcast({
+                        "type": "LIVE_THREAT_LOG",
+                        "scan_id": scan_id,  # [V7] Isolation Injection
+                        "payload": log_payload
+                    })
                 # Ensure the filtered log also makes it to the scan buffer
                 await stats_db_manager.add_scan_event(scan_id, {"type": "LIVE_THREAT_LOG", "scan_id": scan_id, "payload": log_payload})
                 
             elif event.type == EventType.VULN_CANDIDATE:
                 real_payload = event.payload
                 threat_type = real_payload.get("tag", "Anomaly Target")
-                await manager.broadcast({
-                    "type": "LIVE_THREAT_LOG",
-                    "scan_id": scan_id, # [V7] Isolation Injection
-                    "payload": {
-                        "agent": event.source,
-                        "threat_type": f"[RECON] {threat_type}",
-                        "url": real_payload.get("url", "Unknown Source"),
-                        "severity": "INFO",
-                        "timestamp": datetime.now().strftime("%H:%M:%S"),
-                        "risk_score": 0
-                    }
-                })
+                # Throttle: recon-phase candidates often re-fire on the same
+                # URL (multiple agents probing the same endpoint). Suppress
+                # repeats so the dashboard log doesn't drown.
+                _cand_key = ("VULN_CANDIDATE",
+                             real_payload.get("url", "Unknown Source"),
+                             event.source)
+                if broadcast_throttle.should_emit(_cand_key):
+                    await manager.broadcast({
+                        "type": "LIVE_THREAT_LOG",
+                        "scan_id": scan_id,  # [V7] Isolation Injection
+                        "payload": {
+                            "agent": event.source,
+                            "agent_role": _role_for(str(event.source)),
+                            "threat_type": f"[RECON] {threat_type}",
+                            "url": real_payload.get("url", "Unknown Source"),
+                            "severity": "INFO",
+                            "timestamp": datetime.now().strftime("%H:%M:%S"),
+                            "risk_score": 0
+                        }
+                    })
 
             elif event.type == EventType.LIVE_ATTACK:
                 # Compute a dynamic severity based on keywords in the action/arsenal
@@ -404,6 +475,7 @@ class HiveOrchestrator:
 
                 attack_payload = {
                         "agent": event.source,
+                        "agent_role": _role_for(str(event.source)),
                         "url": event.payload.get("url", "N/A"),
                         "arsenal": event.payload.get("arsenal", "General"),
                         "action": event.payload.get("action", "Processing"),
@@ -412,26 +484,37 @@ class HiveOrchestrator:
                         "risk_score": attack_risk,
                         "timestamp": datetime.now().strftime("%H:%M:%S")
                     }
-                await manager.broadcast({
-                    "type": "LIVE_ATTACK_FEED",
-                    "scan_id": scan_id, # [V7] Isolation Injection
-                    "payload": attack_payload
-                })
-                # Persistence for Feed History
+                # Throttle: repeated attacks against the same URL by the
+                # same agent (typical fuzzing pattern). Persistence is
+                # NOT throttled — the feed history below still records
+                # every event for the scan buffer.
+                _atk_key = ("LIVE_ATTACK_FEED",
+                            attack_payload["url"], attack_payload["agent"])
+                if broadcast_throttle.should_emit(_atk_key):
+                    await manager.broadcast({
+                        "type": "LIVE_ATTACK_FEED",
+                        "scan_id": scan_id,  # [V7] Isolation Injection
+                        "payload": attack_payload
+                    })
+                # Persistence for Feed History (always)
                 await stats_db_manager.add_scan_event(scan_id, {"type": "LIVE_ATTACK_FEED", "scan_id": scan_id, "payload": attack_payload})
 
             elif event.type == EventType.RECON_PACKET:
-                await manager.broadcast({
-                    "type": "RECON_PACKET",
-                    "scan_id": scan_id, # [V7] Isolation Injection
-                    "payload": {
-                        "url": event.payload.get("url", "Unknown"),
-                        "severity": event.payload.get("severity", "INFO"),
-                        "risk_score": event.payload.get("risk_score", 10),
-                        "source": event.source,
-                        "timestamp": datetime.now().strftime("%H:%M:%S")
-                    }
-                })
+                _rp_url = event.payload.get("url", "Unknown")
+                # Throttle: alpha_recon emits one RECON_PACKET per discovered
+                # endpoint; re-discoveries within 500ms are noise.
+                if broadcast_throttle.should_emit(("RECON_PACKET", _rp_url, event.source)):
+                    await manager.broadcast({
+                        "type": "RECON_PACKET",
+                        "scan_id": scan_id,  # [V7] Isolation Injection
+                        "payload": {
+                            "url": _rp_url,
+                            "severity": event.payload.get("severity", "INFO"),
+                            "risk_score": event.payload.get("risk_score", 10),
+                            "source": event.source,
+                            "timestamp": datetime.now().strftime("%H:%M:%S")
+                        }
+                    })
 
             elif event.type == EventType.JOB_ASSIGNED:
                 # Broadcast job dispatch as a visual event for the dashboard
@@ -439,16 +522,19 @@ class HiveOrchestrator:
                 config_data = event.payload.get("config", {})
                 job_url = target_data.get("url", "System Process") if isinstance(target_data, dict) else "System Process"
                 job_module = config_data.get("module_id", "Unknown") if isinstance(config_data, dict) else "Unknown"
-                await manager.broadcast({
-                    "type": "JOB_ASSIGNED",
-                    "scan_id": scan_id, # [V7] Isolation Injection
-                    "payload": {
-                        "source": event.source,
-                        "url": job_url,
-                        "module": job_module,
-                        "timestamp": datetime.now().strftime("%H:%M:%S")
-                    }
-                })
+                if broadcast_throttle.should_emit(("JOB_ASSIGNED", job_url, event.source)):
+                    await manager.broadcast({
+                        "type": "JOB_ASSIGNED",
+                        "scan_id": scan_id,  # [V7] Isolation Injection
+                        "payload": {
+                            "source": event.source,
+                            "agent": event.source,
+                            "agent_role": _role_for(str(event.source)),
+                            "url": job_url,
+                            "module": job_module,
+                            "timestamp": datetime.now().strftime("%H:%M:%S")
+                        }
+                    })
 
         # Subscribe Recorder to Everything for maximum fidelity
         for etype in EventType:
@@ -754,10 +840,74 @@ class HiveOrchestrator:
         })
         
         # BLOCKING WAIT - No timeout, Alpha must complete
-        logger.info(f"[{scan_id}] Waiting for Alpha recon completion (unlimited time)...")
-        await alpha_recon_complete.wait()
-        
-        logger.info(f"[{scan_id}] Alpha recon COMPLETE - Releasing attack agents")
+        logger.info(f"[{scan_id}] Waiting for Alpha recon completion (with safety timeout)...")
+        # Robust gate: wait up to RECON_MAX_WAIT for the formal RECON_COMPLETE
+        # signal, but proceed regardless so a stalled recon spine never deadlocks
+        # the attack pipeline (Architecture §16 phase ordering — phases must
+        # advance, not block forever). The seeder + attack stages still run with
+        # whatever recon was able to emit.
+        try:
+            recon_max_wait = float(getattr(settings, "RECON_MAX_WAIT_SECONDS", 180))
+        except Exception:
+            recon_max_wait = 180.0
+        try:
+            await asyncio.wait_for(alpha_recon_complete.wait(), timeout=recon_max_wait)
+            logger.info(f"[{scan_id}] Alpha recon COMPLETE signal received - releasing attack agents")
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] Alpha recon did not emit RECON_COMPLETE within %.0fs; proceeding "
+                "to attack phase with whatever surface recon produced.",
+                scan_id, recon_max_wait)
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # ATTACK SURFACE SEEDING (recon → exploitation handoff):
+        # A real operator authenticates first, then attacks the actual
+        # vulnerable endpoints. Seed authenticated, param-carrying targets so
+        # Sigma/Beta exploit real injection points instead of the bare base URL.
+        # ═══════════════════════════════════════════════════════════════════════
+        seeded_targets = []
+        seeded_surface = None
+        try:
+            from backend.core.attack_surface_seeder import seed_attack_surface
+            # Gather any recon-discovered endpoints that carry query params.
+            recon_eps = []
+            try:
+                for ev in scan_events:
+                    payload = ev.get("payload", {}) if isinstance(ev, dict) else {}
+                    u = payload.get("url") if isinstance(payload, dict) else None
+                    if isinstance(u, str) and "?" in u:
+                        recon_eps.append(u)
+            except Exception:
+                recon_eps = []
+            seeded_surface = await seed_attack_surface(
+                target_config["url"], scan_id, recon_endpoints=recon_eps)
+            seeded_targets = seeded_surface.targets
+            logger.info("[%s] Attack surface seeded: app=%s authenticated=%s targets=%d",
+                        scan_id, seeded_surface.app, seeded_surface.authenticated,
+                        len(seeded_targets))
+            await manager.broadcast({
+                "type": "LIVE_ATTACK_FEED", "scan_id": scan_id,
+                "payload": {
+                    "timestamp": datetime.now().strftime("%H:%M:%S"),
+                    "agent": "Orchestrator",
+                    "threat_type": "AUTH" if seeded_surface.authenticated else "TARGETING",
+                    "url": target_config["url"],
+                    "result": (f"🔑 Authenticated as {seeded_surface.principal} & seeded "
+                               f"{len(seeded_targets)} attack target(s)"
+                               if seeded_surface.authenticated
+                               else f"🎯 Seeded {len(seeded_targets)} attack target(s)"),
+                    "severity": "INFO", "risk_score": 0,
+                }
+            })
+        except Exception as _se:
+            logger.warning(f"[{scan_id}] Attack surface seeding failed: {_se}")
+
+        # Helper: build the JobPacket target list for an attack job. Prefer the
+        # seeded authenticated endpoints; fall back to the base URL.
+        def _attack_targets():
+            if seeded_targets:
+                return list(seeded_targets)
+            return [TaskTarget(url=target_config["url"])]
         
         # ═══════════════════════════════════════════════════════════════════════
         # V6 LIFECYCLE: Complete Reconnaissance, Start Assessment
@@ -814,27 +964,28 @@ class HiveOrchestrator:
         for ui_module_name in selected_modules:
             internal_id = module_mapper.get(ui_module_name)
             if not internal_id: continue
-            
-            packet = JobPacket(
-                priority=TaskPriority.HIGH,
-                target=TaskTarget(url=target_config['url']),
-                config=ModuleConfig(
-                    module_id=internal_id,
-                    agent_id=AgentID.SIGMA,
-                    params={
-                        "concurrency": target_config.get("concurrency", 50),
-                        "rps": target_config.get("rps", 100)
-                    }
-                )
-            )
 
-            
-            await bus.publish(HiveEvent(
-                type=EventType.JOB_ASSIGNED,
-                source="Orchestrator",
-                scan_id=scan_id,
-                payload=packet.model_dump()
-            ))
+            # Dispatch one job PER seeded target so each module attacks the real
+            # vulnerable endpoints (with auth + params), not just the base URL.
+            for atk in _attack_targets():
+                packet = JobPacket(
+                    priority=TaskPriority.HIGH,
+                    target=atk,
+                    config=ModuleConfig(
+                        module_id=internal_id,
+                        agent_id=AgentID.SIGMA,
+                        params={
+                            "concurrency": target_config.get("concurrency", 50),
+                            "rps": target_config.get("rps", 100)
+                        }
+                    )
+                )
+                await bus.publish(HiveEvent(
+                    type=EventType.JOB_ASSIGNED,
+                    source="Orchestrator",
+                    scan_id=scan_id,
+                    payload=packet.model_dump()
+                ))
 
         # [V6 REAL-TIME FIX] Always force an AI Generative Assault payload to feed BetaAgent
         ai_packet = JobPacket(
@@ -857,22 +1008,25 @@ class HiveOrchestrator:
             payload=ai_packet.model_dump()
         ))
 
-        # [V6 REAL-TIME FIX] Also dispatch a direct Beta assault job to ensure real-time attacks
-        beta_assault_packet = JobPacket(
-            priority=TaskPriority.HIGH,
-            target=TaskTarget(url=target_config['url']),
-            config=ModuleConfig(
-                module_id="beta_direct_assault",
-                agent_id=AgentID.BETA,
-                aggression=8
+        # [V6 REAL-TIME FIX] Also dispatch direct Beta assault jobs (one per
+        # seeded target) so Beta's polyglot/bandit pipeline hits the real
+        # authenticated vulnerable endpoints.
+        for atk in _attack_targets():
+            beta_assault_packet = JobPacket(
+                priority=TaskPriority.HIGH,
+                target=atk,
+                config=ModuleConfig(
+                    module_id="beta_direct_assault",
+                    agent_id=AgentID.BETA,
+                    aggression=8
+                )
             )
-        )
-        await bus.publish(HiveEvent(
-            type=EventType.JOB_ASSIGNED,
-            source="Orchestrator",
-            scan_id=scan_id,
-            payload=beta_assault_packet.model_dump()
-        ))
+            await bus.publish(HiveEvent(
+                type=EventType.JOB_ASSIGNED,
+                source="Orchestrator",
+                scan_id=scan_id,
+                payload=beta_assault_packet.model_dump()
+            ))
 
         await manager.broadcast({"type": "GI5_LOG", "payload": "HYPER-MIND ONLINE. Parallel Overdrive Active."})
 

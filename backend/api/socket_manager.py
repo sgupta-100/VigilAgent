@@ -114,6 +114,11 @@ async def publish_request_event(data: Dict[str, Any], scan_id: str = None):
 # ------------------------------------------
 
 class SocketManager:
+    # Replay ring buffer cap. A late-connecting Live Monitor will receive
+    # the most recent N broadcasts so it doesn't show a blank screen when it
+    # joins after a scan has already started broadcasting events.
+    REPLAY_BUFFER_SIZE = 50
+
     def __init__(self):
         self.ui_connections: List[WebSocket] = []
         self.spy_connections: List[WebSocket] = []
@@ -122,7 +127,14 @@ class SocketManager:
         self.last_spy_activity = 0.0
         self.message_queue = collections.deque(maxlen=10000) # Memory Guard: Capped for reasonable memory usage
         self._batch_task = None
-        
+
+        # Replay buffer: every successful broadcast is appended here, so a
+        # newly-connected ui client can be primed with recent activity. We
+        # keep this in-memory only — no disk, no Redis — because it's purely
+        # a UX nicety, and a process restart drops it cleanly.
+        self._replay_buffer: collections.deque = collections.deque(
+            maxlen=self.REPLAY_BUFFER_SIZE)
+
         # [NEW] RPS Tracking for Adaptive Sampling
         self.packet_count = 0
         self.recent_rps = 0
@@ -239,6 +251,23 @@ class SocketManager:
                 "type": "SPY_STATUS",
                 "payload": {"connected": spy_is_online}
             }))
+            # Replay the recent ring buffer so a late-joining Live Monitor
+            # sees recent activity instead of a blank screen. Send each event
+            # as its own frame to match the format the dashboard expects when
+            # not batched.
+            if self._replay_buffer:
+                try:
+                    snapshot = list(self._replay_buffer)
+                    for event in snapshot:
+                        try:
+                            await websocket.send_text(
+                                json.dumps(event, default=self._sanitize_bytes))
+                        except Exception:
+                            # Client gone mid-replay; bail out, the disconnect
+                            # path will clean it up on the next batch tick.
+                            break
+                except Exception as e:
+                    self.logger.debug(f"replay-on-connect failed: {e}")
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.spy_connections:
@@ -256,6 +285,17 @@ class SocketManager:
             await asyncio.gather(*(conn.send_text(message) for conn in self.ui_connections), return_exceptions=True)
 
     async def broadcast_to_ui(self, data: dict):
+        # Cache for late-joiners. We only retain "live" event types — system
+        # heartbeats and SPY_STATUS pings would just clutter the replay. The
+        # buffer is bounded by REPLAY_BUFFER_SIZE so memory stays flat under
+        # high RPS.
+        try:
+            evt_type = data.get("type") if isinstance(data, dict) else None
+            if evt_type and evt_type not in ("SPY_STATUS",):
+                self._replay_buffer.append(data)
+        except Exception:
+            # Never let buffer caching kill a broadcast.
+            pass
         self.message_queue.append(data)
 
 manager = SocketManager()

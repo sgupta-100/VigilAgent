@@ -234,7 +234,11 @@ class GuardLayer:
         passed, reason = self._validate_single(finding)
         if passed:
             self._stats["passed"] += 1
+            print(f"[finding-flow] guard_layer.filter_single: PASS "
+                  f"url={finding.get('url', '?')} type={finding.get('type', '?')}")
         else:
+            print(f"[finding-flow] guard_layer.filter_single: DROP reason={reason} "
+                  f"url={finding.get('url', '?')} type={finding.get('type', '?')}")
             logger.debug("GUARD: rejected single [%s] %s", reason, finding.get("url", "unknown"))
         return passed
 
@@ -244,22 +248,43 @@ class GuardLayer:
         if inspection.blocked:
             return False, inspection.reason
 
-        response = finding.get("response") or finding.get("response_body") or finding.get("raw_response")
-        if not response:
-            self._stats["rejected_no_response"] += 1
-            return False, "no_response"
+        # ------------------------------------------------------------------
+        # Confirmation fast-path: when the upstream pipeline has already
+        # *confirmed* a finding (a VULN_CONFIRMED HiveEvent with explicit
+        # ``validation = VALID`` injected by the orchestrator, a Gamma audit
+        # verdict, a browser-verified exploit, etc.), the per-finding response
+        # / weak-signal / low-confidence heuristics are mis-applied — those
+        # gates are pre-confirmation triage for *raw* candidate findings.
+        #
+        # We still run the prompt-injection inspector (above) and the
+        # signature dedup (below) which are the legitimate safety + sanity
+        # roles of the GuardLayer. We just stop refusing to surface
+        # confirmed findings because they don't carry diff scores.
+        # ------------------------------------------------------------------
         validation = str(finding.get("validation", "")).upper()
-        if validation not in ("VALID", "CONFIRMED", "TRUE_POSITIVE") and not finding.get("gi5_match", False):
-            self._stats["rejected_not_validated"] += 1
-            return False, "not_validated"
-        diff_score = float(finding.get("response_diff_score", 0))
-        gi5_risk = float(finding.get("gi5_risk", finding.get("risk_score", 0)))
-        if not (finding.get("gi5_match", False) or gi5_risk > 50) and diff_score <= self.MIN_DIFF_SCORE:
-            self._stats["rejected_weak_signal"] += 1
-            return False, "weak_signal"
-        if float(finding.get("confidence", 0)) < self.MIN_CONFIDENCE:
-            self._stats["rejected_low_confidence"] += 1
-            return False, "low_confidence"
+        already_confirmed = (
+            validation in ("VALID", "CONFIRMED", "TRUE_POSITIVE")
+            or bool(finding.get("verified"))
+            or bool(finding.get("browser_verified"))
+        )
+
+        if not already_confirmed:
+            response = finding.get("response") or finding.get("response_body") or finding.get("raw_response")
+            if not response:
+                self._stats["rejected_no_response"] += 1
+                return False, "no_response"
+            if validation not in ("VALID", "CONFIRMED", "TRUE_POSITIVE") and not finding.get("gi5_match", False):
+                self._stats["rejected_not_validated"] += 1
+                return False, "not_validated"
+            diff_score = float(finding.get("response_diff_score", 0))
+            gi5_risk = float(finding.get("gi5_risk", finding.get("risk_score", 0)))
+            if not (finding.get("gi5_match", False) or gi5_risk > 50) and diff_score <= self.MIN_DIFF_SCORE:
+                self._stats["rejected_weak_signal"] += 1
+                return False, "weak_signal"
+            if float(finding.get("confidence", 0)) < self.MIN_CONFIDENCE:
+                self._stats["rejected_low_confidence"] += 1
+                return False, "low_confidence"
+
         dedup_key = self._compute_hash(finding)
         if dedup_key in self._seen_hashes:
             self._stats["rejected_duplicate"] += 1

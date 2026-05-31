@@ -5,6 +5,7 @@ import { LIQUID_SPRING } from '../lib/constants';
 import { apiUrl } from '../lib/api';
 import { handleAutoDownload } from '../lib/downloadReport';
 import { useWebSocket } from '../hooks/useWebSocket';
+import LiveMonitor from './LiveMonitor';
 
 
 const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
@@ -525,6 +526,15 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
                             </div>
                         </motion.div>
                     </div>
+
+                    {/* LIVE AGENT FEED — Real-time backend orchestration events */}
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ ...LIQUID_SPRING, delay: 0.4 }}
+                    >
+                        <LiveMonitor />
+                    </motion.div>
                 </main>
 
                 <footer className="w-full text-center py-6 text-xs text-gray-600 relative z-10">

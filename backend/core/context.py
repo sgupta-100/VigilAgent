@@ -1,8 +1,16 @@
 import asyncio
 import json
 import uuid
+from collections import deque
 from datetime import datetime
 from typing import Dict, Any, Set
+
+# Cap the per-scan event transcript so long-running scans don't grow an
+# unbounded list (a long scan emits 5000+ events; without a cap memory and
+# join() time grow linearly forever). 5000 keeps roughly the last hour of
+# events for an active scan and bounds memory at ~tens of MB worst-case.
+_TRANSCRIPT_MAXLEN = 5000
+
 
 class ScanContext:
     def __init__(self, scan_id: str = None):
@@ -13,7 +21,10 @@ class ScanContext:
         self.diff_cache: Dict[str, Any] = {}
         
         # 1.5 Chronological Transcript (Replaces global workflow_state Blackboard)
-        self.transcript: list[str] = []
+        # Bounded ring buffer: deque(maxlen=...) gives O(1) append + auto-evict
+        # of the oldest entry once the cap is reached. Consumers either iterate
+        # or slice via ``transcript_text(tail=...)`` so the deque is drop-in.
+        self.transcript: deque[str] = deque(maxlen=_TRANSCRIPT_MAXLEN)
         self.workflow_state: Dict[str, Any] = {} # Deprecated: kept only for backwards compatibility
         
         # 2. Causal Ordering (Fixes Invariant 21)
@@ -56,5 +67,11 @@ class ScanContext:
         return block
 
     def transcript_text(self, *, tail: int | None = None) -> str:
-        events = self.transcript[-tail:] if tail else self.transcript
+        # ``deque`` doesn't support negative-index slicing, so materialise once.
+        if tail is None or tail >= len(self.transcript):
+            events = list(self.transcript)
+        else:
+            # Walk from the right end; cheaper than list(self.transcript)[-tail:]
+            # for large transcripts because we only copy ``tail`` items.
+            events = list(self.transcript)[-tail:]
         return "\n\n".join(events)

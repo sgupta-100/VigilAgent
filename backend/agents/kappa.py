@@ -37,6 +37,10 @@ class KappaAgent(BrowserEnabledAgent):
             self.truth_kernel = None
             
         self._embeddings_disabled = False
+        # Track background archive tasks so stop() can drain them and we don't
+        # leave orphaned coroutines (the embedding/learning calls can take
+        # seconds against Gemini and we never want them blocking the bus).
+        self._archive_tasks: set[asyncio.Task] = set()
         self._ensure_memory()
 
     def _ensure_memory(self):
@@ -68,61 +72,102 @@ class KappaAgent(BrowserEnabledAgent):
         return cosine_similarity(vec1, vec2)
 
     async def archive_victory(self, event: HiveEvent):
+        """Handle a confirmed-vulnerability event without blocking the bus.
+
+        The expensive parts (Gemini embedding + learning_engine.learn) used to
+        run inline, which serialized every VULN_CONFIRMED arrival behind a
+        multi-second LLM call and starved every other handler on the same
+        scan-context queue. We now record the lightweight archive synchronously
+        and kick the slow path off as a background task tracked by the agent.
+        """
         payload = event.payload
         # ScanContext: record event for transcript causality
         if hasattr(self.bus, "get_or_create_context"):
             _ctx = self.bus.get_or_create_context(getattr(event, "scan_id", "GLOBAL"))
             _ctx.append_event(event)
-        print(f"[{self.name}] [ARCHIVE] Verified Vulnerability Exploit Captured. Embedding...")
-        
-        # RICHER SCHEMA (V6 Enhancement)
+        print(f"[{self.name}] [ARCHIVE] Verified Vulnerability Exploit Captured. Embedding (background)...")
+
+        # RICHER SCHEMA (V6 Enhancement) — synchronous, cheap.
         archive_data = {
             "type": payload.get("type", "unknown"),
             "url": payload.get("url", ""),
             "payload": payload.get("payload", ""),
             "confidence": payload.get("confidence", 0.0),
             "audit_reasoning": payload.get("audit_reasoning", ""),
-            "timestamp": _time.strftime("%Y-%m-%d %H:%M:%S")
+            "timestamp": _time.strftime("%Y-%m-%d %H:%M:%S"),
+            "vector": [],
         }
-        
-        # Generate Vector Representation
-        text_rep = f"TYPE: {archive_data['type']} | URL: {archive_data['url']} | PAYLOAD: {archive_data['payload']}"
-        embedding = await self._get_embedding(text_rep)
-        archive_data["vector"] = embedding
-        
+
         self._save_record(archive_data)
         memory_store.remember_episode(event.scan_id, {"type": "vulnerability", "payload": archive_data})
-        if embedding:
-            memory_store.remember_semantic(archive_data)
-        
-        await self.bus.publish(HiveEvent(
-            type=EventType.LOG,
-            source=self.name,
-            payload={"message": f"Vector Memory {archive_data['type']} stored with {len(embedding)}-dim embedding."}
-        ))
 
-        # CONTINUOUS LEARNING: Feed vulnerability to learning engine
-        from backend.core.learning_engine import learning_engine
-        await learning_engine.learn_from_vulnerability(archive_data, event.scan_id)
+        # Slow path runs out-of-band. We don't await it here.
+        task = asyncio.create_task(self._slow_archive(archive_data, payload, event.scan_id))
+        self._archive_tasks.add(task)
+        task.add_done_callback(self._archive_tasks.discard)
 
-        # PROBLEM 6 FIX: Feed intelligence back to Omega for adaptive replanning
-        confidence = payload.get("confidence", 0.0)
-        vuln_type = payload.get("type", "")
-        url = payload.get("url", "")
-        if confidence > 0.7 and vuln_type:
-            pattern = {
-                "vuln_type": vuln_type,
-                "endpoint_pattern": self._extract_pattern(url),
-                "confidence": confidence,
-                "timestamp": _time.time()
-            }
+    async def _slow_archive(self, archive_data: dict, payload: dict, scan_id: str):
+        """Run the expensive embedding + learning_engine + adaptive replay
+        feedback in the background. Failures here must NOT take the bus down.
+        """
+        try:
+            text_rep = (f"TYPE: {archive_data['type']} | URL: {archive_data['url']} | "
+                        f"PAYLOAD: {archive_data['payload']}")
+            embedding = await self._get_embedding(text_rep)
+            archive_data["vector"] = embedding
+            if embedding:
+                # Persist the now-embedded record alongside the synchronous one
+                # so semantic recall sees the vector. _save_record is idempotent
+                # only by append, so we re-save with the embedding attached.
+                self._save_record({**archive_data, "embedded": True})
+                memory_store.remember_semantic(archive_data)
+
             await self.bus.publish(HiveEvent(
-                type=EventType.PATTERN_LEARNED,
+                type=EventType.LOG,
                 source=self.name,
-                scan_id=event.scan_id,
-                payload={"pattern": pattern}
+                payload={"message": f"Vector Memory {archive_data['type']} stored "
+                                    f"with {len(embedding)}-dim embedding."}
             ))
-            print(f"[{self.name}] [PATTERN] Fed pattern '{vuln_type}' back to Omega for adaptive replanning.")
+
+            # CONTINUOUS LEARNING: feed the learning engine off the hot path.
+            try:
+                from backend.core.learning_engine import learning_engine
+                await learning_engine.learn_from_vulnerability(archive_data, scan_id)
+            except Exception as le_err:
+                print(f"[{self.name}] [LEARN] background learning error: {le_err}")
+
+            # Pattern feedback to Omega (mid-scan adaptation, requirement 6).
+            confidence = payload.get("confidence", 0.0)
+            vuln_type = payload.get("type", "")
+            url = payload.get("url", "")
+            if confidence > 0.7 and vuln_type:
+                pattern = {
+                    "vuln_type": vuln_type,
+                    "endpoint_pattern": self._extract_pattern(url),
+                    "confidence": confidence,
+                    "timestamp": _time.time()
+                }
+                await self.bus.publish(HiveEvent(
+                    type=EventType.PATTERN_LEARNED,
+                    source=self.name,
+                    scan_id=scan_id,
+                    payload={"pattern": pattern}
+                ))
+                print(f"[{self.name}] [PATTERN] Fed pattern '{vuln_type}' back to Omega for adaptive replanning.")
+        except Exception as exc:
+            print(f"[{self.name}] [ARCHIVE-BG] background archive error: {exc}")
+
+    async def stop(self):
+        """Drain any in-flight background archive tasks before shutting down so
+        the embedding/learning calls don't outlive the agent and leak sockets.
+        """
+        if self._archive_tasks:
+            for task in list(self._archive_tasks):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*self._archive_tasks, return_exceptions=True)
+            self._archive_tasks.clear()
+        await super().stop()
 
     def _extract_pattern(self, url: str) -> str:
         """Convert specific URL to a reusable pattern for cross-scan intelligence."""

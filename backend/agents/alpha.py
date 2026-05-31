@@ -36,10 +36,24 @@ class AlphaAgent(BrowserEnabledAgent):
         # (Architecture §5.1.1).
         self.alpha_recon = AlphaOrchestrator(
             bus, agent_name=self.name, browser_provider=lambda: self.browser)
+        # Governance: throttle flag from Zeta (Architecture §5.2/§29.4).
+        self._throttled = False
 
     async def setup(self):
         self.bus.subscribe(EventType.JOB_ASSIGNED, self.handle_job)
         self.bus.subscribe(EventType.TARGET_ACQUIRED, self.handle_target_acquired)
+        # Honor Zeta's runtime governor — pause new recon dispatch on
+        # THROTTLE/STEALTH_MODE rather than spawning more browser/HTTP tasks.
+        self.bus.subscribe(EventType.CONTROL_SIGNAL, self.handle_control_signal)
+
+    async def handle_control_signal(self, event: HiveEvent):
+        signal = event.payload.get("signal", "")
+        if signal in ("THROTTLE", "STEALTH_MODE"):
+            self._throttled = True
+            print(f"[{self.name}] Governance: {signal} received. Pausing new recon dispatch.")
+        elif signal == "RESUME":
+            self._throttled = False
+            print(f"[{self.name}] Governance: RESUME received. Recon dispatch unpaused.")
 
     def _resolve_mode(self, *sources) -> str:
         for s in sources:
@@ -57,6 +71,10 @@ class AlphaAgent(BrowserEnabledAgent):
         # the planner's assignment instead of double-running.
         if event.source == "Orchestrator" and getattr(settings, "ALPHA_RECON_VIA_PLANNER", True):
             print(f"[{self.name}] Target received; waiting for Mission Planner recon assignment.")
+            return
+
+        if self._throttled:
+            print(f"[{self.name}] [THROTTLE] New target {target_url} deferred under governance signal.")
             return
 
         print(f"[{self.name}] TARGET ACQUIRED: {target_url}. Initiating unified recon...")

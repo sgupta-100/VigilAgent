@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable, Optional, Dict, List
 
+from backend.core.perf import TTLCache
+
 # ── Persistence paths (from graph_engine.py) ──────────────────────────────────
 _DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data")
 os.makedirs(_DATA_DIR, exist_ok=True)
@@ -106,6 +108,12 @@ class EdgeKind(str, Enum):
     # Browser-specific edge types
     HTTP_EQUIVALENT = "http_equivalent"
     DISCOVERED_BY_BROWSER = "discovered_by_browser"
+
+
+# Alias: spec/design uses ``EdgeType`` while the codebase canon is ``EdgeKind``.
+# Exposing both names avoids enum duplication and keeps the public API symmetric
+# with NodeKind (Architecture §12).
+EdgeType = EdgeKind
 
 
 class Severity(str, Enum):
@@ -373,7 +381,20 @@ class GraphEngine:
         self._lock = asyncio.Lock()
         # Adjacency index for O(1) outbound lookups (Architecture §12).
         self._adj: dict[VulnNode, list[Edge]] = {}
+        # 30s TTL cache for predict_next / find_chains. The planner queries
+        # these on every iteration, but the graph only mutates when a new
+        # finding/chain is ingested. We invalidate on mutation (see
+        # ``_invalidate_cache``) and let the TTL handle stragglers.
+        self._query_cache: TTLCache = TTLCache(ttl_seconds=30.0)
         self.load_graph()
+
+    def _invalidate_cache(self) -> None:
+        """Clear cached predict_next / find_chains results.
+
+        Called by every code path that mutates ``self.nodes`` / ``self.edges``
+        so cached chain results never lag behind the live graph.
+        """
+        self._query_cache.invalidate()
 
     def load_graph(self):
         if os.path.exists(GRAPH_FILE):
@@ -435,11 +456,13 @@ class GraphEngine:
             if n == dummy:
                 n.weight += weight
                 n.__dict__["verified_source"] = verified_source
+                self._invalidate_cache()
                 return n
         new_node = VulnNode(type, endpoint, weight)
         new_node.__dict__["verified_source"] = verified_source
         self.nodes.add(new_node)
         self._adj.setdefault(new_node, [])
+        self._invalidate_cache()
         return new_node
 
     def _add_or_update_edge(self, src: VulnNode, dst: VulnNode, weight: int = 1) -> Edge:
@@ -449,10 +472,12 @@ class GraphEngine:
         for e in self.edges:
             if e == dummy_edge:
                 e.weight += weight
+                self._invalidate_cache()
                 return e
         new_edge = Edge(real_src, real_dst, weight)
         self.edges.add(new_edge)
         self._adj.setdefault(real_src, []).append(new_edge)
+        self._invalidate_cache()
         return new_edge
 
     async def learn_from_chain(self, chain: List[Dict[str, Any]]):
@@ -471,6 +496,11 @@ class GraphEngine:
 
     def predict_next(self, current_type: str, current_endpoint: str) -> List[Dict[str, Any]]:
         current_endpoint = current_endpoint.split('?')[0].lower()
+        cache_key = ("predict_next", current_type.upper(), current_endpoint)
+        return self._query_cache.get_or_compute(cache_key, lambda: self._predict_next_uncached(
+            current_type, current_endpoint))
+
+    def _predict_next_uncached(self, current_type: str, current_endpoint: str) -> List[Dict[str, Any]]:
         dummy = VulnNode(current_type.upper(), current_endpoint)
         out_edges = self._adj.get(dummy, [e for e in self.edges if e.src == dummy])
         total_weight = sum(e.weight for e in out_edges)
@@ -487,6 +517,10 @@ class GraphEngine:
         return dst_type.upper() in self.CHAIN_RULES.get(src_type.upper(), [])
 
     def find_chains(self, max_depth: int = 5) -> List[Dict[str, Any]]:
+        cache_key = ("find_chains", int(max_depth))
+        return self._query_cache.get_or_compute(cache_key, lambda: self._find_chains_uncached(max_depth))
+
+    def _find_chains_uncached(self, max_depth: int = 5) -> List[Dict[str, Any]]:
         adj: Dict[VulnNode, List[VulnNode]] = {}
         edge_weights: Dict[tuple, int] = {}
         for e in self.edges:
@@ -534,71 +568,148 @@ class GraphEngine:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class BrowserKnowledgeGraphExtension:
-    """Browser discovery and HTTP-browser linking (Architecture §29.8)."""
+    """Browser discovery and HTTP-browser linking (Architecture §12, §29.8).
+
+    URLs are evidence only — never used to derive scope grants (§9). All
+    operations are non-blocking on the request path (§29.13) and never call
+    LLM (§11) or perform re-verification (§17).
+    """
+
+    # Map browser-recon discovery type → canonical NodeKind.
+    # Accepts both new (spec §11.1) and legacy aliases for compatibility.
+    _TYPE_MAP: Dict[str, NodeKind] = {
+        "endpoint": NodeKind.BROWSER_ENDPOINT,
+        "browser_endpoint": NodeKind.BROWSER_ENDPOINT,
+        "route": NodeKind.JAVASCRIPT_ROUTE,
+        "javascript_route": NodeKind.JAVASCRIPT_ROUTE,
+        "js_route": NodeKind.JAVASCRIPT_ROUTE,
+        "websocket": NodeKind.WEBSOCKET_CONNECTION,
+        "websocket_connection": NodeKind.WEBSOCKET_CONNECTION,
+        "ws": NodeKind.WEBSOCKET_CONNECTION,
+    }
 
     def __init__(self, knowledge_graph: KnowledgeGraph):
         self.graph = knowledge_graph
 
-    def add_browser_discovery(self, discovery_data: Dict[str, Any], scan_id: str = "GLOBAL") -> KGNode:
-        discovery_type = discovery_data.get("type", "browser_endpoint")
-        url = discovery_data.get("url", "")
-        if discovery_type == "javascript_route":
-            node = KGNode(NodeKind.JAVASCRIPT_ROUTE, url, {
-                "scan_id": scan_id, "source": "browser_recon",
-                "framework": discovery_data.get("framework"),
-                "route_pattern": discovery_data.get("route_pattern"), **discovery_data})
-        elif discovery_type == "websocket":
-            node = KGNode(NodeKind.WEBSOCKET_CONNECTION, url, {
-                "scan_id": scan_id, "source": "browser_recon",
-                "protocol": discovery_data.get("protocol", "ws"), **discovery_data})
-        else:
-            node = KGNode(NodeKind.BROWSER_ENDPOINT, url, {
-                "scan_id": scan_id, "source": "browser_recon", **discovery_data})
-        self.graph.upsert_node(node)
-        http_equivalent = self._find_http_equivalent(url)
-        if http_equivalent:
-            self.link_http_browser_endpoints(http_equivalent, node)
-        return node
+    def add_browser_discovery(self, discovery: Dict[str, Any], scan_id: str = "GLOBAL") -> str:
+        """Ingest a browser-recon discovery and return the node_id (Architecture §12, §29.8).
 
-    def _find_http_equivalent(self, browser_url: str) -> Optional[KGNode]:
-        normalized = browser_url.split("?")[0].split("#")[0]
-        for node in self.graph.nodes.values():
-            if node.kind == NodeKind.ENDPOINT:
-                if node.label.split("?")[0].split("#")[0] == normalized:
-                    return node
-        return None
+        Accepts ``{"type": "endpoint"|"route"|"websocket", "url": ..., ...}``.
+        Always tags ``source="browser_recon"`` (§9: URL is evidence only).
+        For ``type=="endpoint"``, links to any existing HTTP-source node with
+        the same URL via an ``HTTP_EQUIVALENT`` edge. Idempotent: replaying the
+        same discovery returns the same node_id (stable_id is kind+label).
+        """
+        discovery_type = str(discovery.get("type") or "endpoint").lower()
+        url = str(discovery.get("url") or "")
+        kind = self._TYPE_MAP.get(discovery_type, NodeKind.BROWSER_ENDPOINT)
 
-    def link_http_browser_endpoints(self, http_node: KGNode, browser_node: KGNode) -> KGEdge:
-        http_node.props.update({
-            "browser_discovered": True, "browser_url": browser_node.label,
-            "discovery_sources": ["http", "browser"]})
-        return self.graph.link(http_node, browser_node, EdgeKind.HTTP_EQUIVALENT,
-                               weight=1.0, props={"linked_at": time.time()})
+        # Build props with provenance tag; preserve any caller-provided fields.
+        props: Dict[str, Any] = {
+            "scan_id": scan_id,
+            "source": "browser_recon",
+            **{k: v for k, v in discovery.items() if k != "type"},
+        }
+        if kind is NodeKind.JAVASCRIPT_ROUTE:
+            props.setdefault("framework", discovery.get("framework"))
+            props.setdefault("route_pattern", discovery.get("route_pattern"))
+        elif kind is NodeKind.WEBSOCKET_CONNECTION:
+            props.setdefault("protocol", discovery.get("protocol", "ws"))
 
-    def get_endpoint_context(self, endpoint_url: str) -> Dict[str, Any]:
-        context = {"url": endpoint_url, "http_data": None, "browser_data": None,
-                   "linked_endpoints": [], "discovery_sources": []}
-        endpoint_node = None
-        for node in self.graph.nodes.values():
-            if node.label == endpoint_url or node.label.startswith(endpoint_url):
-                endpoint_node = node
+        node = self.graph.upsert_node(KGNode(kind, url, props))
+
+        # Only browser-endpoint discoveries get auto-linked to HTTP twins.
+        if kind is NodeKind.BROWSER_ENDPOINT:
+            http_id = stable_id(NodeKind.ENDPOINT.value, url)
+            if http_id in self.graph.nodes:
+                self.link_http_browser_endpoints(http_id, node.id)
+
+        # Persistence is graph-implementation-specific. KnowledgeGraph is
+        # in-memory; if a future backend adds a disk-backed save_async,
+        # off-load here via asyncio.to_thread (§29.13 non-blocking).
+        save_async = getattr(self.graph, "save_async", None)
+        if callable(save_async):
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(asyncio.to_thread(save_async))
+            except RuntimeError:
+                pass  # no running loop — skip persistence quietly
+        return node.id
+
+    def link_http_browser_endpoints(self, http_node_id: str, browser_node_id: str) -> None:
+        """Idempotently link an HTTP endpoint and its browser-discovered twin.
+
+        Skips if an ``HTTP_EQUIVALENT`` edge already exists, merges metadata
+        via union, and marks both nodes with ``linked=True`` (Task 7.4).
+        """
+        http_node = self.graph.nodes.get(http_node_id)
+        browser_node = self.graph.nodes.get(browser_node_id)
+        if not http_node or not browser_node:
+            return
+
+        # Idempotency: short-circuit if the edge already exists in either direction.
+        edge_id_fwd = stable_id(http_node_id, EdgeKind.HTTP_EQUIVALENT.value, browser_node_id)
+        edge_id_rev = stable_id(browser_node_id, EdgeKind.HTTP_EQUIVALENT.value, http_node_id)
+        if edge_id_fwd in self.graph.edges or edge_id_rev in self.graph.edges:
+            http_node.props["linked"] = True
+            browser_node.props["linked"] = True
+            return
+
+        # Mark both endpoints linked and merge metadata via union.
+        # Browser-side keys take precedence on the browser node and vice versa,
+        # so neither node loses its own provenance.
+        merged: Dict[str, Any] = {**browser_node.props, **http_node.props}
+        for k, v in merged.items():
+            http_node.props.setdefault(k, v)
+            browser_node.props.setdefault(k, v)
+        http_node.props["linked"] = True
+        browser_node.props["linked"] = True
+        http_node.props["browser_url"] = browser_node.label
+        http_node.props["browser_discovered"] = True
+
+        self.graph.upsert_edge(KGEdge(
+            http_node_id, browser_node_id, EdgeKind.HTTP_EQUIVALENT,
+            weight=1.0, props={"linked_at": time.time()}))
+
+    def get_endpoint_context(self, url: str) -> Dict[str, Any]:
+        """Return unified HTTP/browser context for ``url`` (Task 7.6).
+
+        Shape: ``{"http": <props|None>, "browser": <props|None>,
+        "linked": [<node_ids of HTTP_EQUIVALENT neighbors>]}``.
+        O(adjacency): O(1) node lookups via stable_id, O(deg) neighbor walk
+        through the existing graph adjacency map.
+        """
+        http_node = self.graph.nodes.get(stable_id(NodeKind.ENDPOINT.value, url))
+        browser_node: Optional[KGNode] = None
+        for browser_kind in (NodeKind.BROWSER_ENDPOINT, NodeKind.JAVASCRIPT_ROUTE,
+                             NodeKind.WEBSOCKET_CONNECTION):
+            cand = self.graph.nodes.get(stable_id(browser_kind.value, url))
+            if cand is not None:
+                browser_node = cand
                 break
-        if not endpoint_node:
-            return context
-        if endpoint_node.kind == NodeKind.ENDPOINT:
-            context["http_data"] = endpoint_node.props
-            context["discovery_sources"].append("http")
-        if endpoint_node.kind in [NodeKind.BROWSER_ENDPOINT, NodeKind.JAVASCRIPT_ROUTE]:
-            context["browser_data"] = endpoint_node.props
-            context["discovery_sources"].append("browser")
-        for linked_node in self.graph.neighbors(endpoint_node.id, direction="both",
-                                                 edge_kind=EdgeKind.HTTP_EQUIVALENT):
-            context["linked_endpoints"].append({
-                "url": linked_node.label, "kind": linked_node.kind.value, "props": linked_node.props})
-            source = linked_node.props.get("source")
-            if source and source not in context["discovery_sources"]:
-                context["discovery_sources"].append(source)
-        return context
+
+        linked: List[str] = []
+        seen: set = set()
+        for anchor in (http_node, browser_node):
+            if anchor is None:
+                continue
+            for eid in self.graph._adj_out.get(anchor.id, ()):
+                edge = self.graph.edges.get(eid)
+                if edge and edge.kind is EdgeKind.HTTP_EQUIVALENT and edge.dst_id not in seen:
+                    seen.add(edge.dst_id)
+                    linked.append(edge.dst_id)
+            for eid in self.graph._adj_in.get(anchor.id, ()):
+                edge = self.graph.edges.get(eid)
+                if edge and edge.kind is EdgeKind.HTTP_EQUIVALENT and edge.src_id not in seen:
+                    seen.add(edge.src_id)
+                    linked.append(edge.src_id)
+
+        return {
+            "http": dict(http_node.props) if http_node is not None else None,
+            "browser": dict(browser_node.props) if browser_node is not None else None,
+            "linked": linked,
+        }
 
     def get_browser_discoveries(self, scan_id: Optional[str] = None) -> List[KGNode]:
         out = []

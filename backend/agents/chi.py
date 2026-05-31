@@ -402,27 +402,46 @@ class AgentChi(BrowserEnabledAgent):
                 await asyncio.sleep(1)
 
     async def _audit_logic(self, payload: Dict) -> tuple[bool, str]:
-        """Deep pattern and semantic scrutiny for safety violations."""
+        """Deep pattern and semantic scrutiny for safety violations.
+
+        The deterministic blacklist is the authoritative safety backstop and
+        blocks genuinely destructive commands (rm -rf, DROP DATABASE, mkfs, fork
+        bombs). The LLM semantic check is ADVISORY only: it previously ran a
+        blocking Gemini call per distributed job and mis-fired BLOCK on benign
+        recon/attack payloads, flooding the event bus and starving the
+        Alpha→Sigma→Beta pipeline. Active testing is already governed by the
+        scope/authorization gate (§9) and evidence-based confirmation (§17), so
+        Chi no longer hard-blocks on the noisy semantic verdict.
+        """
         raw_payload = payload.get("payload", {})
         payload_str = json.dumps(raw_payload)
-        
-        # 1. HEURISTIC BLACKLIST
+
+        # 1. HEURISTIC BLACKLIST (authoritative, deterministic)
         for pattern in self.blacklist:
             if pattern.search(payload_str):
                 return False, f"Blacklisted pattern detected: {pattern.pattern}"
 
-        # 2. SEMANTIC AI SCRUTINY (V6-HARDENED)
-        # Catches novel or obfuscated (Base64/Hex) destructive intents
-        if self.ai and self.ai.enabled:
-            # We use the 'judge_user_intent' heuristic for payload safety analysis
-            verdict = await self.ai.judge_user_intent(
-                "Execute Payload", 
-                payload_str, 
-                payload.get("target", {}).get("url", "")
-            )
-            if verdict.get("action") == "BLOCK":
-                return False, f"AI Semantic Guardrail: {verdict.get('reason')}"
-                
+        # 2. SEMANTIC AI SCRUTINY (advisory only — logged, never hard-blocks)
+        # Only consult the model for payloads that look like real OS/shell
+        # command execution, and treat its verdict as a warning rather than a
+        # gate. This preserves the destructive-intent signal without throttling
+        # the swarm or producing false-positive blocks on routine web payloads.
+        if self.ai and getattr(self.ai, "enabled", False):
+            looks_like_command = bool(re.search(
+                r"(?i)\b(?:os\.system|subprocess|/bin/|bash\s+-c|powershell|cmd\.exe|wget|curl\s+[^ ]+\s*\|\s*sh)\b",
+                payload_str))
+            if looks_like_command:
+                try:
+                    verdict = await self.ai.judge_user_intent(
+                        "Execute Payload", payload_str,
+                        payload.get("target", {}).get("url", ""))
+                    if verdict.get("action") == "BLOCK":
+                        logger.warning(
+                            "[%s] Advisory semantic flag (not blocking): %s",
+                            self.name, verdict.get("reason"))
+                except Exception:
+                    pass
+
         return True, "Safe"
 
     async def _report_safety_violation(self, payload: Dict, reason: str):

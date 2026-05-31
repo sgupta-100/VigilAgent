@@ -1070,8 +1070,550 @@ class RecoveryEngine:
             "pending_reassignments": len(self.reassign_requests),
             "paused_scans": sorted(self.paused_scans),
             "degraded_scans": sorted(self.degraded_scans),
+            "browser_heal_attempts": dict(self.__dict__.get("_browser_heal_attempts", {})),
+            "browser_heal_history_len": len(self.__dict__.get("_browser_heal_history", ())),
             "timestamp": time.time(),
         }
+
+    # ══════════════════════════════════════════════════════════════════════
+    # BROWSER SELF-HEAL (deep-system-integration §5.1 — Task 5.1)
+    # Architecture invariants honored:
+    #   §9   scope-is-law       — recovery operates on already-scoped agents;
+    #                              we never re-check / widen scope here.
+    #   §11  two-LLM exclusivity — no LLM calls in this path.
+    #   §14  real recovery      — actually restarts the context, restores the
+    #                              vault session if any, emits AGENT_HEALED.
+    #   §17  no re-verification — verification is upstream; recovery only.
+    #   §29.13 non-blocking     — backoff via ``asyncio.sleep``, vault I/O via
+    #                              ``asyncio.to_thread``; no ``time.sleep``.
+    # ══════════════════════════════════════════════════════════════════════
+    # Spec-fixed exponential backoff schedule (Task 5.1): 1, 2, 4, 8 seconds.
+    # Max 4 attempts before bailing out — caller decides whether to escalate
+    # (mark scan degraded, swap engine, etc.) based on the False return.
+    _BROWSER_CRASH_BACKOFF_S: tuple = (1.0, 2.0, 4.0, 8.0)
+    _BROWSER_CRASH_MAX_ATTEMPTS: int = 4
+
+    async def heal_browser_crash(self, context_id: str, scan_id: str) -> bool:
+        """Heal a crashed browser context for ``scan_id`` (deep-system §5.1, Task 5.1).
+
+        Workflow:
+          1. Detect crash via the health monitor (best-effort signal — we still
+             attempt the restart even when no metrics are present so cold-call
+             recovery works in tests / boot races).
+          2. Restart the context via ``browser_orchestrator.restart_context``
+             when available; fall back to ``close_context`` + ``create_isolated_context``.
+          3. Restore the session blob from the credential_vault if any
+             (vault lookup is sync → wrapped in ``asyncio.to_thread`` per §29.13).
+          4. Apply exponential backoff between attempts: 1s, 2s, 4s, 8s
+             (max 4 attempts).
+
+        Returns ``True`` on a successful restart, ``False`` after exhausting
+        retries or hitting an unrecoverable error. Never raises.
+        """
+        if not context_id:
+            return False
+        endpoint = f"browser:{context_id}"
+
+        # Lazy heal state shared with other browser-recovery surfaces. Stored
+        # via ``__dict__.setdefault`` so we don't need an __init__ migration.
+        attempts_map: Dict[str, int] = self.__dict__.setdefault("_browser_heal_attempts", {})
+        history: deque = self.__dict__.setdefault("_browser_heal_history", deque(maxlen=256))
+
+        # Step 1 — detect crash via the health monitor. Absent metrics is *not*
+        # fatal: a brand-new context with no reports yet may still need healing.
+        try:
+            from backend.core.agent_health_monitor import browser_health_monitor
+            _ = browser_health_monitor.get_browser_health(scan_id)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[BrowserHeal] health probe skipped: %s", exc)
+
+        # Step 2 — resolve the orchestrator once; degrade gracefully when missing.
+        orchestrator = None
+        try:
+            from backend.core.browser_orchestrator import (
+                BrowserOrchestrator,
+                get_browser_orchestrator,
+            )
+            try:
+                orchestrator = get_browser_orchestrator()
+            except Exception:  # pragma: no cover - factory edge case
+                orchestrator = BrowserOrchestrator()
+        except Exception as exc:
+            logger.warning(
+                "[BrowserHeal] BrowserOrchestrator unavailable (%s: %s); "
+                "cannot restart context %s for scan %s.",
+                type(exc).__name__, str(exc)[:200], context_id, scan_id,
+            )
+            self.healing.record_endpoint_result(endpoint, False)
+            return False
+
+        # Step 3 — pre-fetch the vault session for this scan/target ONCE so we
+        # don't re-query on every retry (§29.13: avoid repeated blocking I/O).
+        session_blob: Optional[Any] = None
+        try:
+            from backend.core.credential_vault import credential_vault
+
+            def _vault_lookup() -> Optional[Any]:
+                try:
+                    fresh = credential_vault.get_fresh_credential(scan_id)
+                except Exception:
+                    return None
+                if not fresh:
+                    return None
+                _cred, secret = fresh
+                return secret or None
+            session_blob = await asyncio.to_thread(_vault_lookup)
+        except Exception as exc:  # pragma: no cover - vault import edge case
+            logger.debug("[BrowserHeal] vault lookup skipped: %s", exc)
+            session_blob = None
+
+        # Step 4 — bounded retry loop with the spec'd backoff schedule.
+        for attempt in range(1, self._BROWSER_CRASH_MAX_ATTEMPTS + 1):
+            attempts_map[context_id] = attempt
+            backoff_s = self._BROWSER_CRASH_BACKOFF_S[
+                min(attempt - 1, len(self._BROWSER_CRASH_BACKOFF_S) - 1)
+            ]
+            # Sleep before retries (not the first attempt) so the very first
+            # attempt is immediate and bounded retries pace at 1s, 2s, 4s, 8s.
+            if attempt > 1:
+                await asyncio.sleep(backoff_s)
+
+            new_context_id: Optional[str] = None
+            try:
+                if hasattr(orchestrator, "restart_context"):
+                    res = await orchestrator.restart_context(context_id)
+                    new_context_id = str(res) if res else context_id
+                else:
+                    # Fall back: close + recreate. Still a §14 real action.
+                    if hasattr(orchestrator, "close_context"):
+                        try:
+                            await orchestrator.close_context(context_id)
+                        except Exception as close_exc:
+                            logger.debug(
+                                "[BrowserHeal] close_context(%s) raised %s — proceeding.",
+                                context_id, close_exc,
+                            )
+                    if hasattr(orchestrator, "create_isolated_context"):
+                        new_context_id = await orchestrator.create_isolated_context(scan_id)
+                    else:
+                        # No restart hook at all — bail; retries won't help.
+                        logger.warning(
+                            "[BrowserHeal] orchestrator lacks restart hooks; aborting heal."
+                        )
+                        break
+            except Exception as exc:
+                logger.warning(
+                    "[BrowserHeal] attempt %d/%d failed for %s: %s",
+                    attempt, self._BROWSER_CRASH_MAX_ATTEMPTS, context_id, exc,
+                )
+                continue  # back off and retry
+
+            if not new_context_id:
+                continue
+
+            # Step 5 — restore session state (best-effort; missing is not fatal).
+            if session_blob is not None:
+                try:
+                    if hasattr(orchestrator, "restore_session"):
+                        await orchestrator.restore_session(new_context_id, session_blob)
+                    elif hasattr(orchestrator, "set_session_state"):
+                        await orchestrator.set_session_state(new_context_id, session_blob)
+                except Exception as exc:
+                    logger.debug(
+                        "[BrowserHeal] session restore failed for %s: %s",
+                        new_context_id, exc,
+                    )
+
+            # Step 6 — record + announce the heal.
+            self.healing.record_endpoint_result(endpoint, True)
+            self.healing._record_recovery(
+                f"browser:{context_id}", "browser_crash", "browser_restart",
+                {
+                    "scan_id": scan_id,
+                    "attempt": attempt,
+                    "backoff_seconds": backoff_s,
+                    "new_context_id": new_context_id,
+                    "session_restored": session_blob is not None,
+                },
+                True, backoff_s * 1000.0,
+            )
+            history.append({
+                "timestamp": time.time(),
+                "context_id": context_id,
+                "new_context_id": new_context_id,
+                "scan_id": scan_id,
+                "attempt": attempt,
+                "healed": True,
+            })
+            attempts_map[context_id] = 0
+            self._emit_agent_healed_event(
+                browser_id=context_id,
+                new_browser_id=new_context_id,
+                attempt=attempt,
+                engine="chromium",
+            )
+            return True
+
+        # All retries exhausted.
+        self.healing.record_endpoint_result(endpoint, False)
+        self.healing._record_recovery(
+            f"browser:{context_id}", "browser_crash", "browser_restart",
+            {
+                "scan_id": scan_id,
+                "attempts": attempts_map.get(context_id, self._BROWSER_CRASH_MAX_ATTEMPTS),
+                "exhausted": True,
+            },
+            False, 0.0,
+        )
+        history.append({
+            "timestamp": time.time(),
+            "context_id": context_id,
+            "scan_id": scan_id,
+            "attempts": self._BROWSER_CRASH_MAX_ATTEMPTS,
+            "healed": False,
+        })
+        return False
+
+    def _emit_agent_healed_event(
+        self,
+        *,
+        browser_id: str,
+        new_browser_id: Optional[str],
+        attempt: int,
+        engine: str,
+    ) -> None:
+        """Best-effort AGENT_HEALED publish — degrade silently when bus is absent.
+
+        Per the §5.1 contract: "lazy import backend.core.hive ... gracefully
+        skip if missing". We also skip if EventType.AGENT_HEALED isn't yet
+        defined on the enum (Pydantic would otherwise reject the construction).
+        """
+        try:
+            from backend.core import hive as _hive_mod
+            EventType = getattr(_hive_mod, "EventType", None)
+            HiveEvent = getattr(_hive_mod, "HiveEvent", None)
+            if EventType is None or HiveEvent is None:
+                return
+            healed_type = getattr(EventType, "AGENT_HEALED", None)
+            if healed_type is None:
+                # Enum member not yet declared — caller-side wiring will land
+                # in a later task; skip cleanly per the contract.
+                return
+            bus = (
+                getattr(_hive_mod, "event_bus", None)
+                or getattr(_hive_mod, "hive_bus", None)
+                or getattr(_hive_mod, "bus", None)
+            )
+            if bus is None or not hasattr(bus, "publish"):
+                return
+            evt = HiveEvent(
+                type=healed_type,
+                source="recovery_engine",
+                payload={
+                    "component": "browser",
+                    "browser_id": browser_id,
+                    "new_browser_id": new_browser_id,
+                    "attempt": attempt,
+                    "healed": True,
+                    "engine": engine,
+                },
+            )
+            coro = bus.publish(evt)
+            if asyncio.iscoroutine(coro):
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(coro)
+                except RuntimeError:
+                    # No running loop (synchronous caller) — drive once.
+                    asyncio.run(coro)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[BrowserHeal] AGENT_HEALED publish skipped: %s", exc)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # BROWSER MEMORY RECOVERY (deep-system-integration §5.3 — Task 5.3)
+    # Architecture invariants honored:
+    #   §9   — operates only on already-scoped contexts; no scope decisions.
+    #   §11  — no LLM calls.
+    #   §17  — does not re-verify findings; recovery only.
+    #   §29.13 — orchestrator I/O is async; no blocking calls.
+    # ══════════════════════════════════════════════════════════════════════
+    async def heal_browser_memory(self, threshold_mb: float = 1500) -> int:
+        """Close idle browser contexts and clear the pool when memory pressure rises.
+
+        Task 5.3 contract:
+          - Close idle contexts (last_used > 60s ago).
+          - Clear the context pool when reported memory exceeds ``threshold_mb``.
+          - Return the number of contexts closed.
+
+        Implementation notes:
+          - Resolves the orchestrator lazily; degrades to ``0`` when missing.
+          - Reads ``orchestrator._active_contexts`` defensively (this is the
+            internal map :class:`BrowserOrchestrator` already maintains; using
+            it avoids inventing a new API surface for one task).
+          - Falls back to ``orchestrator._cleanup_idle_contexts`` when the
+            implementation does not yet expose ``last_used`` timestamps; the
+            return count is then derived from the active-context delta.
+        """
+        # Resolve orchestrator (lazy; degrade silently when absent).
+        try:
+            from backend.core.browser_orchestrator import (
+                BrowserOrchestrator,
+                get_browser_orchestrator,
+            )
+            try:
+                orchestrator = get_browser_orchestrator()
+            except Exception:  # pragma: no cover - factory edge case
+                orchestrator = BrowserOrchestrator()
+        except Exception as exc:
+            logger.debug("[BrowserHeal] memory recovery: orchestrator unavailable: %s", exc)
+            return 0
+
+        IDLE_AFTER_S = 60.0
+        closed = 0
+        now_loop = asyncio.get_event_loop().time()
+
+        # Snapshot active contexts under the orchestrator's lock if available;
+        # fall back to a best-effort copy when the lock isn't there.
+        active_map = getattr(orchestrator, "_active_contexts", None)
+        if isinstance(active_map, dict):
+            ctx_lock = getattr(orchestrator, "_context_lock", None)
+            if ctx_lock is not None:
+                try:
+                    async with ctx_lock:
+                        snapshot = list(active_map.items())
+                except Exception:
+                    snapshot = list(active_map.items())
+            else:
+                snapshot = list(active_map.items())
+            # Close any context whose last_activity / last_used is > 60s ago.
+            for ctx_id, ctx in snapshot:
+                if not isinstance(ctx, dict):
+                    continue
+                last_used = ctx.get("last_used")
+                if last_used is None:
+                    last_used = ctx.get("last_activity")
+                if last_used is None:
+                    continue
+                try:
+                    idle_for = float(now_loop) - float(last_used)
+                except (TypeError, ValueError):
+                    continue
+                if idle_for <= IDLE_AFTER_S:
+                    continue
+                try:
+                    if hasattr(orchestrator, "close_context"):
+                        await orchestrator.close_context(ctx_id)
+                        closed += 1
+                except Exception as exc:
+                    logger.debug(
+                        "[BrowserHeal] close_context(%s) raised %s — continuing.",
+                        ctx_id, exc,
+                    )
+        elif hasattr(orchestrator, "_cleanup_idle_contexts"):
+            # Older orchestrator: defer to its built-in cleanup, then derive the
+            # delta from the active count if exposed.
+            before = (
+                orchestrator.get_active_context_count()
+                if hasattr(orchestrator, "get_active_context_count")
+                else None
+            )
+            try:
+                await orchestrator._cleanup_idle_contexts(int(IDLE_AFTER_S))
+            except Exception as exc:
+                logger.debug("[BrowserHeal] _cleanup_idle_contexts raised %s", exc)
+            after = (
+                orchestrator.get_active_context_count()
+                if hasattr(orchestrator, "get_active_context_count")
+                else None
+            )
+            if before is not None and after is not None:
+                closed = max(0, before - after)
+
+        # Memory-pressure path: when monitor_memory says we're over threshold,
+        # also drain the pool entirely to release the heaviest references.
+        try:
+            mem_stats: Dict[str, Any] = {}
+            if hasattr(orchestrator, "monitor_memory"):
+                mem_stats = await orchestrator.monitor_memory() or {}
+            mem_mb = float(mem_stats.get("memory_mb", 0.0))
+            if mem_mb > float(threshold_mb):
+                pool = getattr(orchestrator, "_context_pool", None)
+                if pool is not None:
+                    try:
+                        # Drain whatever the pool exposes — list, set, deque…
+                        while True:
+                            try:
+                                if hasattr(pool, "pop"):
+                                    pool.pop()
+                                elif hasattr(pool, "remove") and pool:
+                                    pool.remove(next(iter(pool)))
+                                else:
+                                    break
+                            except (KeyError, IndexError, StopIteration):
+                                break
+                    except Exception as exc:
+                        logger.debug("[BrowserHeal] pool drain skipped: %s", exc)
+                gc.collect()
+                self.healing._record_recovery(
+                    "browser:memory", "browser_memory_high", "memory_cleanup",
+                    {"threshold_mb": threshold_mb, "memory_mb": mem_mb, "closed": closed},
+                    True, 0.0,
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[BrowserHeal] memory probe skipped: %s", exc)
+
+        return closed
+
+    # ══════════════════════════════════════════════════════════════════════
+    # BROWSER STRATEGY ADAPTATION (deep-system-integration §5.5 — Task 5.5)
+    # Architecture invariants honored:
+    #   §9   — strategy choice never widens scope; just changes how we operate.
+    #   §11  — no LLM calls (pure rule-based on the failure history).
+    # ══════════════════════════════════════════════════════════════════════
+    # Decision-rule thresholds (Task 5.5):
+    #   - Repeated WAF blocks (>=3 of the last 10 entries) → "stealth_mode"
+    #   - Memory pressure                                  → "reduce_concurrency"
+    #   - Persistent crashes (>=3 crash entries)           → "fallback_http"
+    #   - Otherwise                                        → "no_change"
+    _STRATEGY_WAF_THRESHOLD: int = 3
+    _STRATEGY_CRASH_THRESHOLD: int = 3
+
+    def adapt_browser_strategy(self, failure_history: List[Dict[str, Any]]) -> str:
+        """Pick a browser strategy from a recent failure history (Task 5.5).
+
+        Returns one of:
+          - ``"stealth_mode"``       — repeated WAF blocks.
+          - ``"reduce_concurrency"`` — memory pressure dominates.
+          - ``"fallback_http"``      — persistent crashes.
+          - ``"no_change"``          — nothing actionable observed.
+
+        Only the most recent 10 entries are considered so a transient burst at
+        scan start doesn't pin the strategy forever.
+        """
+        if not failure_history:
+            return "no_change"
+        recent = list(failure_history)[-10:]
+
+        def _norm(entry: Dict[str, Any]) -> str:
+            for key in ("error_class", "reason", "type", "kind"):
+                v = entry.get(key)
+                if isinstance(v, str) and v:
+                    return v.lower()
+            msg = entry.get("message")
+            return msg.lower() if isinstance(msg, str) else ""
+
+        waf_hits = 0
+        memory_hits = 0
+        crash_hits = 0
+        for entry in recent:
+            if not isinstance(entry, dict):
+                continue
+            tag = _norm(entry)
+            if any(token in tag for token in ("waf", "blocked", "403", "captcha")):
+                waf_hits += 1
+            if any(token in tag for token in ("memory", "oom", "out of memory")):
+                memory_hits += 1
+            if any(token in tag for token in ("crash", "browser_crash", "renderer", "context_destroyed")):
+                crash_hits += 1
+
+        if waf_hits >= self._STRATEGY_WAF_THRESHOLD:
+            return "stealth_mode"
+        if crash_hits >= self._STRATEGY_CRASH_THRESHOLD:
+            return "fallback_http"
+        if memory_hits >= 1:
+            # Memory pressure is treated more aggressively than WAF/crashes
+            # because it threatens the whole process — even one signal flips us.
+            return "reduce_concurrency"
+        return "no_change"
+
+    # ══════════════════════════════════════════════════════════════════════
+    # BROWSER CIRCUIT BREAKER (deep-system-integration §5.7 — Task 5.7)
+    # Reuses the _LocalCircuitBreaker pattern from integration_coordinator.py
+    # (copied locally so this module has no dependency on integration_coordinator).
+    #   - Trip on 5 consecutive failures.
+    #   - Recover after 60s (half-open allows one probe through).
+    # Architecture invariants honored:
+    #   §9   — gates traffic; never makes scope decisions.
+    #   §11  — pure data-plane bookkeeping; no LLM calls.
+    # ══════════════════════════════════════════════════════════════════════
+    def _get_browser_breaker(self, host: str) -> "_LocalCircuitBreaker":
+        breakers: Dict[str, _LocalCircuitBreaker] = self.__dict__.setdefault(
+            "_browser_breakers", {}
+        )
+        breaker = breakers.get(host)
+        if breaker is None:
+            breaker = _LocalCircuitBreaker(name=f"browser:{host}")
+            breakers[host] = breaker
+        return breaker
+
+    def is_browser_target_healthy(self, host: str) -> bool:
+        """Return True when the per-host browser circuit is closed (Task 5.7).
+
+        While a circuit is OPEN the caller should skip the browser path for
+        ``host`` and fall back (or fail fast) — the breaker auto-flips to
+        half-open after 60s so a single probe call will recover it.
+        """
+        if not host:
+            return True
+        return not self._get_browser_breaker(host).is_open
+
+    def record_browser_target_result(self, host: str, success: bool) -> None:
+        """Feed the per-host browser breaker a success/failure observation."""
+        if not host:
+            return
+        breaker = self._get_browser_breaker(host)
+        if success:
+            breaker.record_success()
+        else:
+            breaker.record_failure()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LOCAL CIRCUIT BREAKER (deep-system-integration §5.7)
+# Copied from backend.core.integration_coordinator._LocalCircuitBreaker to keep
+# recovery_engine free of cross-module imports (the task explicitly says: do
+# NOT introduce a new dependency). Keep this class minimal — it's a small
+# fail-safe, not the project's general circuit-breaker primitive.
+# ══════════════════════════════════════════════════════════════════════════════
+@dataclass
+class _LocalCircuitBreaker:
+    """Per-host browser breaker. Trips OPEN after 5 consecutive failures and
+    half-opens after 60s, at which point the next call is allowed through and
+    state is reset (success closes it, failure re-opens immediately)."""
+
+    name: str
+    failure_threshold: int = 5
+    recovery_timeout: float = 60.0
+    _failures: int = 0
+    _opened_at: Optional[float] = None
+    _trips: int = 0
+
+    def _now(self) -> float:
+        # Use wall-clock time so tests can monkey-patch ``time.time``; the
+        # integration_coordinator version uses event-loop time, but this
+        # breaker is checked from synchronous call sites too.
+        return time.time()
+
+    @property
+    def is_open(self) -> bool:
+        if self._opened_at is None:
+            return False
+        if self._now() - self._opened_at >= self.recovery_timeout:
+            # Half-open: reset state so the next call is allowed through.
+            self._opened_at = None
+            self._failures = 0
+            return False
+        return True
+
+    def record_success(self) -> None:
+        self._failures = 0
+        self._opened_at = None
+
+    def record_failure(self) -> None:
+        self._failures += 1
+        if self._failures >= self.failure_threshold:
+            self._opened_at = self._now()
+            self._trips += 1
 
 
 # Global unified recovery engine.

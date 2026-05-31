@@ -105,7 +105,8 @@ def validate_command(argv: tuple[str, ...] | list[str], *, allow_shell: bool = F
         "cdncheck", "naabu", "masscan", "nmap", "tlsx", "testssl.sh",
         "httpx", "httprobe", "whatweb", "wafw00f", "katana", "gospider",
         "hakrawler", "arjun", "paramspider", "feroxbuster", "ffuf", "gobuster",
-        "kr", "gowitness", "aquatone", "nuclei", "dalfox", "interactsh-client",
+        "kr", "kiterunner", "gowitness", "aquatone", "nuclei", "dalfox",
+        "interactsh-client", "dirsearch", "inql",
         "python", "python3", "massdns",
     }
     base_binary = os.path.basename(binary).lower()

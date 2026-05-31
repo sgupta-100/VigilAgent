@@ -7,10 +7,10 @@
       "url_pattern": "https://example.com/api/users",
       "method": "GET"
     },
-    "confidence": 0.3,
-    "success_count": 3,
+    "confidence": 0.4,
+    "success_count": 4,
     "failure_count": 0,
-    "last_seen": 1779810153.3040023,
+    "last_seen": 1780169969.2528174,
     "first_seen": 1779807489.1436508,
     "scan_count": 1
   },
@@ -30,10 +30,10 @@
       },
       "payload_sample": "' OR 1=1--"
     },
-    "confidence": 0.3,
-    "success_count": 3,
+    "confidence": 0.4,
+    "success_count": 4,
     "failure_count": 0,
-    "last_seen": 1779810153.3057854,
+    "last_seen": 1780169969.2550426,
     "first_seen": 1779807489.1448174,
     "scan_count": 1
   },
@@ -46,9 +46,9 @@
       "correlation": "co_occurrence"
     },
     "confidence": 1.0,
-    "success_count": 99,
+    "success_count": 134,
     "failure_count": 0,
-    "last_seen": 1779810153.3617687,
+    "last_seen": 1780169969.278282,
     "first_seen": 1779807489.1924767,
     "scan_count": 1
   },
@@ -60,10 +60,10 @@
       "url_pattern": "https://example.com/search",
       "method": "GET"
     },
-    "confidence": 0.3,
-    "success_count": 3,
+    "confidence": 0.4,
+    "success_count": 4,
     "failure_count": 0,
-    "last_seen": 1779810153.4226847,
+    "last_seen": 1780169969.3907704,
     "first_seen": 1779807489.367435,
     "scan_count": 1
   },
@@ -83,10 +83,10 @@
       },
       "payload_sample": "<script>alert(1)</script>"
     },
-    "confidence": 0.3,
-    "success_count": 3,
+    "confidence": 0.4,
+    "success_count": 4,
     "failure_count": 0,
-    "last_seen": 1779810153.423911,
+    "last_seen": 1780169969.3917565,
     "first_seen": 1779807489.3680024,
     "scan_count": 1
   },
@@ -99,9 +99,9 @@
       "correlation": "co_occurrence"
     },
     "confidence": 1.0,
-    "success_count": 102,
+    "success_count": 138,
     "failure_count": 0,
-    "last_seen": 1779810153.4687314,
+    "last_seen": 1780169969.4159985,
     "first_seen": 1779807489.4165595,
     "scan_count": 1
   },
@@ -174,11 +174,222 @@
       },
       "payload_sample": "None"
     },
+    "confidence": 1.0,
+    "success_count": 20,
+    "failure_count": 0,
+    "last_seen": 1780177160.2459402,
+    "first_seen": 1780156915.4383075,
+    "scan_count": 1
+  },
+  {
+    "pattern_id": "endpoint_pattern_c77dddfd49650db2",
+    "pattern_type": "endpoint_pattern",
+    "pattern_data": {
+      "vuln_type": "TECH_JWT",
+      "url_pattern": "http://localhost:8080/index.php",
+      "method": "GET"
+    },
+    "confidence": 0.6,
+    "success_count": 6,
+    "failure_count": 0,
+    "last_seen": 1780176765.2581944,
+    "first_seen": 1780171035.1815956,
+    "scan_count": 1
+  },
+  {
+    "pattern_id": "payload_success_3455b9efff4a03b9",
+    "pattern_type": "payload_success",
+    "pattern_data": {
+      "vuln_type": "TECH_JWT",
+      "payload_features": {
+        "length": 4,
+        "has_script_tag": false,
+        "has_sql_keywords": false,
+        "has_template_injection": false,
+        "has_command_injection": false,
+        "has_encoding": false,
+        "has_special_chars": false
+      },
+      "payload_sample": "None"
+    },
+    "confidence": 1.0,
+    "success_count": 13,
+    "failure_count": 0,
+    "last_seen": 1780177170.4023902,
+    "first_seen": 1780171035.1836362,
+    "scan_count": 1
+  },
+  {
+    "pattern_id": "endpoint_pattern_0e9be56f21cb8a67",
+    "pattern_type": "endpoint_pattern",
+    "pattern_data": {
+      "vuln_type": "LOGIC_SKIPPER",
+      "url_pattern": "http://localhost:8080/index.php",
+      "method": "GET"
+    },
+    "confidence": 1.0,
+    "success_count": 12,
+    "failure_count": 0,
+    "last_seen": 1780176779.602974,
+    "first_seen": 1780171473.2220502,
+    "scan_count": 1
+  },
+  {
+    "pattern_id": "vuln_correlation_f42749a553dd54dc",
+    "pattern_type": "vuln_correlation",
+    "pattern_data": {
+      "vuln_type_1": "LOGIC_SKIPPER",
+      "vuln_type_2": "TECH_JWT",
+      "correlation": "co_occurrence"
+    },
+    "confidence": 1.0,
+    "success_count": 16,
+    "failure_count": 0,
+    "last_seen": 1780177160.2612565,
+    "first_seen": 1780171473.2429852,
+    "scan_count": 1
+  },
+  {
+    "pattern_id": "endpoint_pattern_6055bd366756d945",
+    "pattern_type": "endpoint_pattern",
+    "pattern_data": {
+      "vuln_type": "LOGIC_SKIPPER",
+      "url_pattern": "http://localhost:8080/vulnerabilities/xss_d/",
+      "method": "GET"
+    },
     "confidence": 0.2,
     "success_count": 2,
     "failure_count": 0,
-    "last_seen": 1780156915.994774,
-    "first_seen": 1780156915.4383075,
+    "last_seen": 1780177156.5787976,
+    "first_seen": 1780177155.7949142,
+    "scan_count": 1
+  },
+  {
+    "pattern_id": "endpoint_pattern_87a45253f78d28b3",
+    "pattern_type": "endpoint_pattern",
+    "pattern_data": {
+      "vuln_type": "LOGIC_SKIPPER",
+      "url_pattern": "http://localhost:8080/vulnerabilities/fi/",
+      "method": "GET"
+    },
+    "confidence": 0.2,
+    "success_count": 2,
+    "failure_count": 0,
+    "last_seen": 1780177158.9481459,
+    "first_seen": 1780177157.263938,
+    "scan_count": 1
+  },
+  {
+    "pattern_id": "endpoint_pattern_cf4f9387099db8c3",
+    "pattern_type": "endpoint_pattern",
+    "pattern_data": {
+      "vuln_type": "LOGIC_SKIPPER",
+      "url_pattern": "http://localhost:8080/vulnerabilities/brute/",
+      "method": "GET"
+    },
+    "confidence": 0.2,
+    "success_count": 2,
+    "failure_count": 0,
+    "last_seen": 1780177160.244918,
+    "first_seen": 1780177159.6518257,
+    "scan_count": 1
+  },
+  {
+    "pattern_id": "endpoint_pattern_7c408e7686fac56f",
+    "pattern_type": "endpoint_pattern",
+    "pattern_data": {
+      "vuln_type": "TECH_JWT",
+      "url_pattern": "http://localhost:8080/vulnerabilities/sqli_blind/",
+      "method": "GET"
+    },
+    "confidence": 0.1,
+    "success_count": 1,
+    "failure_count": 0,
+    "last_seen": 1780177163.2619019,
+    "first_seen": 1780177163.2619019,
+    "scan_count": 1
+  },
+  {
+    "pattern_id": "vuln_correlation_d53bfcb3d8275467",
+    "pattern_type": "vuln_correlation",
+    "pattern_data": {
+      "vuln_type_1": "TECH_JWT",
+      "vuln_type_2": "LOGIC_SKIPPER",
+      "correlation": "co_occurrence"
+    },
+    "confidence": 1.0,
+    "success_count": 64,
+    "failure_count": 0,
+    "last_seen": 1780177171.5618076,
+    "first_seen": 1780177163.2799993,
+    "scan_count": 1
+  },
+  {
+    "pattern_id": "endpoint_pattern_376fa67f1cff8b24",
+    "pattern_type": "endpoint_pattern",
+    "pattern_data": {
+      "vuln_type": "TECH_JWT",
+      "url_pattern": "http://localhost:8080/vulnerabilities/xss_r/",
+      "method": "GET"
+    },
+    "confidence": 0.1,
+    "success_count": 1,
+    "failure_count": 0,
+    "last_seen": 1780177163.9000893,
+    "first_seen": 1780177163.9000893,
+    "scan_count": 1
+  },
+  {
+    "pattern_id": "endpoint_pattern_c7497e8e4ca3d847",
+    "pattern_type": "endpoint_pattern",
+    "pattern_data": {
+      "vuln_type": "TECH_JWT",
+      "url_pattern": "http://localhost:8080/vulnerabilities/xss_d/",
+      "method": "GET"
+    },
+    "confidence": 0.5,
+    "success_count": 5,
+    "failure_count": 0,
+    "last_seen": 1780177170.401616,
+    "first_seen": 1780177164.510803,
+    "scan_count": 1
+  },
+  {
+    "pattern_id": "endpoint_pattern_7b664ddfdd3f819d",
+    "pattern_type": "endpoint_pattern",
+    "pattern_data": {
+      "vuln_type": "TECH_JWT",
+      "url_pattern": "http://localhost:8080/vulnerabilities/exec/",
+      "method": "GET"
+    },
+    "confidence": 0.1,
+    "success_count": 1,
+    "failure_count": 0,
+    "last_seen": 1780177171.537483,
+    "first_seen": 1780177171.5374832,
+    "scan_count": 1
+  },
+  {
+    "pattern_id": "payload_success_1750cb5745e90338",
+    "pattern_type": "payload_success",
+    "pattern_data": {
+      "vuln_type": "TECH_JWT",
+      "payload_features": {
+        "length": 39,
+        "has_script_tag": false,
+        "has_sql_keywords": false,
+        "has_template_injection": false,
+        "has_command_injection": false,
+        "has_encoding": false,
+        "has_special_chars": true
+      },
+      "payload_sample": "{'ip': '127.0.0.1', 'Submit': 'Submit'}"
+    },
+    "confidence": 0.1,
+    "success_count": 1,
+    "failure_count": 0,
+    "last_seen": 1780177171.5382314,
+    "first_seen": 1780177171.5382314,
     "scan_count": 1
   }
 ]

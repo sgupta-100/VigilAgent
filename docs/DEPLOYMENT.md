@@ -2,6 +2,12 @@
 
 Complete guide for deploying Antigravity V5 to production environments.
 
+> Looking for the **Deep System Integration topology** (component map,
+> environment variable matrix, persistent volumes for the
+> coordinator)? See `deployment_topology.md`. The two docs complement
+> each other: this file covers OS install + service management; the
+> topology doc covers the runtime layout the coordinator needs.
+
 ---
 
 ## Table of Contents

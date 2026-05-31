@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import Navigation from './Navigation';
 import AnimationWrapper from './AnimationWrapper';
 import { motion } from 'framer-motion';
-import { apiUrl } from '../lib/api';
+import { apiUrl, createScan } from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 
 const NewScan = ({ navigate }) => {
@@ -46,6 +46,8 @@ const NewScan = ({ navigate }) => {
 
     const [isExtensionEnabled, setIsExtensionEnabled] = useState(false);
     const [isLaunching, setIsLaunching] = useState(false);
+    const [launchError, setLaunchError] = useState(null);
+    const [launchedScanId, setLaunchedScanId] = useState(null);
 
     // --- Extension Handshake ---
     useEffect(() => {
@@ -169,9 +171,18 @@ const NewScan = ({ navigate }) => {
 
     // --- Launch Action ---
     const handleLaunch = async () => {
-        const targetUrl = targets.split('\n')[0].trim();
+        setLaunchError(null);
+
+        // Trim whitespace and pull the first non-empty target line.
+        const targetUrl = (targets.split('\n').find((line) => line.trim().length > 0) || '').trim();
         if (!targetUrl) {
-            alert("Please specify a target URL.");
+            setLaunchError("Please specify a target URL.");
+            return;
+        }
+
+        // Must start with http:// or https:// (per spec) before deeper URL parsing.
+        if (!/^https?:\/\//i.test(targetUrl)) {
+            setLaunchError("Target URL must start with http:// or https://");
             return;
         }
 
@@ -179,67 +190,45 @@ const NewScan = ({ navigate }) => {
         try {
             const parsed = new URL(targetUrl);
             if (!['http:', 'https:'].includes(parsed.protocol)) {
-                alert("Invalid protocol. Only http:// and https:// targets are supported.");
+                setLaunchError("Invalid protocol. Only http:// and https:// targets are supported.");
                 return;
             }
             if (!parsed.hostname || parsed.hostname.length < 3) {
-                alert("Invalid hostname. Please enter a valid domain or IP address.");
+                setLaunchError("Invalid hostname. Please enter a valid domain or IP address.");
                 return;
             }
         } catch {
-            alert("Invalid URL format. Please enter a valid URL (e.g., https://example.com).");
+            setLaunchError("Invalid URL format. Please enter a valid URL (e.g., https://example.com).");
             return;
         }
 
-        const headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "VulagentScanner/4.0"
-        };
-        if (authContent) {
-            if (authType === 'Bearer') headers["Authorization"] = `Bearer ${authContent}`;
-            else if (authType === 'API Key') headers["X-API-KEY"] = authContent;
-            else if (authType === 'Basic') headers["Authorization"] = `Basic ${authContent}`;
-        }
-
-        const payload = {
-            target_url: targetUrl,
-            method: "POST",
-            headers: headers,
-            velocity: parseInt(concurrency, 10),
-            body: "",
-            modules: activeScanModules.filter(m => m.selected).map(m => m.name),
-            filters: interceptionFilters.filter(f => f.selected).map(f => f.name),
-            duration: 600
-        };
+        const selectedModules = activeScanModules.filter((m) => m.selected).map((m) => m.name);
 
         setIsLaunching(true);
 
         try {
-            console.log("Launching scan with payload:", payload);
-            const response = await fetch(apiUrl('/api/attack/fire'), {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
+            console.log("Launching scan via POST /api/scans", { target_url: targetUrl, modules: selectedModules });
+            const result = await createScan({
+                target_url: targetUrl,
+                mode: "STANDARD",
+                modules: selectedModules,
             });
 
-            const json = await response.json();
+            const scanId = result?.scan_id || null;
+            console.log("Scan accepted:", scanId);
+            setLaunchedScanId(scanId);
 
-            if (!response.ok) {
-                console.error("Launch Error:", json);
-                alert(`Failed to launch: ${json.detail || 'Unknown Error'}`);
-                return;
-            }
-
-            console.log("Scan launched with ID:", json.scan_id);
-            // Race Condition Fix: Wait 1s for backend to propagate state
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            // Brief pause so the backend can register the new scan record before the
+            // Scans page re-fetches /api/dashboard/scans.
+            await new Promise((resolve) => setTimeout(resolve, 800));
             navigate('scans');
         } catch (err) {
-            console.error("Fetch Error:", err);
-            const msg = err.message === 'Failed to fetch'
+            console.error("Launch failed:", err);
+            const msg = err && err.message ? err.message : 'Unknown error';
+            const friendly = msg.includes('Failed to reach backend')
                 ? "Backend is offline. Please ensure the VulAgent Terminal is running on port 8000."
-                : err.message;
-            alert("Failed to launch scan: " + msg);
+                : msg;
+            setLaunchError(friendly);
         } finally {
             setIsLaunching(false);
         }
@@ -260,7 +249,7 @@ const NewScan = ({ navigate }) => {
                             <h2 className="text-4xl font-bold tracking-tighter">New Scan Configuration</h2>
                             <p className="mt-2 text-base text-gray-300">Configure target scope, modules, and performance parameters for a new security assessment.</p>
                         </div>
-                        <div className="flex items-center gap-4">
+                        <div className="flex flex-col items-end gap-2">
                             <motion.button
                                 whileHover={{ scale: 1.05 }}
                                 whileTap={{ scale: 0.95 }}
@@ -271,6 +260,19 @@ const NewScan = ({ navigate }) => {
                                 <span className="material-symbols-outlined text-xl">rocket_launch</span>
                                 {isLaunching ? 'Launching...' : 'Launch Scan'}
                             </motion.button>
+                            {launchError && (
+                                <div
+                                    role="alert"
+                                    className="max-w-sm rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300"
+                                >
+                                    {launchError}
+                                </div>
+                            )}
+                            {launchedScanId && !launchError && (
+                                <div className="max-w-sm rounded-md border border-green-500/30 bg-green-500/10 px-3 py-2 text-xs text-green-300">
+                                    Scan launched: <span className="font-mono">{launchedScanId}</span>
+                                </div>
+                            )}
                         </div>
                     </div>
 

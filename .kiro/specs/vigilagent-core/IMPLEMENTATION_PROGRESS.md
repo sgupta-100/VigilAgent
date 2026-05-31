@@ -512,3 +512,40 @@ default scope policy correctly REFUSES active testing without explicit
 authorization (Bug #3 was the architecture working, not a flaw). The swarm
 driver script provides that explicit authorization for the owned lab — which
 is exactly the §9 contract.
+
+
+## Phase 17 — Deep system integration close-out (6 parallel agents, DONE)
+
+Six non-overlapping sub-agents finished the remaining Phase 2-13 deliverables of
+the `deep-system-integration` spec in a single pass, plus the §22 doc set and
+gradual-rollout config.
+
+| Agent | Surface | Outputs |
+|-------|---------|---------|
+| 1 | `backend/core/learning_engine.py`, `backend/core/skill_library.py` | `learn_browser_workflow`, `learn_from_browser_vulnerability`, `get_browser_recommendations`, `learn_framework_pattern`, `BrowserSkill`, `add_browser_skill`, `search_browser_skills`, `compose_workflows`, skills migration to indexed format |
+| 2 | `backend/core/agent_health_monitor.py`, `backend/core/recovery_engine.py` | `BrowserHealthMetrics`, `report_browser_metrics`, `get_browser_health`, `calculate_browser_health_score`, `heal_browser_crash`, `heal_browser_memory`, `adapt_browser_strategy`, browser circuit breaker |
+| 3 | `backend/core/unified_knowledge_graph.py`, `backend/api/endpoints/dashboard.py` | `BrowserEndpoint`/`JavaScriptRoute`/`WebSocketConnection` node kinds, `add_browser_discovery`, `link_http_browser_endpoints`, `get_endpoint_context`, browser-health dashboard panel |
+| 4 | `backend/core/intelligent_router.py`, `backend/core/forensic_learning_bridge.py` (new modules) | `IntelligentRouter` (`recommend_method`, `select_browser_engine`, `learn_method_effectiveness`), `ForensicLearningBridge` (`analyze_evidence_quality`, `learn_evidence_requirements`, `adapt_evidence_collection`) |
+| 5 | `tests/integration/`, `config/integration.yaml` | Feature-flag gradual rollout config + integration tests for browser-vuln flow, crash recovery, cross-system learning, unified resource mgmt, forensic learning |
+| 6 | `docs/` | API doc update, architecture doc update, operational runbooks, monitoring dashboard spec, alerting rules, deployment runbook |
+
+### Verified
+- `python -m compileall -q backend` exit 0.
+- `python -c "import backend.main"` boots clean → **115 routes** registered.
+- IntegrationCoordinator + LearningEngine + SkillLibrary + HealthMonitor + RecoveryEngine + UnifiedKnowledgeGraph + IntelligentRouter + ForensicLearningBridge all import and wire together with feature flags off (Phase-1 safe default).
+- Redis bound to `localhost:6379` (existing `redis-server` container reused; conflicting compose stub removed); `/api/health` redis=healthy.
+- Architecture invariants honoured throughout: §9 scope-is-law, §11 two-LLM exclusivity (`gemini-2.5-flash` + `openai/gpt-oss-20b` only), §17 ≥2-signal evidence, §29.13 non-blocking event loop.
+
+### Spec status
+`.kiro/specs/deep-system-integration/tasks.md` — Foundation, Browser Learning,
+Skill Library, Health Monitor, Self-Healing, Knowledge Graph, Cross-System
+Features, and Documentation & Deployment all marked complete (16 ready/queued
+tasks closed). Property-based tests (marked `*` optional) and the 10 % / 25 %
+/ 50 % / 75 % / 100 % rollout enablement checkpoints are now feature-flag
+toggles configured in `config/integration.yaml` rather than code work.
+
+### Remaining (out of static-implementation scope)
+- E2E + chaos tests (Phase 15) require a running browser farm and are
+  optional `*` tasks in the spec.
+- Phase 16 final-checkpoint `pytest -m property` run is gated on the property
+  tests being written first (also optional `*` tasks).

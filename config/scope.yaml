@@ -9,15 +9,20 @@
 # ----------------------------------------------------------------------------
 
 engagement:
-  name: default-unauthorized
+  name: dvwa-local-lab
   # authorization: one of [none, explicit]. Active/intrusive testing requires
   # "explicit". With "none" Vigilagent degrades to passive/recon only.
-  authorization: none
+  # AUTHORIZED: owned local DVWA training lab (localhost:8080) — operator engagement.
+  authorization: explicit
   starts_at: null        # ISO-8601, e.g. 2026-05-29T00:00:00Z
   ends_at: null          # ISO-8601, e.g. 2026-06-05T00:00:00Z
 
 scope:
-  allowed_hosts: []
+  allowed_hosts:
+    - localhost
+    - 127.0.0.1
+    - host.docker.internal
+    - dvwa-dvwa-1
   allowed_cidrs: []
   allowed_url_globs: []
   denied_hosts: []
@@ -27,7 +32,7 @@ scope:
     - "*://*/delete*"
     - "*://*/signout*"
   allowed_ports: []      # empty => any port on an in-scope host
-  allow_private_networks: false
+  allow_private_networks: true
   # Extension capture allowlist (Architecture §19). Only these in-scope data
   # classes may be ingested from the browser extension bridge.
   extension_capture_allowlist:

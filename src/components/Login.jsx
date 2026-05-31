@@ -43,24 +43,36 @@ const Login = ({ onLoginSuccess }) => {
             <motion.div
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="login-heading"
                 className="relative z-10 w-full max-w-md p-8 glass-panel-dash rounded-2xl border border-white/10 shadow-2xl backdrop-blur-xl"
             >
                 <div className="text-center mb-8">
-                    <h1 className="text-3xl font-bold text-white mb-2 tracking-tight">VigilAgent</h1>
+                    <h1 id="login-heading" className="text-3xl font-bold text-white mb-2 tracking-tight">VigilAgent</h1>
                     <p className="text-gray-400 text-sm">Hyper-Mind Security Protocol Active</p>
                 </div>
 
                 <div className="flex justify-center mb-8">
-                    <div className="w-16 h-16 rounded-full bg-purple-500/10 flex items-center justify-center border border-purple-500/30 shadow-[0_0_15px_rgba(168,85,247,0.3)]">
+                    <div className="w-16 h-16 rounded-full bg-purple-500/10 flex items-center justify-center border border-purple-500/30 shadow-[0_0_15px_rgba(168,85,247,0.3)]" aria-hidden="true">
                         <span className="material-icons text-purple-400 text-3xl">lock</span>
                     </div>
                 </div>
 
-                <form onSubmit={handleLogin} className="flex flex-col gap-4">
+                <form onSubmit={handleLogin} className="flex flex-col gap-4" aria-label="Two-factor authentication login">
                     <div>
-                        <label className="text-xs text-gray-500 uppercase tracking-widest font-semibold pl-1 mb-2 block">2FA Authenticator Code</label>
+                        <label htmlFor="login-totp" className="text-xs text-gray-500 uppercase tracking-widest font-semibold pl-1 mb-2 block">2FA Authenticator Code</label>
                         <input
+                            id="login-totp"
+                            name="totp_code"
                             type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            autoComplete="one-time-code"
+                            aria-label="Six-digit 2FA authenticator code"
+                            aria-required="true"
+                            aria-invalid={!!error}
+                            aria-describedby={error ? 'login-error' : undefined}
                             value={token}
                             onChange={(e) => setToken(e.target.value)}
                             placeholder="000 000"
@@ -72,6 +84,9 @@ const Login = ({ onLoginSuccess }) => {
 
                     {error && (
                         <motion.div
+                            id="login-error"
+                            role="alert"
+                            aria-live="assertive"
                             initial={{ opacity: 0, y: -10 }}
                             animate={{ opacity: 1, y: 0 }}
                             className="text-red-400 text-xs text-center bg-red-500/10 py-2 rounded border border-red-500/20"
@@ -83,7 +98,8 @@ const Login = ({ onLoginSuccess }) => {
                     <button
                         type="submit"
                         disabled={isLoading || token.length < 6}
-                        className="w-full mt-4 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-3 rounded-lg shadow-lg transition-all"
+                        aria-label={isLoading ? 'Verifying authenticator code' : 'Submit authenticator code'}
+                        className="w-full mt-4 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-3 rounded-lg shadow-lg transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
                     >
                         {isLoading ? 'Verifying...' : 'Access Console'}
                     </button>

@@ -20,11 +20,12 @@ async def create_recon_relationship(self, *, id: str, scan_id: str, src_entity_i
     if not self.supabase:
         return None
     try:
-        result = self.supabase.table("recon_relationships").upsert({
-            "id": id, "scan_id": scan_id, "src_entity_id": src_entity_id,
-            "dst_entity_id": dst_entity_id, "relationship": relationship,
-            "confidence": confidence, "evidence": evidence or {},
-        }, on_conflict="id").execute()
+        result = await self._run_sync(
+            lambda: self.supabase.table("recon_relationships").upsert({
+                "id": id, "scan_id": scan_id, "src_entity_id": src_entity_id,
+                "dst_entity_id": dst_entity_id, "relationship": relationship,
+                "confidence": confidence, "evidence": evidence or {},
+            }, on_conflict="id").execute())
         return result.data[0]["id"] if result.data else id
     except Exception as e:
         logger.debug(f"Failed to create recon relationship: {e}")
@@ -37,11 +38,12 @@ async def create_recon_tool_output(self, *, id: str, scan_id: str, tool_name: st
     if not self.supabase:
         return None
     try:
-        result = self.supabase.table("recon_tool_outputs").upsert({
-            "id": id, "scan_id": scan_id, "tool_name": tool_name, "phase": phase,
-            "parser_version": parser_version, "raw_artifact_id": raw_artifact_id,
-            "normalized_count": normalized_count, "status": status, "errors": errors or [],
-        }, on_conflict="id").execute()
+        result = await self._run_sync(
+            lambda: self.supabase.table("recon_tool_outputs").upsert({
+                "id": id, "scan_id": scan_id, "tool_name": tool_name, "phase": phase,
+                "parser_version": parser_version, "raw_artifact_id": raw_artifact_id,
+                "normalized_count": normalized_count, "status": status, "errors": errors or [],
+            }, on_conflict="id").execute())
         return result.data[0]["id"] if result.data else id
     except Exception as e:
         logger.debug(f"Failed to create recon tool output: {e}")
@@ -54,11 +56,12 @@ async def create_recon_oob_interaction(self, *, id: str, scan_id: str, provider:
     if not self.supabase:
         return None
     try:
-        result = self.supabase.table("recon_oob_interactions").upsert({
-            "id": id, "scan_id": scan_id, "provider": provider,
-            "interaction_type": interaction_type, "correlation_id": correlation_id,
-            "source_endpoint": source_endpoint, "raw": raw or {}, "severity": severity,
-        }, on_conflict="id").execute()
+        result = await self._run_sync(
+            lambda: self.supabase.table("recon_oob_interactions").upsert({
+                "id": id, "scan_id": scan_id, "provider": provider,
+                "interaction_type": interaction_type, "correlation_id": correlation_id,
+                "source_endpoint": source_endpoint, "raw": raw or {}, "severity": severity,
+            }, on_conflict="id").execute())
         return result.data[0]["id"] if result.data else id
     except Exception as e:
         logger.debug(f"Failed to create recon OOB interaction: {e}")
@@ -69,9 +72,10 @@ async def update_recon_run_phase(self, *, scan_id: str, phase: str, phase_data: 
     if not self.supabase:
         return None
     try:
-        self.supabase.table("recon_runs").update({
-            "current_phase": phase, "phase_data": phase_data,
-        }).eq("scan_id", scan_id).execute()
+        await self._run_sync(
+            lambda: self.supabase.table("recon_runs").update({
+                "current_phase": phase, "phase_data": phase_data,
+            }).eq("scan_id", scan_id).execute())
     except Exception as e:
         logger.debug(f"Failed to update recon run phase: {e}")
         return None

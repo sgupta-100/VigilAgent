@@ -1,0 +1,46 @@
+# Deep System Integration — feature flag rollout configuration
+#
+# This file is the source of truth for dev / staging rollout cohorts.
+# Environment variables (see .env.example) override these values when set,
+# so prod can pin anything via 12-factor config.
+#
+# Tasks 3.8 / 5.11 / 7.8 / 9.10 / 11.8 / 13.11 from
+# .kiro/specs/deep-system-integration/tasks.md bump the cohort percentages.
+# Each line is annotated with the task that owns the bump.
+#
+# Architecture invariants (do NOT relax without a checkpoint):
+#   §11 — no LLM bindings live in this config
+#   §17 — flags here gate routing only; ≥2-signal evidence still required downstream
+#   §29.13 — non-blocking event loop preserved by event_batch_* + max_concurrent_learning
+integration:
+  # --- Browser learning (task 3.8) ---
+  enable_browser_learning: true
+  browser_learning_rollout_pct: 10        # task 3.8
+
+  # --- Skill library v2 (task 5.11) ---
+  enable_skill_library_v2: true
+  skill_library_rollout_pct: 25           # task 5.11
+
+  # --- Browser health monitoring (task 7.8) ---
+  enable_browser_health_monitoring: true
+  health_monitoring_rollout_pct: 50       # task 7.8
+
+  # --- Self-healing engine (task 9.10) ---
+  enable_self_healing: true
+  self_healing_rollout_pct: 75            # task 9.10
+
+  # --- Unified knowledge graph (task 11.8) ---
+  enable_unified_graph: true
+  unified_graph_rollout_pct: 100          # task 11.8
+
+  # --- Intelligent routing + forensic learning (task 13.11) ---
+  enable_intelligent_routing: true
+  enable_forensic_learning: true
+  routing_forensics_rollout_pct: 100      # task 13.11
+
+  # --- Resource caps stay conservative regardless of rollout ---
+  event_batch_size: 50
+  event_batch_timeout_ms: 200
+  max_concurrent_learning: 8
+  circuit_breaker_threshold: 5
+  circuit_breaker_timeout_s: 60

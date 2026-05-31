@@ -141,12 +141,12 @@ const Settings = ({ navigate }) => {
                             <h2 className="text-lg font-semibold text-gray-200">Account Settings</h2>
                             <div className="space-y-4">
                                 <div className="flex flex-col gap-2">
-                                    <label className="text-xs text-gray-400 uppercase tracking-widest font-semibold pl-1">Username</label>
-                                    <input className="w-full bg-black/40 border border-white/10 focus:border-purple-500/50 rounded-lg px-4 py-3 text-gray-200 text-sm transition-all outline-none placeholder-gray-600" type="text" defaultValue="username" />
+                                    <label htmlFor="settings-username" className="text-xs text-gray-400 uppercase tracking-widest font-semibold pl-1">Username</label>
+                                    <input id="settings-username" name="username" aria-label="Username" className="w-full bg-black/40 border border-white/10 focus:border-purple-500/50 rounded-lg px-4 py-3 text-gray-200 text-sm transition-all outline-none placeholder-gray-600" type="text" defaultValue="username" />
                                 </div>
                                 <div className="flex flex-col gap-2">
-                                    <label className="text-xs text-gray-400 uppercase tracking-widest font-semibold pl-1">Email</label>
-                                    <input className="w-full bg-black/40 border border-white/10 focus:border-purple-500/50 rounded-lg px-4 py-3 text-gray-200 text-sm transition-all outline-none placeholder-gray-600" type="email" defaultValue="target.om@apluvi.com" />
+                                    <label htmlFor="settings-email" className="text-xs text-gray-400 uppercase tracking-widest font-semibold pl-1">Email</label>
+                                    <input id="settings-email" name="email" aria-label="Email address" className="w-full bg-black/40 border border-white/10 focus:border-purple-500/50 rounded-lg px-4 py-3 text-gray-200 text-sm transition-all outline-none placeholder-gray-600" type="email" defaultValue="target.om@apluvi.com" />
                                 </div>
                             </div>
                             <motion.button
@@ -173,14 +173,18 @@ const Settings = ({ navigate }) => {
                                     { id: 'weekly-reports', label: 'Weekly Reports' }
                                 ].map(item => (
                                     <div key={item.id} className="flex items-center justify-between pb-4 border-b border-white/5">
-                                        <span className="text-sm text-gray-300 font-light">{item.label}</span>
+                                        <span id={`toggle-label-${item.id}`} className="text-sm text-gray-300 font-light">{item.label}</span>
                                         <div className="relative inline-block w-10 h-6 align-middle select-none transition duration-200 ease-in">
-                                            <div
+                                            <button
+                                                type="button"
+                                                role="switch"
+                                                aria-checked={!!toggles[item.id]}
+                                                aria-labelledby={`toggle-label-${item.id}`}
                                                 onClick={() => handleToggle(item.id)}
-                                                className={`w-10 h-6 rounded-full cursor-pointer transition-colors duration-300 relative ${toggles[item.id] ? 'bg-purple-600' : 'bg-gray-700'}`}
+                                                className={`w-10 h-6 rounded-full cursor-pointer transition-colors duration-300 relative focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 ${toggles[item.id] ? 'bg-purple-600' : 'bg-gray-700'}`}
                                             >
-                                                <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform duration-300 ${toggles[item.id] ? 'translate-x-4' : 'translate-x-0'}`}></div>
-                                            </div>
+                                                <span className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform duration-300 ${toggles[item.id] ? 'translate-x-4' : 'translate-x-0'}`} aria-hidden="true"></span>
+                                            </button>
                                         </div>
                                     </div>
                                 ))}
@@ -200,16 +204,20 @@ const Settings = ({ navigate }) => {
 
                             <div className="flex items-center justify-between pt-2">
                                 <div>
-                                    <span className="text-sm text-gray-200 block mb-1">Two-Factor Authentication (2FA)</span>
+                                    <span id="toggle-label-2fa" className="text-sm text-gray-200 block mb-1">Two-Factor Authentication (2FA)</span>
                                     <span className="text-xs text-gray-500 font-light">Secure your account with TOTP (Google Authenticator).</span>
                                 </div>
                                 <div className="relative inline-block w-10 h-6 align-middle select-none transition duration-200 ease-in">
-                                    <div
+                                    <button
+                                        type="button"
+                                        role="switch"
+                                        aria-checked={!!toggles['2fa']}
+                                        aria-labelledby="toggle-label-2fa"
                                         onClick={() => handleToggle('2fa')}
-                                        className={`w-10 h-6 rounded-full cursor-pointer transition-colors duration-300 relative ${toggles['2fa'] ? 'bg-purple-600' : 'bg-gray-700'}`}
+                                        className={`w-10 h-6 rounded-full cursor-pointer transition-colors duration-300 relative focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 ${toggles['2fa'] ? 'bg-purple-600' : 'bg-gray-700'}`}
                                     >
-                                        <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform duration-300 ${toggles['2fa'] ? 'translate-x-4' : 'translate-x-0'}`}></div>
-                                    </div>
+                                        <span className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform duration-300 ${toggles['2fa'] ? 'translate-x-4' : 'translate-x-0'}`} aria-hidden="true"></span>
+                                    </button>
                                 </div>
                             </div>
                         </motion.section>
@@ -234,27 +242,37 @@ const Settings = ({ navigate }) => {
                             initial={{ scale: 0.9, opacity: 0 }}
                             animate={{ scale: 1, opacity: 1 }}
                             exit={{ scale: 0.9, opacity: 0 }}
+                            role="dialog"
+                            aria-modal="true"
+                            aria-labelledby="settings-2fa-title"
                             className="bg-[#0f1115] border border-purple-500/30 rounded-xl p-8 max-w-md w-full shadow-[0_0_50px_rgba(139,92,246,0.1)] relative"
                         >
                             <button
                                 onClick={() => setShow2FAModal(false)}
-                                className="absolute top-4 right-4 text-gray-500 hover:text-white transition-colors"
+                                aria-label="Close 2FA setup dialog"
+                                className="absolute top-4 right-4 text-gray-500 hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 rounded"
                             >
                                 ✕
                             </button>
 
-                            <h3 className="text-xl font-bold text-white mb-2 text-center">Setup 2FA</h3>
+                            <h3 id="settings-2fa-title" className="text-xl font-bold text-white mb-2 text-center">Setup 2FA</h3>
                             <p className="text-sm text-gray-400 text-center mb-6">Scan this QR code with your authenticator app.</p>
 
                             <div className="flex justify-center mb-6 bg-white p-4 rounded-lg w-fit mx-auto">
-                                {qrCode && <img src={qrCode} alt="2FA QR URL" className="w-48 h-48" />}
+                                {qrCode && <img src={qrCode} alt="Scan to register VigilAgent in your authenticator app" className="w-48 h-48" />}
                             </div>
 
                             <div className="flex flex-col gap-3">
-                                <label className="text-xs text-gray-400 uppercase tracking-widest font-semibold pl-1">Verification Code</label>
+                                <label htmlFor="settings-2fa-code" className="text-xs text-gray-400 uppercase tracking-widest font-semibold pl-1">Verification Code</label>
                                 <div className="flex gap-2">
                                     <input
+                                        id="settings-2fa-code"
+                                        name="totp_code"
                                         type="text"
+                                        inputMode="numeric"
+                                        pattern="[0-9]*"
+                                        autoComplete="one-time-code"
+                                        aria-label="Six-digit verification code"
                                         value={verifyCode}
                                         onChange={(e) => setVerifyCode(e.target.value)}
                                         placeholder="000000"

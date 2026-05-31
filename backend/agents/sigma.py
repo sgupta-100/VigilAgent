@@ -15,6 +15,12 @@ from backend.core.content_boundary import content_boundary
 from backend.core.proxy import network_interceptor
 from backend.core.queue import command_lane, LanePriority
 from backend.api.socket_manager import publish_request_event
+from backend.agents._shared import (
+    ControlSignalMixin,
+    ScanContextRecorderMixin,
+    SessionLifecycleMixin,
+    SkillRecallMixin,
+)
 
 # Import Arsenals
 from backend.modules.tech.sqli import SQLInjectionProbe
@@ -27,7 +33,8 @@ from backend.modules.logic.skipper import TheSkipper
 from backend.modules.logic.chronomancer import Chronomancer
 from backend.modules.logic.escalator import TheEscalator
 
-class SigmaAgent(BrowserEnabledAgent):
+class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
+                 ScanContextRecorderMixin, BrowserEnabledAgent):
     """
     AGENT SIGMA: THE ORCHESTRATOR
     Role: Execution Pipeline & Generative Weaponssmith with Browser-Aware Payloads.
@@ -106,14 +113,14 @@ class SigmaAgent(BrowserEnabledAgent):
         self.bus.subscribe(EventType.JOB_ASSIGNED, self.handle_generation_request)
         # Sequence Hybrid Integration: DOM Token Extractor
         self.bus.subscribe(EventType.JOB_COMPLETED, self.handle_hybrid_result)
-        # Governance: respond to Zeta's control signals
-        self.bus.subscribe(EventType.CONTROL_SIGNAL, self.handle_control_signal)
-        
+        # Governance: respond to Zeta's control signals (shared mixin).
+        self.subscribe_control(self.bus)
+
     async def stop(self):
         """Gracefully release the persistent generative execution session to prevent socket exhaustion."""
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        # SessionLifecycleMixin handles the close+null-out behaviour Sigma
+        # used to inline; semantics are identical.
+        await self._close_session()
         await super().stop()
 
     async def handle_hybrid_result(self, event: HiveEvent):
@@ -124,39 +131,43 @@ class SigmaAgent(BrowserEnabledAgent):
                 self.hybrid_token = token
                 print(f"[{self.name}] [HYBRID FUSION] Assimilated live DOM token: {token[:10]}... Incoming attack sequences updated.")
 
-    async def handle_control_signal(self, event: HiveEvent):
-        """Respond to Zeta governance signals."""
-        signal = event.payload.get("signal", "")
-        if signal in ["THROTTLE", "STEALTH_MODE"]:
-            self._throttled = True
-            print(f"[{self.name}] Governance: {signal} received. Throttling payload generation.")
-        elif signal == "RESUME":
-            self._throttled = False
+    # NOTE: handle_control_signal is inherited from ControlSignalMixin —
+    # behaviour matches the original inline handler exactly (THROTTLE /
+    # STEALTH_MODE -> _throttled=True, RESUME -> _throttled=False).
 
     async def _fetch(self, target: TaskTarget, scan_id: str = None) -> tuple[TaskTarget, str]:
         try:
             kwargs = {}
+            # Build outbound headers from a COPY of target.headers so the
+            # seeder's auth Cookie / Authorization survive across vectors and
+            # per-payload mutations don't bleed back into the shared TaskTarget
+            # (which is the same Pydantic instance for every payload Sigma
+            # sends per packet).
+            request_headers = dict(target.headers or {})
+            content_type = request_headers.get("Content-Type") or request_headers.get("content-type") or ""
             if target.payload:
                 if target.method.upper() in ["POST", "PUT", "PATCH"]:
-                    if "Content-Type" in target.headers and "application/x-www-form-urlencoded" in target.headers["Content-Type"]:
+                    if "application/x-www-form-urlencoded" in content_type:
                         kwargs["data"] = target.payload
                     else:
                         kwargs["json"] = target.payload
-                        
-            # Stage 10 Optimization: Reuse persistent session to prevent port exhaustion
-            if self._session is None or self._session.closed:
-                timeout = aiohttp.ClientTimeout(total=10)
-                self._session = aiohttp.ClientSession(timeout=timeout)
-                
+
+            # Stage 10 Optimization: Reuse persistent session to prevent port
+            # exhaustion. ``_get_session`` (SessionLifecycleMixin) lazily
+            # creates one with the same 10s timeout we used inline before.
+            session = await self._get_session()
+
             # HYBRID FUSION: Inject DOM Scraped Token into Live Fetch Header
-            if self.hybrid_token:
-                 target.headers["Authorization"] = f"Bearer {self.hybrid_token}"
-                
+            # ONLY when no Authorization is already provided by the seeder, and
+            # only on the local copy so we don't clobber the upstream packet.
+            if self.hybrid_token and "Authorization" not in request_headers and "authorization" not in request_headers:
+                request_headers["Authorization"] = f"Bearer {self.hybrid_token}"
+
             response = await network_interceptor.fetch(
                 target.method,
                 target.url,
-                session=self._session,
-                headers=target.headers,
+                session=session,
+                headers=request_headers,
                 timeout=10,
                 **kwargs,
             )
@@ -316,10 +327,8 @@ class SigmaAgent(BrowserEnabledAgent):
 
     async def handle_generation_request(self, event: HiveEvent):
         packet_dict = event.payload
-        # ScanContext: record event for transcript causality
-        if hasattr(self.bus, 'get_or_create_context'):
-            _ctx = self.bus.get_or_create_context(getattr(event, 'scan_id', 'GLOBAL'))
-            _ctx.append_event(event)
+        # ScanContext: record event for transcript causality (shared mixin).
+        self.record(event)
         try:
              packet = JobPacket(**packet_dict)
         except Exception:return
@@ -398,7 +407,14 @@ class SigmaAgent(BrowserEnabledAgent):
             
             # PERFORMANCE CONTROL: Concurrency & Rate Limiting (Phase 2)
             rps = packet.config.params.get("rps", 100)
-            
+
+            # Governance throttle (Architecture §5.2/§29.4): when Zeta has told
+            # us to slow down, halve the requested RPS — never sleep blindly,
+            # just pace the dispatch.
+            if self._throttled:
+                rps = max(1, rps // 2)
+                print(f"[{self.name}] [THROTTLE] Reducing RPS to {rps} under governance signal.")
+
             # 1/rps = delay between starts to maintain ceiling
             rate_limit_delay = 1.0 / rps if rps > 0 else 0
             
@@ -518,6 +534,10 @@ class SigmaAgent(BrowserEnabledAgent):
                 "job_id": packet.id,
                 "status": "SUCCESS",
                 "target_url": packet.target.url,
+                # Pass the seeder's auth context through to Beta so the
+                # weapon shipment lands on an authenticated session, not the
+                # DVWA login redirect.
+                "target_headers": dict(packet.target.headers or {}),
                 "data": {"generated_payloads": final_payloads}
             }
         ))
@@ -526,7 +546,7 @@ class SigmaAgent(BrowserEnabledAgent):
         # BUG 6 FIX: Explicitly hand off payloads to Beta for execution
         beta_handoff = JobPacket(
             priority=TaskPriority.HIGH,
-            target=TaskTarget(url=packet.target.url),
+            target=TaskTarget(url=packet.target.url, headers=dict(packet.target.headers or {})),
             config=ModuleConfig(
                 module_id="sigma_payload_handoff",
                 agent_id=AgentID.BETA,

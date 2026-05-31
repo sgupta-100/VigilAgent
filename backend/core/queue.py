@@ -6,7 +6,7 @@ import os
 import time
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, Coroutine, Sequence
+from typing import Any, Coroutine, Dict, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,7 @@ class ProcessRunner:
         max_runtime_ms: int = 120000,
     ) -> ProcessResult:
         from backend.core.task_manager import TaskManager
+        import contextlib
         
         start_time = time.monotonic()
         task_manager = TaskManager("ProcessRunner")
@@ -105,12 +106,24 @@ class ProcessRunner:
 
         async def _read_stream(stream, chunks_list):
             nonlocal last_output_at
+            # Read fixed-size chunks rather than readline(): tools like ffuf -json
+            # and httpx emit very long single lines that exceed asyncio's default
+            # 64KB StreamReader line limit, which raises LimitOverrunError and
+            # aborts the read (tool reported as failed despite producing output).
             while True:
-                line = await stream.readline()
-                if not line:
+                try:
+                    chunk = await stream.read(65536)
+                except (asyncio.LimitOverrunError, ValueError):
+                    # Defensive: if any line-based limit still fires, drain what
+                    # we can and continue rather than killing the whole read.
+                    try:
+                        chunk = await stream.read(65536)
+                    except Exception:
+                        break
+                if not chunk:
                     break
                 last_output_at = time.monotonic()
-                chunks_list.append(line.decode('utf-8', errors='replace'))
+                chunks_list.append(chunk.decode('utf-8', errors='replace'))
 
         stdout_task = task_manager.create_task(
             _read_stream(proc.stdout, stdout_chunks),
@@ -125,9 +138,17 @@ class ProcessRunner:
             if stdin is None or proc.stdin is None:
                 return
             data = stdin.encode("utf-8") if isinstance(stdin, str) else stdin
-            proc.stdin.write(data)
-            await proc.stdin.drain()
-            proc.stdin.close()
+            try:
+                proc.stdin.write(data)
+                await proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                # Process exited before we finished writing — common on
+                # Windows when a recon tool rejects bad input fast. Don't
+                # crash the whole runner.
+                return
+            finally:
+                with contextlib.suppress(Exception):
+                    proc.stdin.close()
 
         async def _no_output_watchdog():
             nonlocal timed_out, killed
@@ -140,10 +161,8 @@ class ProcessRunner:
                         "Process exceeded no_output_timeout_ms (%sms). Killing.",
                         no_output_timeout_ms,
                     )
-                    try:
+                    with contextlib.suppress(ProcessLookupError, OSError):
                         proc.kill()
-                    except ProcessLookupError:
-                        pass
                     return
 
         stdin_task = task_manager.create_task(_write_stdin(), name="stdin_writer")
@@ -162,10 +181,8 @@ class ProcessRunner:
             timed_out = True
             killed = True
             logger.warning(f"Process exceeded max_runtime_ms ({max_runtime_ms}ms). Killing.")
-            try:
+            with contextlib.suppress(ProcessLookupError, OSError):
                 proc.kill()
-            except ProcessLookupError:
-                pass
             
             # Ensure tasks finish
             stdout_task.cancel()
@@ -175,6 +192,36 @@ class ProcessRunner:
             watchdog_task.cancel()
             # Cleanup all tasks
             await task_manager.cancel_all()
+
+            # WHY: On Windows the asyncio Proactor transports keep
+            # references to pipe handles until they're explicitly closed.
+            # When we kill a process due to no-output / max-runtime
+            # timeouts (or when stdin was never read because the child
+            # exited early), the transports get garbage-collected later
+            # and emit "I/O operation on closed pipe" /
+            # "_ProactorBasePipeTransport.__del__" warnings. Closing the
+            # transports defensively here, then awaiting proc.wait(),
+            # makes shutdown deterministic and silent.
+            #
+            # WHEN: Triggered on every timeout/kill path, and any time a
+            # subprocess exits before its stdin is fully written.
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream is None:
+                    continue
+                # StreamWriter has .close(); StreamReader doesn't but its
+                # underlying transport does (via _transport).
+                with contextlib.suppress(Exception):
+                    if hasattr(stream, "close"):
+                        stream.close()
+                    transport = getattr(stream, "_transport", None)
+                    if transport is not None:
+                        with contextlib.suppress(Exception):
+                            transport.close()
+            if killed and proc.returncode is None:
+                # Always reap killed processes so OS pipe FDs get released
+                # before this coroutine returns.
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
 
         duration_ms = int((time.monotonic() - start_time) * 1000)
         stdout_text = "".join(stdout_chunks)

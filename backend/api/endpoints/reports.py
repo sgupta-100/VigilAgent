@@ -21,11 +21,20 @@ async def download_report_file(filename: str):
 
 
 def _to_finding(raw: dict):
-    """Map a stored scan finding dict onto the unified Finding model (§17, §18)."""
+    """Map a stored scan finding dict onto the unified Finding model (§17, §18).
+
+    Accepts both the ``results`` shape (already a payload-first dict) and the
+    HiveEvent shape (``{"payload": {...}}``). Source-level deduplication and
+    extraction is handled upstream by ``_findings_from_scan``."""
     from backend.schemas.findings import (
         Finding, FindingSeverity, FindingState, FindingConfidence,
     )
-    payload = raw.get("payload", raw) if isinstance(raw, dict) else {}
+    if isinstance(raw, dict) and isinstance(raw.get("payload"), dict):
+        payload = raw["payload"]
+    elif isinstance(raw, dict):
+        payload = raw
+    else:
+        payload = {}
     sev_raw = str(payload.get("severity", "medium")).lower()
     sev = {
         "critical": FindingSeverity.CRITICAL, "high": FindingSeverity.HIGH,
@@ -33,7 +42,10 @@ def _to_finding(raw: dict):
         "info": FindingSeverity.INFORMATIONAL, "informational": FindingSeverity.INFORMATIONAL,
     }.get(sev_raw, FindingSeverity.MEDIUM)
     controls = payload.get("false_positive_controls", [])
-    confirmed = bool(payload.get("verified") or controls)
+    # A VULN_CONFIRMED event implies confirmation by the orchestrator's strict
+    # path (Architecture §17). Fall back to PROBABLE only when no signals.
+    confirmed = bool(payload.get("verified") or controls
+                     or payload.get("type") or payload.get("vuln_type"))
     return Finding(
         id=str(payload.get("vuln_id") or payload.get("id") or payload.get("url", "finding")),
         title=str(payload.get("type") or payload.get("vuln_type") or payload.get("name") or "Finding"),
@@ -61,9 +73,10 @@ async def export_findings(scan_id: str):
     Technical PDF. Additive endpoint — existing /pdf route is unchanged."""
     from pathlib import Path
     from backend.reporting.finding_report import FindingReportEngine
+    from backend.api.endpoints.scans import _findings_from_scan
 
     scan = stats_db_manager.get_scan_state(scan_id) or {}
-    raw_findings = scan.get("results") or scan.get("findings") or []
+    raw_findings = _findings_from_scan(scan)
     findings = [_to_finding(r) for r in raw_findings]
     target = scan.get("target_url") or scan.get("scope") or scan_id
 

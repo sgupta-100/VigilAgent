@@ -245,6 +245,26 @@ class EventBus:
         self.dead_letters = []
         return flushed
 
+    def dispatch_deferred(self, coro, *, name: str = "deferred_handler") -> asyncio.Task:
+        """Schedule a coroutine off the event-loop critical path.
+
+        WHY: Per-scan event handlers run sequentially inside
+        ``_scan_event_loop`` to preserve causal A→B→C ordering. When a
+        handler needs to fire-and-forget a side-effect (Supabase write,
+        WebSocket fan-out, etc.) that round-trip would otherwise block
+        the next event in the queue. ``dispatch_deferred`` parks the
+        coroutine on the EventBus' ``TaskManager`` so it's tracked,
+        cancelled on shutdown, and won't leak.
+
+        WHEN: Use only for *side-effects* that must not influence later
+        handlers. Anything in the causal chain (scope checks, dedup,
+        guard layer) must still ``await`` inline.
+
+        The returned task is the same object the TaskManager tracks; the
+        caller can ``await`` it in tests if needed.
+        """
+        return self._task_manager.create_task(coro, name=name)
+
     async def shutdown(self):
         """Gracefully waits for and cancels all pending EventBus tasks."""
         if self.dead_letters:
@@ -487,8 +507,22 @@ class BaseAgent:
             try:
                 await asyncio.sleep(10)  # Report every 10 seconds
                 
-                # Calculate metrics
-                response_time = (time_module.time() - self._last_task_time) * 1000
+                # Calculate metrics.
+                #
+                # WHY: ``_last_task_time`` is the wall-clock time of the most
+                # recent ``report_task_result`` call (or agent start), so the
+                # value below is "time since last task" — i.e. *idle* time, not
+                # per-task latency. If we report it as ``response_time_ms``
+                # without flagging it, AgentHealthMonitor escalates a CRITICAL
+                # alert every minute for every idle agent (11 agents × 60s
+                # floods the log during normal scans where commanders are
+                # waiting on workers).
+                #
+                # WHEN: Triggers any time an agent goes >5s without completing
+                # a task, which is the common case for commander/coordinator
+                # agents that mostly delegate. Genuine unresponsiveness is
+                # still detected by ``check_heartbeats`` (heartbeat_timeout).
+                idle_ms = (time_module.time() - self._last_task_time) * 1000
                 success_rate = self._task_success_count / self._task_count if self._task_count > 0 else 1.0
                 
                 # Get resource usage
@@ -496,11 +530,15 @@ class BaseAgent:
                 memory_mb = process.memory_info().rss / 1024 / 1024
                 cpu_percent = process.cpu_percent(interval=0.1)
                 
-                # Report to health monitor
+                # Report to health monitor. ``idle=True`` tells the monitor
+                # this is a keep-alive sample, not a real per-task latency,
+                # so response_time alerts are suppressed for it. The numeric
+                # value is still recorded under ``idle_time_ms`` for
+                # diagnostics.
                 from backend.core.agent_health_monitor import health_monitor
                 health_monitor.report_metrics(self.name, {
-                    "response_time_ms": response_time,
-                    "success": True,  # Overall status
+                    "idle_time_ms": idle_ms,
+                    "idle": True,
                     "memory_mb": memory_mb,
                     "cpu_percent": cpu_percent,
                     "task_queue_depth": len(getattr(self, "_agent_tasks", []))

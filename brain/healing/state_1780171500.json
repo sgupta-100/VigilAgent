@@ -1,0 +1,15 @@
+{
+  "timestamp": 1780171500.4483018,
+  "recovery_history": [],
+  "metrics": {
+    "total_recoveries": 0,
+    "successful_recoveries": 0,
+    "success_rate": 0.0,
+    "recovery_by_type": {},
+    "active_circuit_breakers": 0,
+    "total_restarts": 0,
+    "timestamp": 1780171500.4483361
+  },
+  "circuit_breakers": {},
+  "restart_counts": {}
+}

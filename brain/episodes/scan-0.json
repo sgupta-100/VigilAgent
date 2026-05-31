@@ -78,5 +78,13 @@
     "payload": {
       "endpoints": 3
     }
+  },
+  {
+    "timestamp": 1780169790.8646016,
+    "event_type": "RECON_COMPLETE",
+    "source": "agent_alpha",
+    "payload": {
+      "endpoints": 3
+    }
   }
 ]

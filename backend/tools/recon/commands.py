@@ -6,11 +6,14 @@ Emits argv arrays only — no shell strings reach the runtime.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from backend.agents.alpha_recon.models import ReconScope, ScanMode
 from backend.core.config import settings
+
+logger = logging.getLogger("alpha.commands")
 
 
 @dataclass(frozen=True)
@@ -35,9 +38,39 @@ class ReconCommandPlanner:
 
     # ── Phase 1: Passive Intelligence ──────────────────────────────
 
+    @staticmethod
+    def _is_registrable_domain(host: str) -> bool:
+        """True only for real registrable domains. Subdomain/OSINT passive tools
+        (subfinder, amass, gau, waybackurls, github-subdomains) are meaningless
+        against localhost, bare IPs, or single-label hosts — they just burn the
+        full per-tool timeout. Skipping them on such targets gets the pipeline to
+        the live HTTP + attack phases in seconds instead of minutes."""
+        import ipaddress
+        h = (host or "").strip().lower()
+        if not h or h in ("localhost",):
+            return False
+        try:
+            ipaddress.ip_address(h)
+            return False  # bare IP — no subdomains to enumerate
+        except ValueError:
+            pass
+        # Needs at least one dot and a non-numeric TLD (e.g. example.com).
+        if "." not in h:
+            return False
+        if h.endswith(".local") or h.endswith(".internal") or h == "host.docker.internal":
+            return False
+        return True
+
     def passive_commands(self, scope: ReconScope, raw_dir: Path) -> list[ReconCommand]:
         d = scope.base_domain
         if not d:
+            return []
+        # Skip subdomain/OSINT enumeration for non-registrable targets (localhost,
+        # IPs, *.local) — there are no subdomains to find and each tool would
+        # otherwise stall for the full timeout. HTTP/discovery phases still run.
+        if not self._is_registrable_domain(d):
+            logger.info("[planner] passive subdomain enumeration skipped for "
+                        "non-registrable target '%s' (localhost/IP/internal).", d)
             return []
         cmds = [
             ReconCommand("subfinder", "passive_intelligence",
@@ -176,14 +209,15 @@ class ReconCommandPlanner:
                  "-rate-limit", str(scope.max_rps)),
                 raw_dir / "katana.jsonl", timeout_seconds=self.timeout, parser_hint="jsonl"),
             ReconCommand("gospider", "http_browser_intelligence",
-                ("gospider", "-S", str(hosts_file), "-d", str(scope.max_depth),
+                ("gospider", "-S", str(self._build_url_sites_file(hosts_file, raw_dir)),
+                 "-d", str(scope.max_depth),
                  "-c", "10", "-t", "5", "--json", "--subs",
                  "--delay", "0", "-q"),
                 raw_dir / "gospider.jsonl", timeout_seconds=self.timeout, parser_hint="jsonl"),
             ReconCommand("hakrawler", "http_browser_intelligence",
                 ("hakrawler", "-d", str(scope.max_depth), "-subs", "-insecure"),
                 raw_dir / "hakrawler.txt", timeout_seconds=self.timeout, parser_hint="lines",
-                stdin="\n".join(f"https://{scope.base_domain}") + "\n"),
+                stdin=f"http://{scope.base_domain}\nhttps://{scope.base_domain}\n"),
         ]
         if scope.scan_mode in {ScanMode.STANDARD, ScanMode.AGGRESSIVE}:
             cmds.append(ReconCommand("wafw00f", "http_browser_intelligence",
@@ -217,6 +251,34 @@ class ReconCommandPlanner:
         except Exception:
             pass
         return ""
+
+    @staticmethod
+    def _build_url_sites_file(hosts_file: Path, raw_dir: Path) -> Path:
+        """Write a sites file of ABSOLUTE URLs for tools that require a scheme.
+
+        gospider's ``-S`` sites file (and similar crawlers) reject bare
+        ``host``/``host:port`` entries with "Input must be a valid absolute URL".
+        The shared hosts file contains bare hosts, so we derive a sibling file
+        where every entry is normalized to ``http(s)://host[:port]``. Lines that
+        already carry a scheme are preserved as-is.
+        """
+        sites = raw_dir / "gospider_sites.txt"
+        urls: list[str] = []
+        try:
+            raw = hosts_file.read_text(encoding="utf-8", errors="replace") if hosts_file.exists() else ""
+        except Exception:
+            raw = ""
+        for line in raw.splitlines():
+            h = line.strip()
+            if not h:
+                continue
+            if h.startswith(("http://", "https://")):
+                urls.append(h)
+            else:
+                urls.append(f"http://{h}")
+        sites.parent.mkdir(parents=True, exist_ok=True)
+        sites.write_text("\n".join(urls) + ("\n" if urls else ""), encoding="utf-8")
+        return sites
 
     def js_analysis_commands(self, scope: ReconScope, raw_dir: Path, js_files: list[str]) -> list[ReconCommand]:
         """Generate LinkFinder/SecretFinder commands for discovered JS files."""
@@ -252,10 +314,19 @@ class ReconCommandPlanner:
         if scope.scan_mode == ScanMode.PASSIVE_ONLY or not live_hosts:
             return []
 
-        # Default wordlist
-        wl = wordlist_path or self.tool_root / "SecLists" / "Discovery" / "Web-Content" / "raft-medium-directories.txt"
-        if not wl.exists():
-            wl = self.tool_root / "SecLists" / "Discovery" / "Web-Content" / "common.txt"
+        # Default wordlist. Prefer the compact common.txt (~4.7k entries) so a
+        # directory sweep finishes within the tool timeout; raft-medium (~30k)
+        # blows past the watchdog at the throttled recon rate. AGGRESSIVE mode
+        # opts into the larger list.
+        if wordlist_path:
+            wl = wordlist_path
+        else:
+            common = self.tool_root / "SecLists" / "Discovery" / "Web-Content" / "common.txt"
+            raft = self.tool_root / "SecLists" / "Discovery" / "Web-Content" / "raft-medium-directories.txt"
+            if scope.scan_mode == ScanMode.AGGRESSIVE and raft.exists():
+                wl = raft
+            else:
+                wl = common if common.exists() else raft
 
         # Write live hosts to file
         hosts_file = raw_dir / "live_hosts_for_discovery.txt"
@@ -263,32 +334,59 @@ class ReconCommandPlanner:
 
         cmds: list[ReconCommand] = []
         rps = str(min(scope.max_rps, 200))
+        # Normalize live_hosts to absolute URLs (feroxbuster --stdin requires a
+        # scheme; ffuf's -u takes a single URL; gobuster + dirsearch likewise).
+        # When the orchestrator already seeded URLs (http://host:port/...) we
+        # use them as-is; otherwise prepend http:// to bare host[:port] entries.
+        def _to_url(h: str) -> str:
+            h = h.strip()
+            if not h:
+                return ""
+            return h if h.startswith(("http://", "https://")) else f"http://{h}"
+        url_hosts = [u for u in (_to_url(h) for h in live_hosts) if u]
+        if not url_hosts:
+            return []
 
         cmds.append(ReconCommand("feroxbuster", "directory_route_discovery",
             ("feroxbuster", "--stdin", "-w", str(wl), "--json", "--silent",
              "--rate-limit", rps, "--depth", str(min(scope.max_depth, 2)),
-             "--auto-tune", "--dont-scan", "*.css,*.js,*.png,*.jpg,*.gif,*.ico"),
+             "--auto-tune", "--dont-scan",
+             r"\.css$", r"\.js$", r"\.png$", r"\.jpg$", r"\.gif$", r"\.ico$"),
             raw_dir / "feroxbuster.jsonl", timeout_seconds=self.timeout * 2,
-            parser_hint="jsonl", stdin="\n".join(live_hosts[:20]) + "\n"))
+            parser_hint="jsonl", stdin="\n".join(url_hosts[:20]) + "\n"))
 
         cmds.append(ReconCommand("ffuf", "directory_route_discovery",
-            ("ffuf", "-w", str(wl), "-u", f"{live_hosts[0]}/FUZZ",
+            ("ffuf", "-w", str(wl), "-u", f"{url_hosts[0]}/FUZZ",
              "-mc", "200,201,204,301,302,307,401,403,405",
-             "-rate", rps, "-json", "-o", str(raw_dir / "ffuf_results.json")),
+             "-rate", rps, "-json", "-o", str(raw_dir / "ffuf_results.json"),
+             # Bound the run so ffuf doesn't burn the whole watchdog budget on
+             # apps (DVWA) that 302-redirect every path to login.
+             "-maxtime", str(min(self.timeout - 10, 90))),
             raw_dir / "ffuf.stdout.txt", timeout_seconds=self.timeout,
             parser_hint="json", metadata={"json_file": str(raw_dir / "ffuf_results.json")}))
 
-        ds_script = self.tool_root / "dirsearch" / "dirsearch.py"
-        if ds_script.exists():
-            cmds.append(ReconCommand("dirsearch", "directory_route_discovery",
-                ("python", str(ds_script), "-u", live_hosts[0], "-e", "php,asp,aspx,jsp,html,js,json",
-                 "--json-report", str(raw_dir / "dirsearch.json"), "-q"),
-                raw_dir / "dirsearch.stdout.txt", timeout_seconds=self.timeout,
-                parser_hint="json", metadata={"json_file": str(raw_dir / "dirsearch.json")}))
+        # dirsearch: prefer the installed `dirsearch` binary (present in the
+        # recon container as a pipx entry point, and on PATH for local installs).
+        # The legacy `python <tool_root>/dirsearch/dirsearch.py` form broke in
+        # the container (host script path does not exist there). Run the binary
+        # directly so it works identically in Docker and locally. Output uses the
+        # modern `-o PATH --format=json` flags (this dirsearch dropped the old
+        # `--json-report` option).
+        cmds.append(ReconCommand("dirsearch", "directory_route_discovery",
+            ("dirsearch", "-u", url_hosts[0], "-e", "php,asp,aspx,jsp,html,js,json",
+             "-o", str(raw_dir / "dirsearch.json"), "--format=json", "-q",
+             "--max-time", str(min(self.timeout - 10, 60))),
+            raw_dir / "dirsearch.stdout.txt", timeout_seconds=self.timeout,
+            parser_hint="json", metadata={"json_file": str(raw_dir / "dirsearch.json")}))
 
         cmds.append(ReconCommand("gobuster", "directory_route_discovery",
-            ("gobuster", "dir", "-u", live_hosts[0], "-w", str(wl),
-             "-t", "50", "-q", "--no-error"),
+            ("gobuster", "dir", "-u", url_hosts[0], "-w", str(wl),
+             "-t", "50", "-q", "--no-error",
+             # DVWA-style apps redirect every URL to login.php (302 wildcard);
+             # without this gobuster aborts immediately. Excluding 302 lets it
+             # find pages that genuinely exist (200/403/401).
+             "-b", "302,404",
+             "--wildcard"),
             raw_dir / "gobuster.txt", timeout_seconds=self.timeout, parser_hint="lines"))
 
         return cmds
@@ -327,17 +425,29 @@ class ReconCommandPlanner:
         hosts_file = raw_dir / "live_hosts_for_screenshots.txt"
         hosts_file.write_text("\n".join(live_hosts[:100]) + "\n", encoding="utf-8")
         cmds: list[ReconCommand] = []
+        # gowitness v3 uses `scan file --write-jsonl --write-jsonl-file`. The
+        # bundled recon image does not ship Chrome, so this command will fail
+        # with "google-chrome: executable file not found in $PATH" — the runner
+        # logs it and the parser correctly returns 0 entities. Keeping the
+        # command in the plan documents the intent; install Chrome in the image
+        # to enable real screenshots.
         cmds.append(ReconCommand("gowitness", "visual_documentation",
-            ("gowitness", "file", "-f", str(hosts_file), "--json", "--screenshot-path",
-             str(raw_dir / "screenshots")),
-            raw_dir / "gowitness.json", timeout_seconds=self.timeout, parser_hint="json"))
+            ("gowitness", "scan", "file", "-f", str(hosts_file),
+             "--write-jsonl", "--write-jsonl-file", str(raw_dir / "gowitness.jsonl"),
+             "-s", str(raw_dir / "screenshots"), "--quiet", "-t", "2", "-T", "10"),
+            raw_dir / "gowitness.jsonl", timeout_seconds=self.timeout,
+            parser_hint="jsonl",
+            metadata={"note": "Requires Chrome in the recon image; expected-skip otherwise.",
+                      "json_file": str(raw_dir / "gowitness.jsonl")}))
         # aquatone consumes the same host list over stdin and produces a visual
-        # cluster report + screenshots (complementary to gowitness).
+        # cluster report + screenshots (complementary to gowitness). The recon
+        # image does not currently package aquatone — the runner logs the skip.
         cmds.append(ReconCommand("aquatone", "visual_documentation",
             ("aquatone", "-out", str(raw_dir / "aquatone"), "-silent"),
             raw_dir / "aquatone" / "aquatone_session.json", timeout_seconds=self.timeout,
             parser_hint="json", stdin=self._read_hosts_stdin(hosts_file),
-            metadata={"json_file": str(raw_dir / "aquatone" / "aquatone_session.json")}))
+            metadata={"json_file": str(raw_dir / "aquatone" / "aquatone_session.json"),
+                      "note": "Requires aquatone binary + Chrome; expected-skip otherwise."}))
         return cmds
 
     # ── Phase 7: Template Validation ──────────────────────────────

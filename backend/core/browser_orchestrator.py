@@ -28,6 +28,15 @@ class BrowserEngine(Enum):
     AUTO = "auto"              # Intelligent selection
 
 
+class BrowserUnavailable(RuntimeError):
+    """Raised when both OpenClaw and PinchTab engines are offline.
+
+    Callers should catch this and fall back to a non-browser code path or
+    surface it to the user — silently returning empty results is the bug we are
+    explicitly avoiding.
+    """
+
+
 class BrowserOrchestrator:
     """
     Unified browser interface that routes between OpenClaw and PinchTab.
@@ -70,6 +79,14 @@ class BrowserOrchestrator:
         # Lazy initialization flags
         self._openclaw_initialized = False
         self._pinchtab_initialized = False
+
+        # Last init failure reason / remediation hint per engine. Populated
+        # by the _lazy_init_* paths so health_check() and get_engine_status()
+        # can surface a concrete cause to operators.
+        self._openclaw_last_reason: str = ""
+        self._openclaw_last_hint: str = ""
+        self._pinchtab_last_reason: str = ""
+        self._pinchtab_last_hint: str = ""
         
     async def initialize(self, lazy: bool = False):
         """
@@ -228,76 +245,95 @@ class BrowserOrchestrator:
         AUTO mode logic:
         - Use PinchTab for: Simple DOM scraping, token extraction, fast recon
         - Use OpenClaw for: Complex workflows, stealth mode, multi-step attacks
+
+        Raises ``BrowserUnavailable`` when no engine can serve the request, so
+        callers don't get silent empty results.
         """
         await self._ensure_initialized()
         
         # Create isolated context if scan_id provided but no context_id
         if scan_id and not context_id:
             context_id = await self.create_isolated_context(scan_id)
-        
+
+        # Lazy-init engines BEFORE selecting one (otherwise both look None).
+        await self._lazy_init_openclaw()
+        await self._lazy_init_pinchtab()
+
         selected_engine = self._select_engine(engine, stealth, url)
-        
-        # Lazy initialize the selected engine if needed
-        if selected_engine == BrowserEngine.PINCHTAB:
-            await self._lazy_init_pinchtab()
-        elif selected_engine == BrowserEngine.OPENCLAW:
-            await self._lazy_init_openclaw()
-        
-        logger.info(f"[BrowserOrchestrator] Navigating to {url} via {selected_engine.value} (context: {context_id})")
-        
-        candidates = (
-            [BrowserEngine.PINCHTAB, BrowserEngine.OPENCLAW]
-            if selected_engine == BrowserEngine.PINCHTAB
-            else [BrowserEngine.OPENCLAW, BrowserEngine.PINCHTAB]
+
+        logger.info(
+            "[BrowserOrchestrator] Navigating to %s via %s (context: %s)",
+            url, selected_engine.value, context_id,
         )
 
-        last_error = None
+        # Build candidate order, preferring the selected engine but always
+        # falling back to whichever engine is actually available.
+        if selected_engine == BrowserEngine.PINCHTAB:
+            candidates = [BrowserEngine.PINCHTAB, BrowserEngine.OPENCLAW]
+        else:
+            candidates = [BrowserEngine.OPENCLAW, BrowserEngine.PINCHTAB]
+
+        last_error: Optional[str] = None
         for candidate in candidates:
             try:
                 if candidate == BrowserEngine.PINCHTAB:
-                    await self._lazy_init_pinchtab()
-                    if self.pinchtab:
-                        result = await self.pinchtab.navigate(url)
-                        if result.get("success"):
-                            return result
-                        last_error = result.get("error") or "PinchTab navigation failed"
-                else:
-                    await self._lazy_init_openclaw()
-                    if self.openclaw:
-                        return await self.openclaw.navigate(url, stealth=stealth, wait_for=wait_for)
+                    if self.pinchtab is None or not getattr(self.pinchtab, "is_available", lambda: False)():
+                        continue
+                    result = await self.pinchtab.navigate(url)
+                    if result.get("success"):
+                        return result
+                    last_error = result.get("error") or "PinchTab navigation failed"
+                else:  # OPENCLAW
+                    if self.openclaw is None:
+                        continue
+                    return await self.openclaw.navigate(url, stealth=stealth, wait_for=wait_for)
             except Exception as exc:
-                last_error = str(exc)
-                logger.warning("[BrowserOrchestrator] %s navigation failed: %s", candidate.value, exc)
+                last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "[BrowserOrchestrator] %s navigation failed: %s",
+                    candidate.value, last_error,
+                )
 
-        raise RuntimeError(f"No browser engines available: {last_error or 'initialization failed'}")
+        raise BrowserUnavailable(
+            f"No browser engine could navigate to {url}: "
+            f"{last_error or 'OpenClaw and PinchTab both offline'}"
+        )
                 
     async def extract_endpoints(self, url: str, deep: bool = False, scan_id: Optional[str] = None):
         """
         Extract API endpoints from page.
-        
+
         Args:
             url: Target URL
             deep: Use deep analysis (OpenClaw) vs fast extraction (PinchTab)
             scan_id: Scan ID for tracking
-            
+
         Returns:
-            List of discovered endpoints
+            List of discovered endpoints. Each endpoint is a dict with at
+            least ``url``; deep mode also includes ``method`` and ``source``.
         """
         await self._ensure_initialized()
-        
-        if deep:
-            await self._lazy_init_openclaw()
-            if self.openclaw:
-                try:
-                    logger.info(f"[BrowserOrchestrator] Deep endpoint extraction on {url}")
-                    return await self.openclaw.extract_endpoints_deep(url)
-                except Exception as exc:
-                    logger.warning("[BrowserOrchestrator] Deep extraction failed, trying fast mode: %s", exc)
-
+        await self._lazy_init_openclaw()
         await self._lazy_init_pinchtab()
-        if self.pinchtab:
-            logger.info(f"[BrowserOrchestrator] Fast endpoint extraction on {url}")
-            return await self.pinchtab.extract_endpoints_fast(url)
+
+        if deep and self.openclaw:
+            try:
+                logger.info("[BrowserOrchestrator] Deep endpoint extraction on %s", url)
+                eps = await self.openclaw.extract_endpoints_deep(url)
+                # OpenClawEngine.extract_endpoints_deep returns list[dict].
+                if eps and isinstance(eps[0], str):
+                    eps = [{"url": u, "method": "GET", "source": "openclaw"} for u in eps]
+                return eps or []
+            except Exception as exc:
+                logger.warning(
+                    "[BrowserOrchestrator] Deep extraction failed, trying fast mode: %s", exc,
+                )
+
+        if self.pinchtab and self.pinchtab.is_available():
+            logger.info("[BrowserOrchestrator] Fast endpoint extraction on %s", url)
+            urls = await self.pinchtab.extract_endpoints_fast(url)
+            return [{"url": u, "method": "GET", "source": "pinchtab"} for u in (urls or [])]
+
         return []
             
     async def execute_workflow(self, workflow: Dict, scan_id: str):
@@ -331,12 +367,13 @@ class BrowserOrchestrator:
             List of extracted tokens (JWT, Bearer, etc.)
         """
         await self._ensure_initialized()
-        
-        if self.pinchtab:
+        await self._lazy_init_openclaw()
+        await self._lazy_init_pinchtab()
+
+        if self._pinchtab_ready():
             logger.info(f"[BrowserOrchestrator] Extracting tokens from {url}")
             return await self.pinchtab.extract_tokens(url)
         elif self.openclaw:
-            # Fallback to OpenClaw
             return await self.openclaw.extract_tokens(url)
         else:
             return []
@@ -357,16 +394,18 @@ class BrowserOrchestrator:
             Test results with exploitation indicators
         """
         await self._ensure_initialized()
-        
+        await self._lazy_init_openclaw()
+        await self._lazy_init_pinchtab()
+
         # XSS payloads need real browser execution
         if any(x in payload.lower() for x in ["<script", "onerror", "onclick", "onload", "alert"]):
             if self.openclaw:
-                logger.info(f"[BrowserOrchestrator] Testing XSS payload in OpenClaw")
+                logger.info("[BrowserOrchestrator] Testing XSS payload in OpenClaw")
                 return await self.openclaw.test_xss_payload(url, payload)
                 
         # Simple injection can use fast mode
-        if self.pinchtab:
-            logger.info(f"[BrowserOrchestrator] Testing injection in PinchTab")
+        if self._pinchtab_ready():
+            logger.info("[BrowserOrchestrator] Testing injection in PinchTab")
             return await self.pinchtab.test_injection(url, payload, method)
         elif self.openclaw:
             return await self.openclaw.test_xss_payload(url, payload)
@@ -388,7 +427,8 @@ class BrowserOrchestrator:
     async def intercept_network(self, url: str):
         """Intercept network requests (XHR/Fetch)"""
         await self._ensure_initialized()
-        
+        await self._lazy_init_openclaw()
+
         if self.openclaw:
             return await self.openclaw.intercept_network(url)
         return []
@@ -396,7 +436,8 @@ class BrowserOrchestrator:
     async def find_websockets(self, url: str):
         """Find WebSocket connections"""
         await self._ensure_initialized()
-        
+        await self._lazy_init_openclaw()
+
         if self.openclaw:
             return await self.openclaw.find_websockets(url)
         return []
@@ -404,7 +445,8 @@ class BrowserOrchestrator:
     async def capture_screenshot(self, scan_id: str, label: str = "screenshot"):
         """Capture screenshot for forensic evidence"""
         await self._ensure_initialized()
-        
+        await self._lazy_init_openclaw()
+
         if self.openclaw:
             return await self.openclaw.capture_screenshot(scan_id, label)
         return None
@@ -412,7 +454,8 @@ class BrowserOrchestrator:
     async def capture_dom(self, scan_id: str, label: str = "dom"):
         """Capture DOM snapshot"""
         await self._ensure_initialized()
-        
+        await self._lazy_init_openclaw()
+
         if self.openclaw:
             return await self.openclaw.capture_dom(scan_id, label)
         return None
@@ -420,7 +463,8 @@ class BrowserOrchestrator:
     async def get_network_log(self):
         """Get network request log"""
         await self._ensure_initialized()
-        
+        await self._lazy_init_openclaw()
+
         if self.openclaw:
             return await self.openclaw.get_network_log()
         return []
@@ -428,21 +472,33 @@ class BrowserOrchestrator:
     async def analyze_dom(self, url: str):
         """Analyze DOM structure (forms, inputs, etc.)"""
         await self._ensure_initialized()
-        
-        if self.pinchtab:
+        await self._lazy_init_pinchtab()
+
+        if self._pinchtab_ready():
             return await self.pinchtab.analyze_dom(url)
         return {}
         
     async def get_page_text(self):
         """Get page text content"""
         await self._ensure_initialized()
-        
-        if self.pinchtab:
+        await self._lazy_init_openclaw()
+        await self._lazy_init_pinchtab()
+
+        if self._pinchtab_ready():
             return await self.pinchtab.get_page_text()
         elif self.openclaw:
             return await self.openclaw.get_page_text()
         return ""
         
+    def _pinchtab_ready(self) -> bool:
+        """True iff the PinchTab engine is initialized AND its control plane is reachable."""
+        if self.pinchtab is None:
+            return False
+        try:
+            return bool(self.pinchtab.is_available())
+        except Exception:
+            return False
+
     def _select_engine(self, requested: BrowserEngine, stealth: bool, url: str) -> BrowserEngine:
         """
         Intelligent engine selection based on requirements.
@@ -453,11 +509,12 @@ class BrowserOrchestrator:
         - If auth/login URL, prefer OpenClaw (needs session handling)
         - Otherwise, prefer PinchTab for speed
         """
+        pinch_ready = self._pinchtab_ready()
         # Honor explicit request
         if requested != BrowserEngine.AUTO:
             if requested == BrowserEngine.OPENCLAW and self.openclaw:
                 return BrowserEngine.OPENCLAW
-            elif requested == BrowserEngine.PINCHTAB and self.pinchtab:
+            elif requested == BrowserEngine.PINCHTAB and pinch_ready:
                 return BrowserEngine.PINCHTAB
                 
         # Auto-selection logic
@@ -470,16 +527,16 @@ class BrowserOrchestrator:
             
         # Check user preference
         prefer_speed = getattr(settings, "BROWSER_PREFER_SPEED", False)
-        if prefer_speed and self.pinchtab:
+        if prefer_speed and pinch_ready:
             return BrowserEngine.PINCHTAB
             
         # Default: prefer OpenClaw for depth, fallback to PinchTab
         if self.openclaw:
             return BrowserEngine.OPENCLAW
-        elif self.pinchtab:
+        elif pinch_ready:
             return BrowserEngine.PINCHTAB
         else:
-            return BrowserEngine.OPENCLAW  # Will fail gracefully
+            return BrowserEngine.OPENCLAW  # Will fail gracefully via BrowserUnavailable
             
     async def _ensure_initialized(self):
         """Ensure orchestrator is initialized"""
@@ -581,48 +638,191 @@ class BrowserOrchestrator:
             return {"error": str(e)}
     
     async def _lazy_init_openclaw(self):
-        """Lazy initialization of OpenClaw engine."""
+        """Lazy initialization of OpenClaw engine.
+
+        Degrades gracefully:
+          * Logs ONE warning per engine at startup — never a generic
+            "unavailable", always the concrete reason + a remediation hint.
+          * If Playwright is installed but the Chromium binary is missing,
+            attempts ``python -m playwright install chromium`` ONLY when
+            ``ALPHA_AUTO_INSTALL_BROWSERS=true``; otherwise skips with a
+            clear log (no auto-download surprises in production).
+        """
         if self._openclaw_initialized or self.openclaw:
             return
-        
-        if getattr(settings, "OPENCLAW_ENABLED", True):
-            try:
-                from backend.core.openclaw_engine import OpenClawEngine
-                engine = OpenClawEngine()
-                ok = await engine.initialize()
-                self._openclaw_initialized = True
-                if ok:
-                    self.openclaw = engine
-                    logger.info("[BrowserOrchestrator] OpenClaw lazy-initialized")
+
+        if not getattr(settings, "OPENCLAW_ENABLED", True):
+            self._openclaw_initialized = True
+            return
+
+        try:
+            from backend.core.openclaw_engine import OpenClawEngine
+            engine = OpenClawEngine()
+            ok = await engine.initialize()
+
+            # If init failed because Chromium isn't downloaded, optionally
+            # install it once and retry. This is the single most common
+            # cause of "OpenClaw unavailable" on a fresh checkout.
+            if not ok and "playwright_browsers_not_installed" in (
+                    getattr(engine, "last_init_error", "") or ""):
+                if self._auto_install_browsers_enabled():
+                    logger.info(
+                        "[BrowserOrchestrator] Chromium binary missing — "
+                        "ALPHA_AUTO_INSTALL_BROWSERS=true, running "
+                        "`python -m playwright install chromium`"
+                    )
+                    if await self._install_playwright_chromium():
+                        # Retry once with the freshly downloaded binary.
+                        ok = await engine.initialize()
                 else:
-                    self.openclaw = None
-                    logger.warning("[BrowserOrchestrator] OpenClaw unavailable")
-            except Exception as e:
+                    logger.warning(
+                        "[BrowserOrchestrator] Chromium binary missing. "
+                        "Set ALPHA_AUTO_INSTALL_BROWSERS=true to auto-install, "
+                        "or run: python -m playwright install chromium"
+                    )
+
+            self._openclaw_initialized = True
+            if ok:
+                self.openclaw = engine
+                logger.info("[BrowserOrchestrator] OpenClaw engine ready")
+            else:
                 self.openclaw = None
-                self._openclaw_initialized = True
-                logger.error(f"[BrowserOrchestrator] OpenClaw lazy-init failed: {e}")
-    
+                reason = getattr(engine, "last_init_error", "") or "unknown"
+                # Single concrete WARNING + remediation hint (never the
+                # generic "unavailable"). The hint depends on the failure
+                # category so users see exactly what to do next.
+                hint = self._remediation_hint_openclaw(reason)
+                logger.warning(
+                    "[BrowserOrchestrator] OpenClaw engine offline: %s | hint: %s",
+                    reason, hint,
+                )
+                # Stash the last reason for health_check() / get_engine_status().
+                self._openclaw_last_reason = reason
+                self._openclaw_last_hint = hint
+        except Exception as exc:
+            self.openclaw = None
+            self._openclaw_initialized = True
+            self._openclaw_last_reason = f"{type(exc).__name__}: {exc}"
+            self._openclaw_last_hint = (
+                "Re-run with ALPHA_DEBUG=1 to see the full traceback")
+            logger.warning(
+                "[BrowserOrchestrator] OpenClaw lazy-init crashed (%s: %s)",
+                type(exc).__name__, str(exc)[:200],
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _auto_install_browsers_enabled() -> bool:
+        """Single source of truth for the auto-install opt-in flag."""
+        import os
+        return os.getenv("ALPHA_AUTO_INSTALL_BROWSERS", "").lower() == "true"
+
+    @staticmethod
+    async def _install_playwright_chromium() -> bool:
+        """Run ``python -m playwright install chromium`` in a subprocess.
+
+        Returns True on a clean exit. Failures are logged at WARNING and the
+        caller continues without OpenClaw.
+        """
+        import sys
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "playwright", "install", "chromium",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode == 0:
+                logger.info(
+                    "[BrowserOrchestrator] playwright install chromium succeeded"
+                )
+                return True
+            logger.warning(
+                "[BrowserOrchestrator] playwright install chromium exited "
+                "with code %s: %s",
+                proc.returncode,
+                (stderr.decode(errors="replace") or
+                 stdout.decode(errors="replace"))[:300],
+            )
+            return False
+        except Exception as exc:
+            logger.warning(
+                "[BrowserOrchestrator] playwright install chromium failed (%s: %s)",
+                type(exc).__name__, str(exc)[:200],
+            )
+            return False
+
+    @staticmethod
+    def _remediation_hint_openclaw(reason: str) -> str:
+        """Map an OpenClaw init failure reason to a one-line fix-it hint."""
+        r = (reason or "").lower()
+        if "playwright_not_installed" in r or "playwright_import_failed" in r:
+            return "pip install playwright"
+        if "playwright_browsers_not_installed" in r or "executable doesn't exist" in r:
+            return ("python -m playwright install chromium "
+                    "(or set ALPHA_AUTO_INSTALL_BROWSERS=true)")
+        return ("Set OPENCLAW_ENABLED=false to silence, "
+                "or check the playwright Chromium install")
+
     async def _lazy_init_pinchtab(self):
-        """Lazy initialization of PinchTab engine."""
+        """Lazy initialization of PinchTab engine.
+
+        Like ``_lazy_init_openclaw`` this emits a single warning at startup
+        when the engine is genuinely offline, with a concrete reason
+        (control plane unreachable) and a one-line remediation hint
+        (``ALPHA_ENABLE_PINCHTAB=false`` to silence). Recon + HTTP probe
+        keep working — PinchTab is purely additive.
+        """
         if self._pinchtab_initialized or self.pinchtab:
             return
-        
-        if getattr(settings, "PINCHTAB_ENABLED", True):
-            try:
-                from backend.core.pinchtab_engine import PinchTabEngine
-                engine = PinchTabEngine()
-                ok = await engine.initialize()
-                self._pinchtab_initialized = True
-                if ok:
-                    self.pinchtab = engine
-                    logger.info("[BrowserOrchestrator] PinchTab lazy-initialized")
-                else:
-                    self.pinchtab = None
-                    logger.warning("[BrowserOrchestrator] PinchTab unavailable")
-            except Exception as e:
+
+        if not getattr(settings, "PINCHTAB_ENABLED",
+                       getattr(settings, "ALPHA_ENABLE_PINCHTAB", True)):
+            self._pinchtab_initialized = True
+            return
+
+        try:
+            from backend.core.pinchtab_engine import PinchTabEngine
+            engine = PinchTabEngine()
+            ok = await engine.initialize()
+            self._pinchtab_initialized = True
+            if ok:
+                self.pinchtab = engine
+                logger.info("[BrowserOrchestrator] PinchTab engine ready")
+            else:
+                # Engine offline — almost always because the local PinchTab
+                # control plane (default http://127.0.0.1:9867) isn't running.
                 self.pinchtab = None
-                self._pinchtab_initialized = True
-                logger.error(f"[BrowserOrchestrator] PinchTab lazy-init failed: {e}")
+                base_url = getattr(
+                    getattr(engine, "client", None), "base_url",
+                    getattr(settings, "PINCHTAB_BASE_URL", "http://127.0.0.1:9867"),
+                )
+                reason = f"pinchtab_daemon_unreachable at {base_url}"
+                hint = (
+                    f"PinchTab base URL {base_url} unreachable; "
+                    "set ALPHA_ENABLE_PINCHTAB=false to silence"
+                )
+                # WARNING (once) per the user's requirement: surface the
+                # real reason + remediation. OpenClaw / Playwright fallback
+                # still serves browser work.
+                logger.warning(
+                    "[BrowserOrchestrator] PinchTab engine offline: %s | hint: %s",
+                    reason, hint,
+                )
+                self._pinchtab_last_reason = reason
+                self._pinchtab_last_hint = hint
+        except Exception as exc:
+            self.pinchtab = None
+            self._pinchtab_initialized = True
+            self._pinchtab_last_reason = f"{type(exc).__name__}: {exc}"
+            self._pinchtab_last_hint = (
+                "Inspect backend.integrations.pinchtab_client; "
+                "set ALPHA_ENABLE_PINCHTAB=false to silence")
+            logger.warning(
+                "[BrowserOrchestrator] PinchTab lazy-init crashed (%s: %s)",
+                type(exc).__name__, str(exc)[:200],
+                exc_info=True,
+            )
     
     def get_resource_stats(self) -> Dict[str, Any]:
         """Get comprehensive resource usage statistics."""
@@ -634,6 +834,111 @@ class BrowserOrchestrator:
             "openclaw_initialized": self._openclaw_initialized,
             "pinchtab_initialized": self._pinchtab_initialized,
             "memory_threshold_mb": self._memory_threshold_mb
+        }
+
+    def is_ready(self) -> bool:
+        """Return True iff at least one browser engine can serve requests.
+
+        Used by callers (Alpha BrowserReconModule, AgentDelta, AgentChi) that
+        want a quick yes/no before attempting browser-aware operations. The
+        Playwright fallback inside OpenClawEngine counts: if Chromium launched,
+        we're ready even when the PinchTab daemon is offline.
+        """
+        if not self._initialized and not (self._openclaw_initialized or self._pinchtab_initialized):
+            return False
+        if self.openclaw is not None:
+            return True
+        return self.pinchtab is not None and self._pinchtab_ready()
+
+    def get_engine_status(self) -> Dict[str, Any]:
+        """Return the current availability state of each engine.
+
+        Useful for diagnostics / smoke tests so you can see at a glance which
+        engine came up and, when one didn't, the precise reason. Does not
+        perform any I/O; it reflects the state observed during init.
+        """
+        openclaw_status: Dict[str, Any] = {
+            "available": self.openclaw is not None,
+            "initialized": self._openclaw_initialized,
+        }
+        if self.openclaw is None and self._openclaw_initialized:
+            # If we tried and failed, the engine instance was discarded; we
+            # can't pull last_init_error from it. The reason is already in
+            # the log. Indicate "see log" so callers don't think it's a bug.
+            openclaw_status["reason"] = "see warning log"
+        elif self.openclaw is not None:
+            err = getattr(self.openclaw, "last_init_error", "") or ""
+            if err:
+                openclaw_status["last_init_error"] = err
+
+        pinchtab_status: Dict[str, Any] = {
+            "available": self.pinchtab is not None and self._pinchtab_ready(),
+            "initialized": self._pinchtab_initialized,
+        }
+        if self.pinchtab is None and self._pinchtab_initialized:
+            pinchtab_status["reason"] = "pinchtab_daemon_not_running"
+
+        return {"openclaw": openclaw_status, "pinchtab": pinchtab_status}
+
+    async def health_check(self) -> Dict[str, Any]:
+        """Boot-time browser stack health probe.
+
+        Triggers lazy init for both engines (so any "unavailable" warnings
+        and remediation hints surface during startup, not on the first
+        scan), then returns a structured snapshot::
+
+            {
+              "openclaw": "ok" | "unavailable" | "degraded",
+              "pinchtab": "ok" | "unavailable",
+              "reasons": {
+                "openclaw": "<concrete reason if not ok>",
+                "pinchtab": "<concrete reason if not ok>",
+                "openclaw_hint": "<remediation hint>",
+                "pinchtab_hint": "<remediation hint>",
+              }
+            }
+
+        The swarm does NOT require either engine to be available — recon
+        and HTTP probe still produce results when both are offline. This
+        method is purely diagnostic.
+        """
+        # Force lazy init if it hasn't happened yet — that's where the
+        # "single warning per engine" actually fires.
+        if not self._openclaw_initialized:
+            await self._lazy_init_openclaw()
+        if not self._pinchtab_initialized:
+            await self._lazy_init_pinchtab()
+
+        # OpenClaw: "ok" if fully launched + probe-able; "degraded" if it
+        # launched but its is_truly_available probe fails (rare); else
+        # "unavailable".
+        openclaw_state = "unavailable"
+        if self.openclaw is not None:
+            try:
+                probe = await self.openclaw.is_truly_available()
+                openclaw_state = "ok" if probe else "degraded"
+            except Exception:
+                openclaw_state = "degraded"
+
+        pinchtab_state = "ok" if (
+            self.pinchtab is not None and self._pinchtab_ready()) else "unavailable"
+
+        reasons: Dict[str, str] = {}
+        if openclaw_state != "ok":
+            if self._openclaw_last_reason:
+                reasons["openclaw"] = self._openclaw_last_reason
+            if self._openclaw_last_hint:
+                reasons["openclaw_hint"] = self._openclaw_last_hint
+        if pinchtab_state != "ok":
+            if self._pinchtab_last_reason:
+                reasons["pinchtab"] = self._pinchtab_last_reason
+            if self._pinchtab_last_hint:
+                reasons["pinchtab_hint"] = self._pinchtab_last_hint
+
+        return {
+            "openclaw": openclaw_state,
+            "pinchtab": pinchtab_state,
+            "reasons": reasons,
         }
     
     async def cleanup_all_resources(self):

@@ -45,10 +45,14 @@ async def create_scan(req: CreateScanRequest, background_tasks: BackgroundTasks)
 
     scan_id = req.scan_id or f"HIVE-V5-{uuid.uuid4().hex[:10]}"
     target_config = {"url": req.target_url, "mode": req.mode, "modules": req.modules}
+    _now_iso = time.strftime("%Y-%m-%dT%H:%M:%S")
     scan_record = {
         "id": scan_id, "scan_id": scan_id, "target_url": req.target_url,
         "scope": req.target_url, "status": "Initializing", "modules": req.modules,
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"), "results": [], "events": [],
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "created_at": _now_iso,
+        "report_ready": False,
+        "results": [], "events": [],
     }
     await stats_db_manager.register_scan(scan_record)
 
@@ -68,10 +72,53 @@ async def create_scan(req: CreateScanRequest, background_tasks: BackgroundTasks)
 @router.get("/")
 async def list_scans():
     stats = stats_db_manager.get_stats()
-    scans = stats.get("scans", [])
-    return {"scans": [{"id": s.get("id"), "target": s.get("target_url") or s.get("scope"),
-                       "status": s.get("status"), "report_ready": s.get("report_ready", False)}
-                      for s in scans], "count": len(scans)}
+    scans = stats.get("scans", []) or []
+
+    def _created_at(scan: dict) -> str:
+        # Accept ISO strings, pre-V6 ``YYYY-MM-DD HH:MM:SS`` strings, or float-as-string
+        # event-loop timestamps. Always return an ISO-8601 representation so the
+        # frontend can parse with ``new Date(...)`` without per-row branches.
+        raw_ts = scan.get("created_at") or scan.get("timestamp") or ""
+        s = str(raw_ts).strip()
+        if not s:
+            return ""
+        # Already ISO-ish (contains 'T' or timezone marker) — pass through.
+        if "T" in s or s.endswith("Z"):
+            return s
+        # ``YYYY-MM-DD HH:MM:SS`` -> ISO.
+        try:
+            from datetime import datetime as _dt
+            return _dt.strptime(s, "%Y-%m-%d %H:%M:%S").isoformat()
+        except Exception:
+            pass
+        # Float seconds (event-loop time or unix epoch).
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            ts = float(s)
+            # Event-loop times are small (< ~1e9 only after years); treat
+            # values < 1e9 as relative loop seconds and don't pretend they're
+            # epochs — return the raw string so the UI shows something rather
+            # than a 1970 date.
+            if ts > 1e9:
+                return _dt.fromtimestamp(ts, tz=_tz.utc).isoformat()
+        except Exception:
+            pass
+        return s
+
+    rows = []
+    for s in scans:
+        rows.append({
+            "id": s.get("id"),
+            "target": s.get("target_url") or s.get("scope"),
+            "target_url": s.get("target_url") or s.get("scope") or "",
+            "status": s.get("status"),
+            "report_ready": bool(s.get("report_ready", False)),
+            "created_at": _created_at(s),
+        })
+    # Newest-first. Empty ``created_at`` strings sort last so freshly-created
+    # scans without a timestamp don't push completed history off the top.
+    rows.sort(key=lambda r: (r.get("created_at") or ""), reverse=True)
+    return {"scans": rows, "count": len(rows)}
 
 
 @router.get("/{scan_id}")
@@ -131,11 +178,132 @@ async def scan_events(scan_id: str, limit: int = 500):
     return {"scan_id": scan_id, "events": events[-limit:], "count": len(events)}
 
 
+def _findings_from_scan(scan: dict) -> list[dict]:
+    """Extract findings from a scan record across every persistence path.
+
+    Confirmed findings are persisted in three places at different points in the
+    lifecycle:
+      1. ``scan["results"]`` — populated when the scan finalizes
+         (`StateManager.complete_scan`).
+      2. ``scan["findings"]`` — populated by direct `StateManager.add_finding`
+         calls.
+      3. ``scan["events"]`` — every `VULN_CONFIRMED` HiveEvent is appended
+         regardless of GuardLayer side-effect filtering.
+
+    During an active scan only (3) is populated; after completion (1) is the
+    canonical source. We merge all three and de-duplicate by ``(url, type)`` so
+    the API always surfaces every confirmed finding, even mid-scan and even if
+    the dashboard counters were filtered."""
+    seen: set[tuple[str, str]] = set()
+    out: list[dict] = []
+
+    def _coerce(item: dict) -> dict:
+        # Normalise different storage shapes into the same finding dict.
+        if not isinstance(item, dict):
+            return {}
+        if "payload" in item and isinstance(item["payload"], dict):
+            payload = dict(item["payload"])
+            for k in ("type", "source"):
+                if k in item and k not in payload:
+                    payload[k] = item[k]
+            return payload
+        return dict(item)
+
+    for source in (scan.get("results") or [], scan.get("findings") or []):
+        for it in source:
+            f = _coerce(it)
+            key = (str(f.get("url", "")).lower(), str(f.get("type", "")).upper())
+            if key in seen or not f.get("url"):
+                continue
+            seen.add(key)
+            out.append(f)
+
+    for ev in scan.get("events", []) or []:
+        # Tolerate both plain strings ("VULN_CONFIRMED") and the legacy
+        # enum-repr form ("EventType.VULN_CONFIRMED" / Enum object) that older
+        # event records may still carry. The orchestrator now serialises with
+        # ``mode="json"`` so new events are plain strings; this fallback keeps
+        # us readable across rolling restarts.
+        ev_type = ev.get("type", "")
+        ev_type_str = str(getattr(ev_type, "value", ev_type)).upper()
+        if ev_type_str.endswith("VULN_CONFIRMED") or ev_type_str == "VULN_CONFIRMED":
+            pass
+        else:
+            continue
+        f = _coerce(ev)
+        key = (str(f.get("url", "")).lower(), str(f.get("type", "")).upper())
+        if key in seen or not f.get("url"):
+            continue
+        seen.add(key)
+        out.append(f)
+
+    return out
+
+
+def _enrich_finding_for_api(f: dict, scan_id: str) -> dict:
+    """Augment a raw finding with the fields the Live Monitor and the new PDF
+    builder both rely on, without dropping any existing keys.
+
+    Required output keys (Sub-Agent D contract): id, type, severity, url,
+    cvss_score, cvss_severity, evidence, remediation, agent, timestamp.
+    """
+    out = dict(f)  # preserve every field already present
+    # Stable id — fall back to a deterministic hash of (url, type) so
+    # downstream UIs can key React lists without colliding.
+    if not out.get("id"):
+        import hashlib
+        sig = f"{scan_id}|{str(f.get('url',''))}|{str(f.get('type',''))}".lower()
+        out["id"] = "F-" + hashlib.sha1(sig.encode("utf-8")).hexdigest()[:10]
+
+    out.setdefault("type", f.get("type") or f.get("vuln_type") or "Unknown")
+    out.setdefault("severity", f.get("severity") or "INFO")
+    out.setdefault("url", f.get("url") or f.get("endpoint") or "")
+    out.setdefault("timestamp", f.get("timestamp") or f.get("created_at") or "")
+
+    # CVSS — if missing, compute deterministically from the vuln class.
+    if not isinstance(out.get("cvss_score"), (int, float)) or not out.get("cvss_severity"):
+        try:
+            from backend.reporting.cvss_engine import score_for_vuln_class
+            score, _vector = score_for_vuln_class(str(out.get("type", "")))
+            out.setdefault("cvss_score", round(float(score), 1))
+            band = (
+                "CRITICAL" if score >= 9.0
+                else "HIGH" if score >= 7.0
+                else "MEDIUM" if score >= 4.0
+                else "LOW" if score > 0
+                else "INFO"
+            )
+            out.setdefault("cvss_severity", band)
+        except Exception:
+            out.setdefault("cvss_score", 0.0)
+            out.setdefault("cvss_severity", out.get("severity", "INFO"))
+
+    # Evidence dict shape: { request, response, ... } — never invent traffic.
+    ev = out.get("evidence")
+    if not isinstance(ev, dict):
+        ev = {}
+    ev.setdefault("request", f.get("request") or f.get("http_request") or "")
+    ev.setdefault("response", f.get("response") or f.get("http_response") or "")
+    out["evidence"] = ev
+
+    # Remediation hint — accept legacy string / list / nested forms.
+    if not out.get("remediation"):
+        out["remediation"] = f.get("remediation_hint") or f.get("fix") or ""
+
+    # Agent that confirmed the finding — orchestrator persists this as
+    # ``validated_by`` (DB) or ``source`` (event payload); surface either.
+    if not out.get("agent"):
+        out["agent"] = f.get("validated_by") or f.get("source") or f.get("agent_confirmed") or ""
+
+    return out
+
+
 @router.get("/{scan_id}/findings")
 async def scan_findings(scan_id: str):
     scan = stats_db_manager.get_scan_state(scan_id) or {}
-    findings = scan.get("results") or scan.get("findings") or []
-    return {"scan_id": scan_id, "findings": findings, "count": len(findings)}
+    findings = _findings_from_scan(scan)
+    enriched = [_enrich_finding_for_api(f, scan_id) for f in findings]
+    return {"scan_id": scan_id, "findings": enriched, "count": len(enriched)}
 
 
 @router.get("/{scan_id}/graph")

@@ -8,6 +8,7 @@ import Login from './components/Login';
 import SmoothScroll from './components/SmoothScroll';
 import GlobalBackground from './components/GlobalBackground';
 import ErrorBoundary from './components/ErrorBoundary';
+import { ToastProvider } from './components/ui';
 import { AnimatePresence } from 'framer-motion';
 import { apiUrl } from './lib/api';
 
@@ -92,31 +93,33 @@ export default function App() {
 
     return (
         <ErrorBoundary>
-            <SmoothScroll>
-                {/* Transparent Star Overlay */}
-                <GlobalBackground />
+            <ToastProvider>
+                <SmoothScroll>
+                    {/* Transparent Star Overlay */}
+                    <GlobalBackground />
 
-                {/* Shared Background for all pages to ensure continuity */}
-                <div className="nebula-background"></div>
+                    {/* Shared Background for all pages to ensure continuity */}
+                    <div className="nebula-background"></div>
 
-                {/* All CSS is now in index.css — no inline <style> block */}
+                    {/* All CSS is now in index.css — no inline <style> block */}
 
-                {/* Render the specific page component based on state */}
-                <AnimatePresence mode="wait">
-                    {currentPage === 'dashboard' && (
-                        <Dashboard
-                            key="dashboard"
-                            navigate={navigate}
-                            persistentState={dashboardState}
-                            setPersistentState={setDashboardState}
-                        />
-                    )}
-                    {currentPage === 'scans' && <Scans key="scans" navigate={navigate} />}
-                    {currentPage === 'newscan' && <NewScan key="newscan" navigate={navigate} />}
-                    {currentPage === 'settings' && <Settings key="settings" navigate={navigate} />}
-                    {currentPage === 'library' && <Library key="library" navigate={navigate} />}
-                </AnimatePresence>
-            </SmoothScroll>
+                    {/* Render the specific page component based on state */}
+                    <AnimatePresence mode="wait">
+                        {currentPage === 'dashboard' && (
+                            <Dashboard
+                                key="dashboard"
+                                navigate={navigate}
+                                persistentState={dashboardState}
+                                setPersistentState={setDashboardState}
+                            />
+                        )}
+                        {currentPage === 'scans' && <Scans key="scans" navigate={navigate} />}
+                        {currentPage === 'newscan' && <NewScan key="newscan" navigate={navigate} />}
+                        {currentPage === 'settings' && <Settings key="settings" navigate={navigate} />}
+                        {currentPage === 'library' && <Library key="library" navigate={navigate} />}
+                    </AnimatePresence>
+                </SmoothScroll>
+            </ToastProvider>
         </ErrorBoundary>
     );
 }

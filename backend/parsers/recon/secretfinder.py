@@ -15,6 +15,9 @@ _SECRET_PATTERNS = {
     "generic_secret": re.compile(r'(?:secret|password|token|api_key|apikey|auth)\s*[:=]\s*["\']?([A-Za-z0-9/+=]{16,})', re.I),
 }
 
+# Native SecretFinder ``[TYPE] value`` line format — hoisted to module scope.
+_SF_NATIVE_RE = re.compile(r'\[([^\]]+)\]\s*(.*)')
+
 
 def parse_secretfinder_output(path: Path | str) -> list[ParsedEntity]:
     entities: list[ParsedEntity] = []
@@ -37,7 +40,7 @@ def parse_secretfinder_output(path: Path | str) -> list[ParsedEntity]:
                 break
         else:
             # SecretFinder native output format: [TYPE] value
-            m = re.match(r'\[([^\]]+)\]\s*(.*)', line)
+            m = _SF_NATIVE_RE.match(line)
             if m:
                 stype = m.group(1).strip()
                 val = m.group(2).strip()

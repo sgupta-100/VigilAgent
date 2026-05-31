@@ -97,6 +97,85 @@ class LoginRequest(BaseModel):
 
 # --- SELF-AWARENESS HELPER ---
 
+# --- BROWSER HEALTH HELPER (Task 7.7, Architecture §29.13 non-blocking) ---
+
+def _get_browser_health_block():
+    """Read browser health from the agent health monitor extension (Task 7.7).
+
+    Tolerates the field being absent because the health monitor extension
+    lands in another agent's parallel work. Never raises; always returns a
+    plain dict so the dashboard payload stays well-formed.
+
+    Shape: ``{score, active_contexts, error_rate, alert}``.
+    """
+    block = {
+        "score": None,
+        "active_contexts": 0,
+        "error_rate": 0.0,
+        "alert": None,
+        "available": False,
+    }
+    try:
+        from backend.core.agent_health_monitor import health_monitor
+    except Exception:
+        return block
+
+    # The browser-health API may live on the monitor itself or on a sibling
+    # extension singleton — try both without forcing either to exist.
+    candidates = []
+    candidates.append(health_monitor)
+    try:
+        from backend.core import agent_health_monitor as _ahm_mod
+        ext = getattr(_ahm_mod, "browser_health_monitor", None)
+        if ext is not None and ext is not health_monitor:
+            candidates.append(ext)
+    except Exception:
+        pass
+
+    for src in candidates:
+        getter = getattr(src, "get_browser_health", None)
+        if not callable(getter):
+            continue
+        try:
+            data = getter()
+        except TypeError:
+            # Per-agent variant: get_browser_health(agent_name) — fall back
+            # to the summary aggregator if available.
+            summary_fn = getattr(src, "get_browser_health_summary", None)
+            if not callable(summary_fn):
+                continue
+            try:
+                data = summary_fn()
+            except Exception:
+                continue
+        except Exception:
+            continue
+
+        if not isinstance(data, dict):
+            continue
+
+        score = data.get("score")
+        if score is None:
+            score = data.get("avg_browser_health_score")
+        if score is None:
+            score = data.get("browser_health_score")
+        block["score"] = score
+        block["active_contexts"] = (
+            data.get("active_contexts")
+            or data.get("total_active_contexts")
+            or 0
+        )
+        block["error_rate"] = (
+            data.get("error_rate")
+            or data.get("browser_error_rate")
+            or 0.0
+        )
+        block["alert"] = data.get("alert") or data.get("alerts") or None
+        block["available"] = True
+        return block
+    return block
+
+
 async def _get_self_awareness_summary():
     """Get self-awareness metrics summary for dashboard"""
     try:
@@ -249,7 +328,9 @@ async def get_dashboard_stats(request: Request, authorization: str = Header(None
 
     # Add self-awareness metrics
     self_awareness_data = await _get_self_awareness_summary()
-    
+    # Browser health block (Task 7.7) — tolerant of monitor extension absence.
+    browser_health_block = _get_browser_health_block()
+
     _stats_cache = {
         "metrics": {
             "total_scans": len(scans),
@@ -260,7 +341,8 @@ async def get_dashboard_stats(request: Request, authorization: str = Header(None
         "graph_data": stats.get("history", []),
         "recent_activity": recent[:5],
         "historical_threats": historical_threats[:60],
-        "self_awareness": self_awareness_data
+        "self_awareness": self_awareness_data,
+        "browser_health": browser_health_block
     }
     _stats_last_updated = time.time()
     return _stats_cache

@@ -1,0 +1,162 @@
+{
+  "timestamp": 1780179000.141232,
+  "recovery_history": [
+    {
+      "timestamp": 1780177762.2779293,
+      "agent_name": "agent_planner",
+      "issue": "agent_crashed",
+      "action_type": "restart",
+      "action_details": {
+        "restart_count": 1,
+        "backoff_delay": 5
+      },
+      "success": true,
+      "recovery_time_ms": 1438.5716915130615
+    },
+    {
+      "timestamp": 1780177762.3114688,
+      "agent_name": "agent_alpha",
+      "issue": "agent_crashed",
+      "action_type": "restart",
+      "action_details": {
+        "restart_count": 1,
+        "backoff_delay": 5
+      },
+      "success": true,
+      "recovery_time_ms": 20.24555206298828
+    },
+    {
+      "timestamp": 1780177762.3399374,
+      "agent_name": "agent_kappa",
+      "issue": "agent_crashed",
+      "action_type": "restart",
+      "action_details": {
+        "restart_count": 1,
+        "backoff_delay": 5
+      },
+      "success": true,
+      "recovery_time_ms": 15.831708908081055
+    },
+    {
+      "timestamp": 1780177762.3960624,
+      "agent_name": "agent_prism",
+      "issue": "agent_crashed",
+      "action_type": "restart",
+      "action_details": {
+        "restart_count": 1,
+        "backoff_delay": 5
+      },
+      "success": true,
+      "recovery_time_ms": 46.31447792053223
+    },
+    {
+      "timestamp": 1780177762.430367,
+      "agent_name": "agent_chi",
+      "issue": "agent_crashed",
+      "action_type": "restart",
+      "action_details": {
+        "restart_count": 1,
+        "backoff_delay": 5
+      },
+      "success": true,
+      "recovery_time_ms": 24.49512481689453
+    },
+    {
+      "timestamp": 1780177762.458859,
+      "agent_name": "agent_gamma",
+      "issue": "agent_crashed",
+      "action_type": "restart",
+      "action_details": {
+        "restart_count": 1,
+        "backoff_delay": 5
+      },
+      "success": true,
+      "recovery_time_ms": 18.534421920776367
+    },
+    {
+      "timestamp": 1780177762.484163,
+      "agent_name": "agent_omega",
+      "issue": "agent_crashed",
+      "action_type": "restart",
+      "action_details": {
+        "restart_count": 1,
+        "backoff_delay": 5
+      },
+      "success": true,
+      "recovery_time_ms": 16.50834083557129
+    },
+    {
+      "timestamp": 1780177762.5060349,
+      "agent_name": "agent_zeta",
+      "issue": "agent_crashed",
+      "action_type": "restart",
+      "action_details": {
+        "restart_count": 1,
+        "backoff_delay": 5
+      },
+      "success": true,
+      "recovery_time_ms": 15.82026481628418
+    },
+    {
+      "timestamp": 1780177762.532682,
+      "agent_name": "agent_delta",
+      "issue": "agent_crashed",
+      "action_type": "restart",
+      "action_details": {
+        "restart_count": 1,
+        "backoff_delay": 5
+      },
+      "success": true,
+      "recovery_time_ms": 17.514944076538086
+    },
+    {
+      "timestamp": 1780177762.670749,
+      "agent_name": "agent_sigma",
+      "issue": "agent_crashed",
+      "action_type": "restart",
+      "action_details": {
+        "restart_count": 1,
+        "backoff_delay": 5
+      },
+      "success": true,
+      "recovery_time_ms": 130.44095039367676
+    },
+    {
+      "timestamp": 1780177762.7091773,
+      "agent_name": "agent_beta",
+      "issue": "agent_crashed",
+      "action_type": "restart",
+      "action_details": {
+        "restart_count": 1,
+        "backoff_delay": 5
+      },
+      "success": true,
+      "recovery_time_ms": 30.12990951538086
+    }
+  ],
+  "metrics": {
+    "total_recoveries": 11,
+    "successful_recoveries": 11,
+    "success_rate": 1.0,
+    "recovery_by_type": {
+      "restart": 11
+    },
+    "active_circuit_breakers": 0,
+    "total_restarts": 11,
+    "timestamp": 1780179000.1487117
+  },
+  "circuit_breakers": {},
+  "restart_counts": {
+    "agent_planner": 1,
+    "agent_alpha": 1,
+    "agent_kappa": 1,
+    "agent_prism": 1,
+    "agent_chi": 1,
+    "agent_gamma": 1,
+    "agent_omega": 1,
+    "agent_zeta": 1,
+    "agent_delta": 1,
+    "agent_sigma": 1,
+    "agent_beta": 1
+  }
+}

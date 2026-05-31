@@ -194,11 +194,11 @@ class PlaywrightFallback:
                 confidence=0.9,
                 source_tool="playwright",
                 phase="visual_documentation",
-                scan_id=self.scan_id,
                 properties={
                     "screenshot_path": capture_result["screenshot_path"],
                     "title": capture_result.get("title", ""),
                     "status_code": capture_result.get("status_code", 0),
+                    "scan_id": self.scan_id,
                 }))
 
         # Network requests as XHR endpoints
@@ -214,11 +214,11 @@ class PlaywrightFallback:
                             confidence=0.85,
                             source_tool="playwright_network",
                             phase="http_browser_intelligence",
-                            scan_id=self.scan_id,
                             properties={
                                 "method": req.get("method", "GET"),
                                 "resource_type": req["resource_type"],
                                 "source_page": url,
+                                "scan_id": self.scan_id,
                             }))
             except Exception:
                 pass
@@ -236,7 +236,6 @@ class PlaywrightFallback:
                             confidence=0.7,
                             source_tool="playwright_cookies",
                             phase="http_browser_intelligence",
-                            scan_id=self.scan_id,
                             properties={
                                 "name": c.get("name", ""),
                                 "domain": c.get("domain", ""),
@@ -244,6 +243,7 @@ class PlaywrightFallback:
                                 "secure": c.get("secure", False),
                                 "sameSite": c.get("sameSite", "None"),
                                 "path": c.get("path", "/"),
+                                "scan_id": self.scan_id,
                             }))
             except Exception:
                 pass

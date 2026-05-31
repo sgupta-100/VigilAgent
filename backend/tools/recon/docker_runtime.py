@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path, PureWindowsPath, PurePosixPath
@@ -60,7 +61,8 @@ def docker_daemon_available() -> bool:
         return False
     try:
         p = subprocess.run(["docker", "info", "--format", "{{.OSType}}"],
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True, timeout=15,
+                           encoding="utf-8", errors="replace")
         return p.returncode == 0 and "linux" in (p.stdout or "").lower()
     except Exception:
         return False
@@ -74,7 +76,8 @@ def recon_image_present(image: str | None = None) -> bool:
         return False
     try:
         p = subprocess.run(["docker", "image", "inspect", img],
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True, timeout=15,
+                           encoding="utf-8", errors="replace")
         return p.returncode == 0
     except Exception:
         return False
@@ -105,20 +108,57 @@ def _running_recon_container_cached(image: str, override: str) -> str:
     if override:
         try:
             p = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", override],
-                               capture_output=True, text=True, timeout=10)
+                               capture_output=True, text=True, timeout=10,
+                               encoding="utf-8", errors="replace")
             if p.returncode == 0 and "true" in (p.stdout or "").lower():
                 return override
         except Exception:
             pass
     # 2. Otherwise pick the first running container based on the recon image.
+    #    The ancestor filter matches by image ID, so it MISSES containers whose
+    #    image was since re-tagged/committed (the running container then shows a
+    #    bare image ID). We therefore also match by the image's repo tag AND by
+    #    the image ID the tag currently resolves to.
+    candidate_images = {image}
+    try:
+        idp = subprocess.run(["docker", "image", "inspect", "-f", "{{.Id}}", image],
+                             capture_output=True, text=True, timeout=10,
+                             encoding="utf-8", errors="replace")
+        if idp.returncode == 0 and idp.stdout.strip():
+            candidate_images.add(idp.stdout.strip())
+            candidate_images.add(idp.stdout.strip().replace("sha256:", "")[:12])
+    except Exception:
+        pass
+    for img in candidate_images:
+        try:
+            p = subprocess.run(
+                ["docker", "ps", "--filter", f"ancestor={img}", "--format", "{{.Names}}"],
+                capture_output=True, text=True, timeout=10,
+                encoding="utf-8", errors="replace")
+            if p.returncode == 0:
+                names = [n.strip() for n in (p.stdout or "").splitlines() if n.strip()]
+                if names:
+                    return names[0]
+        except Exception:
+            pass
+    # 3. Last-resort: scan running containers and match any whose image (by
+    #    name or short ID) looks like the recon image. Survives commit/re-tag.
     try:
         p = subprocess.run(
-            ["docker", "ps", "--filter", f"ancestor={image}", "--format", "{{.Names}}"],
-            capture_output=True, text=True, timeout=10)
+            ["docker", "ps", "--format", "{{.Names}}\t{{.Image}}"],
+            capture_output=True, text=True, timeout=10,
+            encoding="utf-8", errors="replace")
         if p.returncode == 0:
-            names = [n.strip() for n in (p.stdout or "").splitlines() if n.strip()]
-            if names:
-                return names[0]
+            image_repo = image.split(":")[0]
+            short_ids = {c.replace("sha256:", "")[:12] for c in candidate_images}
+            for line in (p.stdout or "").splitlines():
+                if "\t" not in line:
+                    continue
+                name, img = (s.strip() for s in line.split("\t", 1))
+                if not name:
+                    continue
+                if image_repo in img or img in short_ids:
+                    return name
     except Exception:
         pass
     return ""
@@ -146,6 +186,8 @@ def build_exec_argv(
     raw_dir: Path,
     tool_root: Path,
     container_out: str,
+    has_stdin: bool = False,
+    extra_raw_prefixes: Sequence[str | Path] = (),
 ) -> list[str]:
     """Build a ``docker exec`` argv that runs a recon tool inside a RUNNING
     container, rewriting host paths to the container's /scan + /tools layout.
@@ -154,31 +196,107 @@ def build_exec_argv(
     written under the container's EXEC_WORKDIR and copied back by the caller via
     ``docker cp``. Tool-root paths (wordlists/vendored scripts) are rewritten to
     /tools and expected to be present in the image.
+
+    When ``has_stdin`` is set, ``-i`` is added so the tool actually receives the
+    piped input (httprobe/hakrawler/gospider/feroxbuster read targets from
+    stdin; without ``-i`` they see EOF immediately and exit "no urls detected").
+
+    ``extra_raw_prefixes`` lets the caller forward the ORIGINAL (potentially
+    relative) raw_dir form. The planner emits argv tokens using whatever form
+    ArtifactStore was built with; passing it here ensures relative-form tokens
+    are also rewritten to /scan instead of being copied verbatim into the
+    container (which previously turned the entire host path into a filename).
     """
     raw_dir = raw_dir.resolve()
-    container_argv = _rewrite_for_exec(inner_argv, raw_dir, tool_root, container_out)
-    return ["docker", "exec", "-w", EXEC_WORKDIR, container, *container_argv]
+    container_argv = _rewrite_for_exec(
+        inner_argv, raw_dir, tool_root, container_out,
+        extra_raw_prefixes=extra_raw_prefixes)
+    exec_flags = ["-i"] if has_stdin else []
+    return ["docker", "exec", *exec_flags, "-w", EXEC_WORKDIR, container, *container_argv]
 
 
 def _rewrite_for_exec(argv: Sequence[str], raw_dir: Path, tool_root: Path,
-                      container_out: str) -> list[str]:
+                      container_out: str,
+                      *, extra_raw_prefixes: Sequence[str | Path] = ()) -> list[str]:
     """Rewrite host paths for the exec backend: raw_dir paths -> /scan/<name>,
-    tool_root paths -> /tools/<rel>. Other tokens pass through unchanged."""
-    raw_s = str(raw_dir)
+    tool_root paths -> /tools/<rel>. Other tokens pass through unchanged.
+
+    Also rewrites loopback target references (localhost / 127.0.0.1 / [::1]) to
+    ``host.docker.internal`` so tools running INSIDE the recon container reach
+    services published on the Docker host (e.g. a DVWA lab on the host's
+    :8080) instead of resolving loopback to the container itself. Without this,
+    every recon tool silently fails or returns 0 bytes against a localhost
+    target. File-path tokens are rewritten first and never host-rewritten.
+
+    The planner builds argv tokens from the artifact store's ``raw_dir`` which
+    may be RELATIVE (``data/scans/SCAN/raw``) while the caller resolves
+    ``raw_dir`` to absolute before invoking us. We therefore match argv tokens
+    against BOTH the absolute and the relative form so the prefix replace
+    fires regardless of which form the planner used. Without this, every
+    secondary file (-o results.json) ends up created in the container root with
+    the literal Windows path embedded as the file NAME and the host-side cp
+    back fails.
+    """
+    abs_raw = Path(raw_dir).resolve()
+    # Build candidate prefixes: absolute + any relative forms the caller knows
+    # about. All compared case-insensitively because Windows paths are
+    # case-insensitive.
+    prefixes_raw = {str(abs_raw)}
+    try:
+        # The relative form the planner stored on the command (raw_dir argument
+        # may itself already be relative).
+        if not Path(raw_dir).is_absolute():
+            prefixes_raw.add(str(raw_dir))
+    except Exception:
+        pass
+    for extra in extra_raw_prefixes or ():
+        if extra:
+            prefixes_raw.add(str(extra))
+    prefixes_raw = {p for p in prefixes_raw if p}
     tool_s = str(tool_root)
     out: list[str] = []
     for tok in argv:
         s = str(tok)
-        low = s.lower()
-        if low.startswith(raw_s.lower()):
-            rel = s[len(raw_s):].lstrip("\\/")
-            out.append(f"{EXEC_WORKDIR}/{PureWindowsPath(rel).as_posix()}".rstrip("/"))
-        elif low.startswith(tool_s.lower()):
-            rel = s[len(tool_s):].lstrip("\\/")
-            out.append(f"{TOOLS_MNT}/{PureWindowsPath(rel).as_posix()}".rstrip("/"))
-        else:
-            out.append(s)
+        # Normalize windows separators so "data\scans\..." matches "data/scans/...".
+        norm = s.replace("\\", "/")
+        norm_low = norm.lower()
+        replaced = False
+        # raw_dir prefix match (any candidate form). Pick the LONGEST match so
+        # a token like "data/scans/X/raw/x.json" doesn't accidentally bind to
+        # "data" alone.
+        best_prefix: str | None = None
+        for pref in prefixes_raw:
+            pref_norm = pref.replace("\\", "/")
+            if norm_low.startswith(pref_norm.lower()):
+                if best_prefix is None or len(pref_norm) > len(best_prefix):
+                    best_prefix = pref_norm
+        if best_prefix is not None:
+            rel = norm[len(best_prefix):].lstrip("/")
+            out.append(f"{EXEC_WORKDIR}/{rel}".rstrip("/"))
+            replaced = True
+        elif norm_low.startswith(tool_s.replace("\\", "/").lower()):
+            rel = norm[len(tool_s):].lstrip("\\/").replace("\\", "/")
+            out.append(f"{TOOLS_MNT}/{rel}".rstrip("/"))
+            replaced = True
+        if not replaced:
+            out.append(_rewrite_loopback_host(s))
     return out
+
+
+def _rewrite_loopback_host(token: str) -> str:
+    """Rewrite loopback host references to host.docker.internal for in-container
+    execution. Handles bare hosts, host:port, and full URLs. Leaves non-loopback
+    tokens untouched."""
+    # Fast path: only touch tokens that mention a loopback reference.
+    low = token.lower()
+    if not any(h in low for h in ("localhost", "127.0.0.1", "[::1]", "::1")):
+        return token
+    replaced = token
+    # URL or host:port forms — replace the host component only.
+    for needle in ("127.0.0.1", "localhost", "[::1]"):
+        replaced = re.sub(rf"(?<![\w.-]){re.escape(needle)}(?![\w.-])",
+                          "host.docker.internal", replaced, flags=re.IGNORECASE)
+    return replaced
 
 
 # Tools that live INSIDE the recon image. The image is built to carry the full
@@ -196,23 +314,36 @@ DOCKER_RECON_TOOLS: set[str] = {
 
 
 def _to_container_path(host_path: str, raw_dir: Path, tool_root: Path) -> str | None:
-    """Map a host path under raw_dir/tool_root to its container path, else None."""
+    """Map a host path under raw_dir/tool_root to its container path, else None.
+
+    Handles both absolute and relative ``raw_dir`` forms because the planner can
+    use either depending on how ArtifactStore is configured.
+    """
+    raw_s_abs = str(Path(raw_dir).resolve())
+    raw_candidates = {raw_s_abs}
     try:
-        hp = Path(host_path)
+        if not Path(raw_dir).is_absolute():
+            raw_candidates.add(str(raw_dir))
     except Exception:
-        return None
-    raw_s, tool_s = str(raw_dir), str(tool_root)
-    # Normalize for case-insensitive Windows prefix comparison.
-    host_norm = host_path.replace("/", "\\") if "\\" in raw_s else host_path
+        pass
+    tool_s = str(tool_root)
+    norm = host_path.replace("\\", "/")
+    norm_low = norm.lower()
 
     def _rel_posix(child: str, parent: str) -> str:
-        rel = child[len(parent):].lstrip("\\/")
-        return PureWindowsPath(rel).as_posix() if "\\" in child else PurePosixPath(rel).as_posix()
+        rel = child[len(parent):].lstrip("/")
+        return rel
 
-    if host_norm.lower().startswith(raw_s.lower()):
-        return f"{SCAN_MNT}/{_rel_posix(host_norm, raw_s)}".rstrip("/")
-    if host_norm.lower().startswith(tool_s.lower()):
-        return f"{TOOLS_MNT}/{_rel_posix(host_norm, tool_s)}".rstrip("/")
+    best: tuple[int, str] | None = None
+    for pref in raw_candidates:
+        pref_norm = pref.replace("\\", "/")
+        if norm_low.startswith(pref_norm.lower()):
+            if best is None or len(pref_norm) > best[0]:
+                best = (len(pref_norm), pref_norm)
+    if best is not None:
+        return f"{SCAN_MNT}/{_rel_posix(norm, best[1])}".rstrip("/")
+    if norm_low.startswith(tool_s.replace("\\", "/").lower()):
+        return f"{TOOLS_MNT}/{_rel_posix(norm, tool_s.replace(chr(92), '/'))}".rstrip("/")
     return None
 
 

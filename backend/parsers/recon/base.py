@@ -10,6 +10,13 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlparse, parse_qsl
 
+# Module-level regex cache — base.is_valid_domain / is_ip_address are called
+# from every recon parser per emitted host/IP, so compiling these once shaves
+# real time off bulk parses.
+_DOMAIN_RE = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}$')
+_IPV4_RE = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
+_IPV6_HEX_RE = re.compile(r'^[0-9a-fA-F:]+$')
+
 
 @dataclass
 class ParsedEntity:
@@ -80,16 +87,16 @@ def extract_query_params(url: str) -> list[dict[str, str]]:
 
 def is_valid_domain(domain: str) -> bool:
     """Basic domain format validation."""
-    return bool(re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}$', domain))
+    return bool(_DOMAIN_RE.match(domain))
 
 
 def is_ip_address(value: str) -> bool:
     """Check if a string looks like an IPv4 or IPv6 address."""
     # IPv4
-    if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', value):
+    if _IPV4_RE.match(value):
         return True
     # IPv6 simplified
-    if ":" in value and re.match(r'^[0-9a-fA-F:]+$', value):
+    if ":" in value and _IPV6_HEX_RE.match(value):
         return True
     return False
 

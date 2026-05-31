@@ -35,6 +35,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from backend.core.perf import dumps_fast
+
 logger = logging.getLogger("vigilagent.scan_state_db")
 
 _SCHEMA_VERSION = 2
@@ -455,6 +457,61 @@ class ScanStateDB:
                 "INSERT INTO events (scan_id, type, source, payload, created_at) VALUES (?,?,?,?,?);",
                 (scan_id, etype, source, json.dumps(payload or {}), _now()))
 
+    def add_events_bulk(self, events: Iterable[dict]) -> int:
+        """Insert many events in one transaction (Architecture §5.6 throughput).
+
+        Each event dict: ``{"scan_id", "type", "source", "payload"}``. Avoids
+        the one-transaction-per-insert overhead that dominated when an agent
+        emits dozens of events in a tight loop. Returns rows inserted.
+        """
+        rows = [
+            (e.get("scan_id", ""), e.get("type", ""), e.get("source", ""),
+             dumps_fast(e.get("payload") or {}), _now())
+            for e in events
+        ]
+        if not rows:
+            return 0
+        with self._write() as c:
+            c.executemany(
+                "INSERT INTO events (scan_id, type, source, payload, created_at) VALUES (?,?,?,?,?);",
+                rows,
+            )
+        return len(rows)
+
+    def add_messages_bulk(self, messages: Iterable[dict]) -> int:
+        """Insert many messages in one transaction. FTS indexing is best-effort."""
+        ts = _now()
+        rows = [
+            (m.get("scan_id", ""), m.get("role", ""), m.get("agent", ""),
+             m.get("content", ""), ts)
+            for m in messages
+        ]
+        if not rows:
+            return 0
+        with self._write() as c:
+            c.executemany(
+                "INSERT INTO messages (scan_id, role, agent, content, created_at) VALUES (?,?,?,?,?);",
+                rows,
+            )
+            # Best-effort FTS index: rebuild incrementally only if available.
+            if self._fts_enabled:
+                last = c.execute("SELECT last_insert_rowid();").fetchone()
+                last_id = int(last[0]) if last else 0
+                start_id = last_id - len(rows) + 1
+                if start_id > 0:
+                    fts_rows = [
+                        (rows[i][0], "message", str(start_id + i), (rows[i][3] or "")[:8000])
+                        for i in range(len(rows))
+                    ]
+                    try:
+                        c.executemany(
+                            "INSERT INTO search_index (scan_id, kind, ref_id, text) VALUES (?,?,?,?);",
+                            fts_rows,
+                        )
+                    except sqlite3.OperationalError:
+                        pass
+        return len(rows)
+
     # ── Findings / evidence (Architecture §17, §18) ───────────────────────────
 
     def upsert_finding(self, finding_id: str, scan_id: str, *, title: str, severity: str,
@@ -491,11 +548,11 @@ class ScanStateDB:
                 "completed_endpoints, pending_endpoints, findings, graph_snapshot, budgets, "
                 "boundary, safe, agent_health, remaining_tasks, created_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?);",
-                (checkpoint_id, scan_id, phase, json.dumps(completed_endpoints),
-                 json.dumps(pending_endpoints), json.dumps(findings),
-                 json.dumps(graph_snapshot), json.dumps(budgets),
-                 boundary, int(safe), json.dumps(agent_health or {}),
-                 json.dumps(remaining_tasks or []), _now()))
+                (checkpoint_id, scan_id, phase, dumps_fast(completed_endpoints),
+                 dumps_fast(pending_endpoints), dumps_fast(findings),
+                 dumps_fast(graph_snapshot), dumps_fast(budgets),
+                 boundary, int(safe), dumps_fast(agent_health or {}),
+                 dumps_fast(remaining_tasks or []), _now()))
 
     # ── Phase-boundary checkpoint/resume (Architecture §20) ───────────────────
     #

@@ -32,6 +32,7 @@ import hashlib
 import inspect
 import logging
 import os
+import re
 import shutil
 import time
 import uuid
@@ -244,10 +245,16 @@ class TerminalEngine:
             # bare domain heuristic: contains a dot, no slash, no leading dash
             if "." in a and "/" not in a and not a.startswith("-") and " " not in a:
                 # Skip obvious file paths / flags-with-values
-                if not a.lower().endswith((".txt", ".json", ".jsonl", ".xml", ".kite", ".py", ".csv")):
-                    parsed = urlparse(f"//{a}", scheme="")
-                    if parsed.hostname:
-                        return a
+                if a.lower().endswith((".txt", ".json", ".jsonl", ".xml", ".kite", ".py", ".csv")):
+                    continue
+                # Skip glob/regex/extension-filter values (e.g. feroxbuster
+                # `--dont-scan *.css` or `\.css$`) — these are NOT targets and
+                # must not trip the scope gate.
+                if any(ch in a for ch in ("*", ",", "?", "[", "]", "\\", "$", "^", "|", "(", ")")):
+                    continue
+                parsed = urlparse(f"//{a}", scheme="")
+                if parsed.hostname:
+                    return a
         return None
 
     # ── Execution ─────────────────────────────────────────────────────────────
@@ -546,30 +553,183 @@ class TerminalEngine:
         to the host artifact path via ``docker cp`` so the parser registry sees
         them exactly as with the bind-mounted run path.
         """
-        from backend.tools.recon.docker_runtime import build_exec_argv, EXEC_WORKDIR
+        from backend.tools.recon.docker_runtime import (
+            build_exec_argv, EXEC_WORKDIR, TOOLS_MNT)
         import asyncio as _asyncio
+
+        # Rewrite loopback references in the stdin payload for in-container
+        # execution. Tools that read targets from stdin (httprobe, hakrawler,
+        # gospider's `-S -`, feroxbuster `--stdin`) would otherwise probe the
+        # container itself when the payload says ``localhost``. Files copied in
+        # via ``_cp_in`` already get the same rewrite; this closes the loop for
+        # piped-stdin payloads.
+        if stdin:
+            low_s = stdin.lower()
+            if any(h in low_s for h in ("localhost", "127.0.0.1", "[::1]")):
+                stdin = re.sub(
+                    r"(?<![\w.-])(?:127\.0\.0\.1|localhost|\[::1\])(?![\w.-])",
+                    "host.docker.internal", stdin, flags=re.IGNORECASE)
 
         out_name = output_path.name
         container_out = f"{EXEC_WORKDIR}/{out_name}"
+        # Include the original (potentially relative) parent of output_path so
+        # both absolute and relative argv path forms get rewritten to /scan.
+        try:
+            op_parent_str = str(Path(output_path).parent)
+            extra_prefixes = [op_parent_str] if op_parent_str else []
+        except Exception:
+            extra_prefixes = []
         exec_argv = build_exec_argv(
             argv, container=container, raw_dir=raw_dir, tool_root=tool_root,
-            container_out=container_out,
+            container_out=container_out, has_stdin=stdin is not None,
+            extra_raw_prefixes=extra_prefixes,
         )
+
+        # Copy INPUT files into the container before exec. The running recon
+        # container does not bind-mount the host, so any host file referenced in
+        # argv (wordlists under tool_root -> /tools, hosts/target files under
+        # raw_dir -> /scan) must be pushed in or the tool fails (ffuf/gobuster
+        # "-w wordlist" => no such file). The OUTPUT file is excluded; it is
+        # produced in-container and copied back afterwards.
+        #
+        # The planner emits raw_dir paths in either ABSOLUTE or RELATIVE form
+        # (ArtifactStore root defaults to a relative ``data/scans``). We match
+        # argv tokens against both forms so the cp + path rewrite stay
+        # consistent. Without this, secondary outputs are created with the
+        # literal Windows path embedded as the filename and never round-trip
+        # back to disk for the parser.
+        abs_raw = raw_dir.resolve()
+        raw_prefixes = {str(abs_raw)}
+        try:
+            if not raw_dir.is_absolute():
+                raw_prefixes.add(str(raw_dir))
+        except Exception:
+            pass
+        # output_path may itself carry the relative form the planner used. Its
+        # parent is the canonical relative raw_dir for any sibling tokens (e.g.
+        # ffuf's `-o <raw_dir>/ffuf_results.json`). Including it here is what
+        # makes the secondary-file cp-back work for relative-style argv.
+        try:
+            op_parent = Path(output_path).parent
+            if not op_parent.is_absolute():
+                raw_prefixes.add(str(op_parent))
+        except Exception:
+            pass
+        tool_s = str(tool_root)
+        out_host = str(output_path)
+        out_host_abs = str(Path(output_path).resolve())
+        async def _cp_in(host_path: str, container_path: str) -> None:
+            try:
+                # Ensure parent dir exists in the container, then copy the file.
+                parent = container_path.rsplit("/", 1)[0] or "/"
+                mk = await _asyncio.create_subprocess_exec(
+                    "docker", "exec", container, "mkdir", "-p", parent,
+                    stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.PIPE)
+                await _asyncio.wait_for(mk.communicate(), timeout=15)
+                # If the input is a small text file that references loopback
+                # hosts (e.g. a `-iL hosts.txt` target list with localhost:8080),
+                # rewrite those to host.docker.internal in a temp copy so the
+                # tool — running INSIDE the container — reaches the host service
+                # instead of the container itself. Wordlists and binaries are
+                # left untouched (no loopback tokens, or too large).
+                src = host_path
+                tmp = None
+                try:
+                    if os.path.getsize(host_path) <= 1_000_000:
+                        with open(host_path, "r", encoding="utf-8", errors="strict") as fh:
+                            content = fh.read()
+                        low_c = content.lower()
+                        if any(h in low_c for h in ("localhost", "127.0.0.1", "[::1]")):
+                            rewritten = re.sub(
+                                r"(?<![\w.-])(?:127\.0\.0\.1|localhost|\[::1\])(?![\w.-])",
+                                "host.docker.internal", content, flags=re.IGNORECASE)
+                            import tempfile as _tf
+                            fd, tmp = _tf.mkstemp(suffix=".loopfix")
+                            with os.fdopen(fd, "w", encoding="utf-8") as wf:
+                                wf.write(rewritten)
+                            src = tmp
+                except (UnicodeDecodeError, OSError):
+                    src = host_path  # binary or unreadable — copy as-is
+                cp = await _asyncio.create_subprocess_exec(
+                    "docker", "cp", src, f"{container}:{container_path}",
+                    stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.PIPE)
+                await _asyncio.wait_for(cp.communicate(), timeout=60)
+                if tmp:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+            except Exception as exc:
+                logger.debug("[TERMINAL] docker cp in failed for %s: %s", host_path, exc)
+        for tok in argv:
+            s = str(tok)
+            norm = s.replace("\\", "/")
+            low = norm.lower()
+            try:
+                is_file = os.path.isfile(s)
+            except Exception:
+                is_file = False
+            if not is_file or s == out_host or s == out_host_abs:
+                continue
+            # Match against ALL candidate raw_dir prefixes (absolute + relative
+            # forms) so files referenced via either path style are pushed in.
+            best: tuple[int, str] | None = None
+            for pref in raw_prefixes:
+                pref_norm = pref.replace("\\", "/")
+                if low.startswith(pref_norm.lower()):
+                    if best is None or len(pref_norm) > best[0]:
+                        best = (len(pref_norm), pref_norm)
+            if best is not None:
+                rel = norm[best[0]:].lstrip("/")
+                await _cp_in(s, f"{EXEC_WORKDIR}/{rel}")
+            elif low.startswith(tool_s.replace("\\", "/").lower()):
+                rel = norm[len(tool_s):].lstrip("\\/").replace("\\", "/")
+                await _cp_in(s, f"{TOOLS_MNT}/{rel}")
+
         result = await self._run_docker_exec(
             exec_argv, stdin=stdin, timeout_seconds=timeout_seconds,
             on_output=on_output, cancel_token=cancel_token,
         )
-        # Copy the tool's output file back to the host artifact path (best effort)
-        # so file-emitting tools (-o file.json) are ingested by the parsers.
-        try:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            cp = await _asyncio.create_subprocess_exec(
-                "docker", "cp", f"{container}:{container_out}", str(output_path),
-                stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.PIPE,
-            )
-            await _asyncio.wait_for(cp.communicate(), timeout=30)
-        except Exception as exc:
-            logger.debug("[TERMINAL] docker cp back failed for %s: %s", out_name, exc)
+        # Copy OUTPUT files back to the host. Many recon tools write their real
+        # results to a SECONDARY file (ffuf `-o results.json`, nmap `-oX a.xml`,
+        # whatweb `--log-json`) rather than stdout. Those files are created under
+        # the container scan dir (/scan) and must be copied back or the parser
+        # registry (which reads metadata.json_file/xml_file from the host
+        # raw_dir) sees nothing. We copy back every argv token that maps to a
+        # host raw_dir path, plus the conventional container_out, best effort.
+        copied_back: set[str] = set()
+        async def _cp_out(container_path: str, host_path: str) -> None:
+            if host_path in copied_back:
+                return
+            copied_back.add(host_path)
+            try:
+                Path(host_path).parent.mkdir(parents=True, exist_ok=True)
+                cp = await _asyncio.create_subprocess_exec(
+                    "docker", "cp", f"{container}:{container_path}", host_path,
+                    stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.PIPE,
+                )
+                await _asyncio.wait_for(cp.communicate(), timeout=60)
+            except Exception as exc:
+                logger.debug("[TERMINAL] docker cp back failed for %s: %s",
+                             container_path, exc)
+        # Secondary output files referenced in argv (under raw_dir -> /scan).
+        for tok in argv:
+            s = str(tok)
+            if s == out_host or s == out_host_abs:
+                continue
+            norm = s.replace("\\", "/")
+            low = norm.lower()
+            best: tuple[int, str] | None = None
+            for pref in raw_prefixes:
+                pref_norm = pref.replace("\\", "/")
+                if low.startswith(pref_norm.lower()):
+                    if best is None or len(pref_norm) > best[0]:
+                        best = (len(pref_norm), pref_norm)
+            if best is not None:
+                rel = norm[best[0]:].lstrip("/")
+                await _cp_out(f"{EXEC_WORKDIR}/{rel}", s)
+        # Conventional stdout artifact path.
+        await _cp_out(container_out, out_host)
         return result
 
     # ── Streaming executor + cancellation (Hermes lifecycle) ────────────────
@@ -627,12 +787,20 @@ class TerminalEngine:
         async def _read_stdout() -> None:
             nonlocal last_output_at
             assert proc.stdout is not None
+            # Chunked read (not readline) so very long single-line tool output
+            # (ffuf -json, httpx) doesn't trip asyncio's 64KB line limit.
             while True:
-                line = await proc.stdout.readline()
-                if not line:
+                try:
+                    chunk = await proc.stdout.read(65536)
+                except (asyncio.LimitOverrunError, ValueError):
+                    try:
+                        chunk = await proc.stdout.read(65536)
+                    except Exception:
+                        break
+                if not chunk:
                     break
                 last_output_at = time.monotonic()
-                text = line.decode("utf-8", errors="replace")
+                text = chunk.decode("utf-8", errors="replace")
                 stdout_chunks.append(text)
                 await self._emit(on_output, text)
 
@@ -640,11 +808,17 @@ class TerminalEngine:
             nonlocal last_output_at
             assert proc.stderr is not None
             while True:
-                line = await proc.stderr.readline()
-                if not line:
+                try:
+                    chunk = await proc.stderr.read(65536)
+                except (asyncio.LimitOverrunError, ValueError):
+                    try:
+                        chunk = await proc.stderr.read(65536)
+                    except Exception:
+                        break
+                if not chunk:
                     break
                 last_output_at = time.monotonic()
-                stderr_chunks.append(line.decode("utf-8", errors="replace"))
+                stderr_chunks.append(chunk.decode("utf-8", errors="replace"))
 
         async def _write_stdin() -> None:
             if stdin is None or proc.stdin is None:

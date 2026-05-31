@@ -1,9 +1,21 @@
 import React from 'react';
+import EmptyState from './ui/EmptyState';
+import Button from './ui/Button';
 
 /**
- * Production-grade React Error Boundary.
- * Prevents full white-screen crashes by catching render errors
- * and showing a recovery UI instead.
+ * ErrorBoundary — production-grade React error boundary.
+ *
+ * Catches render errors from descendants and shows a recovery UI built on the
+ * shared EmptyState + Button primitives. Props-compatible with the previous
+ * implementation (just wraps `children`). Optional `onReset` callback fires
+ * when the user clicks "Try Again".
+ *
+ * @typedef {Object} ErrorBoundaryProps
+ * @property {React.ReactNode}                                  children
+ * @property {(error: Error, info: React.ErrorInfo) => void}    [onError]   Logging hook.
+ * @property {() => void}                                       [onReset]   Optional post-reset side effect.
+ * @property {React.ReactNode | ((args: { error: Error|null, reset: () => void }) => React.ReactNode)} [fallback]
+ *           Optional custom fallback. If a function, receives { error, reset }.
  */
 class ErrorBoundary extends React.Component {
     constructor(props) {
@@ -16,72 +28,72 @@ class ErrorBoundary extends React.Component {
     }
 
     componentDidCatch(error, errorInfo) {
+        // eslint-disable-next-line no-console
         console.error('[ErrorBoundary] Caught render error:', error, errorInfo);
+        if (typeof this.props.onError === 'function') {
+            try {
+                this.props.onError(error, errorInfo);
+            } catch (_) {
+                /* swallow secondary errors */
+            }
+        }
     }
 
     handleReset = () => {
         this.setState({ hasError: false, error: null });
+        if (typeof this.props.onReset === 'function') {
+            try {
+                this.props.onReset();
+            } catch (_) {
+                /* user callback errors should not re-trigger the boundary */
+            }
+        }
+    };
+
+    handleReload = () => {
+        if (typeof window !== 'undefined' && window.location) {
+            window.location.reload();
+        }
     };
 
     render() {
-        if (this.state.hasError) {
-            return (
-                <div
-                    style={{
-                        minHeight: '100vh',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        background: '#06070B',
-                        fontFamily: "'Inter', sans-serif",
-                        color: '#e2e8f0',
-                    }}
-                >
-                    <div style={{ textAlign: 'center', maxWidth: 420, padding: 32 }}>
-                        <div
-                            style={{
-                                width: 64,
-                                height: 64,
-                                borderRadius: '50%',
-                                background: 'rgba(239,68,68,0.1)',
-                                border: '1px solid rgba(239,68,68,0.3)',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                margin: '0 auto 24px',
-                            }}
-                        >
-                            <span className="material-icons" style={{ color: '#f87171', fontSize: 32 }}>
-                                error_outline
-                            </span>
-                        </div>
-                        <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 8 }}>
-                            Something went wrong
-                        </h2>
-                        <p style={{ fontSize: 14, color: '#94a3b8', marginBottom: 24, lineHeight: 1.6 }}>
-                            An unexpected error occurred in the UI. Your data is safe.
-                        </p>
-                        <button
-                            onClick={this.handleReset}
-                            style={{
-                                background: '#8A2BE2',
-                                color: '#fff',
-                                border: 'none',
-                                padding: '10px 24px',
-                                borderRadius: 8,
-                                fontSize: 14,
-                                fontWeight: 500,
-                                cursor: 'pointer',
-                            }}
-                        >
-                            Try Again
-                        </button>
-                    </div>
-                </div>
-            );
+        if (!this.state.hasError) return this.props.children;
+
+        // Custom fallback support.
+        const { fallback } = this.props;
+        if (typeof fallback === 'function') {
+            return fallback({ error: this.state.error, reset: this.handleReset });
+        }
+        if (fallback !== undefined) {
+            return fallback;
         }
 
-        return this.props.children;
+        return (
+            <div
+                role="alert"
+                className="min-h-screen flex items-center justify-center bg-[#06070B] px-4"
+                style={{ fontFamily: "'Inter', sans-serif" }}
+            >
+                <div className="w-full max-w-lg">
+                    <EmptyState
+                        icon="error"
+                        size="lg"
+                        title="Something went wrong"
+                        description="An unexpected error occurred in the UI. Your data is safe — try again, or reload the page."
+                        action={{
+                            label: 'Try Again',
+                            onClick: this.handleReset,
+                            icon: 'refresh',
+                        }}
+                        secondaryAction={
+                            <Button variant="ghost" size="sm" onClick={this.handleReload}>
+                                Reload Page
+                            </Button>
+                        }
+                    />
+                </div>
+            </div>
+        );
     }
 }
 

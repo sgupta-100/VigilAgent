@@ -15,7 +15,7 @@ import time
 import logging
 import json
 import shutil
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Iterable
 from pathlib import Path
 from dataclasses import asdict, dataclass, field
 
@@ -24,27 +24,288 @@ from backend.core.skill_extractor import Skill
 logger = logging.getLogger("SkillLibrary")
 
 
-@dataclass
+# ============================================================================
+# BrowserSkill (Task §3.1 — Deep System Integration)
+# ----------------------------------------------------------------------------
+# Field contract (must remain stable for downstream tasks 3.2, 3.4, 3.6):
+#   skill_id, name, description, skill_type, execution_context,
+#   browser_requirements, workflow_steps, evidence_requirements,
+#   framework, vuln_type, confidence,
+#   success_count, failure_count, scan_count, last_used, created_at,
+#   promoted, tags, source_pattern_id
+#
+# Architecture invariants honored here:
+#   §11  two-LLM exclusivity   — pure dataclass, no LLM in scope
+#   §17  ≥2-signal             — promotion is the consumer's job (task 3.2);
+#                                this class only stores `promoted: bool`
+#   §29.13 non-blocking        — no blocking I/O in any method
+#   §9   scope-is-law          — `evidence_requirements` MUST NOT contain a
+#                                'host' key. Host context is stored on the
+#                                informational-only `evidence_host_hint`
+#                                field; it must NEVER be used as a filter.
+#
+# Compatibility shim: the previous BrowserSkill shape (used by
+# learning_engine.store_auth_pattern_as_skill, skill_extractor.WorkflowSkill-
+# Extractor, and BrowserSkillLibraryExtension.compose_workflows) is preserved
+# by accepting legacy kwargs (`success_rate`, `version`,
+# `required_capabilities`, `usage_count`, `deprecated`, `deprecation_reason`,
+# `last_updated`, `parameters`) and translating them into the new model.
+# ============================================================================
+
+_BROWSER_SKILL_TYPES = (
+    "browser_vulnerability",
+    "browser_workflow",
+    "framework_pattern",
+)
+_BROWSER_AUTOMATION_TAG = "browser_automation"
+
+
+@dataclass(init=False)
 class BrowserSkill:
-    """Browser-specific skill with execution requirements"""
-    skill_id: str
-    name: str
-    skill_type: str
-    execution_context: str  # "browser_required", "http_only", "hybrid"
+    """Browser-specific skill with execution requirements (Task §3.1)."""
+
+    # --- Contract fields ---
+    skill_id: str = ""
+    name: str = ""
+    description: str = ""
+    skill_type: str = ""
+    execution_context: str = "browser_required"
     browser_requirements: Dict[str, Any] = field(default_factory=dict)
     workflow_steps: List[Dict[str, Any]] = field(default_factory=list)
-    evidence_requirements: List[str] = field(default_factory=list)
+    evidence_requirements: Dict[str, Any] = field(default_factory=dict)
+    framework: Optional[str] = None
+    vuln_type: Optional[str] = None
+    confidence: float = 0.6
+    success_count: int = 0
+    failure_count: int = 0
+    scan_count: int = 0
+    last_used: Optional[float] = None
+    created_at: float = field(default_factory=time.time)
+    promoted: bool = False
+    tags: List[str] = field(default_factory=list)
+    source_pattern_id: Optional[str] = None
+    # §9 — informational only; MUST NOT be used as a filter or scope gate.
+    evidence_host_hint: Optional[str] = None
+
+    # --- Legacy compatibility fields (preserved for existing callers) ---
     version: str = "1.0.0"
     required_capabilities: frozenset = field(default_factory=frozenset)
-    success_rate: float = 0.0
     usage_count: int = 0
-    confidence: float = 0.5
     deprecated: bool = False
     deprecation_reason: str = ""
-    created_at: float = 0.0
     last_updated: float = 0.0
-    tags: List[str] = field(default_factory=list)
     parameters: Dict[str, Any] = field(default_factory=dict)
+
+    def __init__(
+        self,
+        skill_id: str = "",
+        name: str = "",
+        description: str = "",
+        skill_type: str = "",
+        execution_context: str = "browser_required",
+        browser_requirements: Optional[Dict[str, Any]] = None,
+        workflow_steps: Optional[List[Dict[str, Any]]] = None,
+        evidence_requirements: Optional[Any] = None,
+        framework: Optional[str] = None,
+        vuln_type: Optional[str] = None,
+        confidence: float = 0.6,
+        success_count: int = 0,
+        failure_count: int = 0,
+        scan_count: int = 0,
+        last_used: Optional[float] = None,
+        created_at: Optional[float] = None,
+        promoted: bool = False,
+        tags: Optional[List[str]] = None,
+        source_pattern_id: Optional[str] = None,
+        evidence_host_hint: Optional[str] = None,
+        # --- Legacy kwargs (compat shim) ---
+        success_rate: Optional[float] = None,
+        version: str = "1.0.0",
+        required_capabilities: Optional[Iterable[str]] = None,
+        usage_count: int = 0,
+        deprecated: bool = False,
+        deprecation_reason: str = "",
+        last_updated: float = 0.0,
+        parameters: Optional[Dict[str, Any]] = None,
+        **_unknown: Any,
+    ) -> None:
+        # ---- Contract assignments ----
+        self.skill_id = str(skill_id)
+        self.name = str(name)
+        self.description = str(description)
+        self.skill_type = str(skill_type)
+        self.execution_context = str(execution_context) if execution_context else "browser_required"
+        self.browser_requirements = dict(browser_requirements) if browser_requirements else {}
+        self.workflow_steps = list(workflow_steps) if workflow_steps else []
+
+        # evidence_requirements: contract type is Dict[str, Any]; legacy callers
+        # may pass a List[str] (from old JSON on disk). Normalize.
+        if evidence_requirements is None:
+            self.evidence_requirements = {}
+        elif isinstance(evidence_requirements, dict):
+            self.evidence_requirements = dict(evidence_requirements)
+        elif isinstance(evidence_requirements, (list, tuple, set, frozenset)):
+            self.evidence_requirements = {str(item): True for item in evidence_requirements}
+        else:
+            self.evidence_requirements = {}
+        # §9: scope-is-law — strip any 'host' key proactively.
+        self.evidence_requirements.pop("host", None)
+
+        self.framework = framework if framework is None else str(framework)
+        self.vuln_type = vuln_type if vuln_type is None else str(vuln_type)
+        try:
+            self.confidence = float(confidence)
+        except (TypeError, ValueError):
+            self.confidence = 0.6
+        self.success_count = max(0, int(success_count))
+        self.failure_count = max(0, int(failure_count))
+        self.scan_count = max(0, int(scan_count))
+        self.last_used = float(last_used) if last_used is not None else None
+        self.created_at = float(created_at) if created_at is not None else time.time()
+        self.promoted = bool(promoted)
+
+        # tags: always contains "browser_automation" per contract.
+        tag_list = [str(t) for t in tags] if tags else []
+        if _BROWSER_AUTOMATION_TAG not in tag_list:
+            tag_list.append(_BROWSER_AUTOMATION_TAG)
+        self.tags = tag_list
+
+        self.source_pattern_id = source_pattern_id if source_pattern_id is None else str(source_pattern_id)
+        self.evidence_host_hint = evidence_host_hint if evidence_host_hint is None else str(evidence_host_hint)
+
+        # ---- Legacy field assignments (preserved for compat) ----
+        self.version = str(version) if version else "1.0.0"
+        if required_capabilities is None:
+            self.required_capabilities = frozenset()
+        elif isinstance(required_capabilities, frozenset):
+            self.required_capabilities = required_capabilities
+        else:
+            try:
+                self.required_capabilities = frozenset(required_capabilities)
+            except TypeError:
+                self.required_capabilities = frozenset()
+        self.usage_count = max(0, int(usage_count))
+        self.deprecated = bool(deprecated)
+        self.deprecation_reason = str(deprecation_reason)
+        try:
+            self.last_updated = float(last_updated)
+        except (TypeError, ValueError):
+            self.last_updated = 0.0
+        self.parameters = dict(parameters) if parameters else {}
+
+        # Legacy `success_rate=X` kwarg: seed counts when caller hasn't supplied
+        # success_count/failure_count. We approximate fractional rates with a
+        # 10-sample baseline so the property returns roughly the same value.
+        if success_rate is not None and self.success_count == 0 and self.failure_count == 0:
+            try:
+                rate = max(0.0, min(1.0, float(success_rate)))
+            except (TypeError, ValueError):
+                rate = 0.0
+            if rate >= 1.0:
+                self.success_count = 1
+            elif rate <= 0.0:
+                self.failure_count = 1
+            else:
+                self.success_count = int(round(rate * 10))
+                self.failure_count = max(0, 10 - self.success_count)
+
+        # _unknown is intentionally ignored (forward-compat for from_dict).
+
+    # ---- Properties ----
+    @property
+    def success_rate(self) -> float:
+        """Per §3.1 contract: success_count / max(1, success_count + failure_count)."""
+        return self.success_count / max(1, self.success_count + self.failure_count)
+
+    # ---- Helpers ----
+    def matches_capabilities(self, caps: Dict[str, bool]) -> bool:
+        """Return True only when every key of `browser_requirements` whose value
+        is truthy-boolean is also truthy in `caps`. Non-bool requirement values
+        (e.g., a `framework` string) are not capability gates and are skipped.
+        """
+        if not isinstance(caps, dict):
+            return False
+        for key, value in self.browser_requirements.items():
+            if value is True and not bool(caps.get(key, False)):
+                return False
+        return True
+
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-safe serialization. frozensets become lists."""
+        return {
+            # Contract fields
+            "skill_id": self.skill_id,
+            "name": self.name,
+            "description": self.description,
+            "skill_type": self.skill_type,
+            "execution_context": self.execution_context,
+            "browser_requirements": dict(self.browser_requirements),
+            "workflow_steps": list(self.workflow_steps),
+            "evidence_requirements": dict(self.evidence_requirements),
+            "framework": self.framework,
+            "vuln_type": self.vuln_type,
+            "confidence": self.confidence,
+            "success_count": self.success_count,
+            "failure_count": self.failure_count,
+            "scan_count": self.scan_count,
+            "last_used": self.last_used,
+            "created_at": self.created_at,
+            "promoted": self.promoted,
+            "tags": list(self.tags),
+            "source_pattern_id": self.source_pattern_id,
+            "evidence_host_hint": self.evidence_host_hint,
+            # Derived (read-only)
+            "success_rate": self.success_rate,
+            # Legacy fields (round-trip with on-disk JSON)
+            "version": self.version,
+            "required_capabilities": sorted(self.required_capabilities),
+            "usage_count": self.usage_count,
+            "deprecated": self.deprecated,
+            "deprecation_reason": self.deprecation_reason,
+            "last_updated": self.last_updated,
+            "parameters": dict(self.parameters),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "BrowserSkill":
+        """Strict reverse with field validation.
+
+        - Unknown fields are ignored (dropped silently).
+        - Missing required contract fields raise ValueError.
+        """
+        if not isinstance(data, dict):
+            raise ValueError("BrowserSkill.from_dict expects a dict")
+
+        required = (
+            "skill_id",
+            "name",
+            "description",
+            "skill_type",
+            "execution_context",
+            "browser_requirements",
+            "workflow_steps",
+            "evidence_requirements",
+        )
+        missing = [k for k in required if k not in data]
+        if missing:
+            raise ValueError(
+                f"BrowserSkill.from_dict missing required fields: {missing}"
+            )
+
+        # Whitelist of constructor kwargs (contract + legacy compat).
+        known = {
+            "skill_id", "name", "description", "skill_type", "execution_context",
+            "browser_requirements", "workflow_steps", "evidence_requirements",
+            "framework", "vuln_type", "confidence",
+            "success_count", "failure_count", "scan_count", "last_used",
+            "created_at", "promoted", "tags", "source_pattern_id",
+            "evidence_host_hint",
+            # Legacy
+            "success_rate", "version", "required_capabilities", "usage_count",
+            "deprecated", "deprecation_reason", "last_updated", "parameters",
+        }
+        kwargs = {k: v for k, v in data.items() if k in known}
+        return cls(**kwargs)
 
 
 class SkillLibrary:
@@ -465,6 +726,130 @@ class SkillLibrary:
             "timestamp": time.time()
         }
 
+    # ------------------------------------------------------------------
+    # Browser-skill surface (deep-system-integration spec, Tasks 3.2 / 3.4 / 3.6)
+    # ------------------------------------------------------------------
+    #
+    # These delegating methods expose the BrowserSkillLibraryExtension API
+    # directly on SkillLibrary so callers (and the v2 migration in
+    # backend/skills/migrations/v2_browser.py) can do
+    # ``skill_library.add_browser_skill(...)`` without reaching into the
+    # extension singleton.
+    #
+    # Architecture invariants honoured here:
+    #   §11 two-LLM exclusivity   — pure storage / index ops, no LLM calls.
+    #   §17 ≥2-signal evidence    — these methods do NOT verify or promote;
+    #                                that's the learning loop's job.
+    #   §29.13 non-blocking       — synchronous ops only; no awaits.
+    #   §9 scope-is-law           — host info on a skill is NEVER a scope grant.
+    # ------------------------------------------------------------------
+    def add_browser_skill(
+        self,
+        skill: "BrowserSkill",
+        context_requirements: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Validate semver, dedupe by skill_id, persist, update indexes.
+        
+        Delegates to ``BrowserSkillLibraryExtension.add_browser_skill`` so
+        capability/context/framework indexes stay in sync.
+        """
+        ext = _get_browser_skill_extension(self)
+        return ext.add_browser_skill(skill, context_requirements or {})
+    
+    def search_browser_skills(
+        self,
+        context: Optional[str] = None,
+        framework: Optional[str] = None,
+        capabilities: Optional[List[str]] = None,
+        limit: int = 50,
+    ) -> List["BrowserSkill"]:
+        """O(1) index lookups, intersect sets, filter deprecated, sort by
+        success_rate then usage.
+        
+        Per Task 3.4 contract: ``capabilities`` is the agent's capability list;
+        a skill is included only when its ``required_capabilities`` is a
+        subset of the agent's caps.
+        """
+        ext = _get_browser_skill_extension(self)
+        return ext.search_browser_skills(
+            agent_capabilities=list(capabilities or []),
+            context=context,
+            framework=framework,
+            limit=limit,
+        )
+    
+    def compose_workflows(
+        self, skill_ids: List[str]
+    ) -> Optional["BrowserSkill"]:
+        """Compose multiple workflow skills (referenced by skill_id) into one.
+        
+        Per Task 3.6 contract:
+          * validate every constituent is a workflow
+          * merge ``workflow_steps`` in order
+          * union ``browser_requirements`` (booleans OR-merged)
+          * union ``evidence_requirements``
+          * new ``skill_id`` = sha256 of the constituent ids
+        """
+        if not isinstance(skill_ids, list) or not skill_ids:
+            return None
+        # Resolve each skill_id from disk metadata.
+        resolved: List["BrowserSkill"] = []
+        for sid in skill_ids:
+            if sid not in self.metadata:
+                logger.warning(
+                    f"[SkillLibrary] compose_workflows: skill_id {sid} not found"
+                )
+                return None
+            meta = self.metadata[sid]
+            skill_path = self.skills_dir / meta["file_path"]
+            try:
+                data = json.loads(skill_path.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.error(
+                    f"[SkillLibrary] compose_workflows: cannot read {sid}: {e}"
+                )
+                return None
+            # Convert to BrowserSkill iff it has the browser shape.
+            if "execution_context" not in data:
+                logger.warning(
+                    f"[SkillLibrary] compose_workflows: {sid} is not a browser skill"
+                )
+                return None
+            try:
+                resolved.append(BrowserSkill.from_dict(data))
+            except Exception as e:
+                logger.error(
+                    f"[SkillLibrary] compose_workflows: bad skill data for {sid}: {e}"
+                )
+                return None
+        
+        # Delegate the merge logic to the extension, then override the
+        # synthesized skill_id with the SHA-256 of the constituent ids
+        # (per Task 3.6 contract).
+        ext = _get_browser_skill_extension(self)
+        composed = ext.compose_workflows(resolved)
+        if composed is None:
+            return None
+        
+        import hashlib as _hl
+        sha = _hl.sha256(
+            json.dumps(skill_ids, sort_keys=True).encode()
+        ).hexdigest()[:24]
+        composed.skill_id = f"composed_{sha}"
+        
+        # Union of evidence_requirements (extension already merges browser_reqs).
+        merged_evidence: Dict[str, Any] = {}
+        for s in resolved:
+            for k, v in (s.evidence_requirements or {}).items():
+                # Booleans OR-merge; non-booleans last-write-wins.
+                if isinstance(v, bool):
+                    merged_evidence[k] = bool(merged_evidence.get(k, False)) or v
+                else:
+                    merged_evidence[k] = v
+        composed.evidence_requirements = merged_evidence
+        
+        return composed
+
 
 # Global skill library instance
 skill_library = SkillLibrary()
@@ -756,3 +1141,25 @@ class BrowserSkillLibraryExtension:
 
 # Create global browser skill library extension
 browser_skill_library = BrowserSkillLibraryExtension(skill_library)
+
+
+# ------------------------------------------------------------------
+# Lazy resolver for SkillLibrary.add_browser_skill / search_browser_skills /
+# compose_workflows. Defined after the extension class so methods on
+# SkillLibrary can reach the singleton without a forward-reference.
+# ------------------------------------------------------------------
+def _get_browser_skill_extension(library: SkillLibrary) -> "BrowserSkillLibraryExtension":
+    """Return the BrowserSkillLibraryExtension bound to ``library``.
+    
+    For the global ``skill_library`` singleton we return the global
+    ``browser_skill_library`` instance; for any other ``library`` (e.g. test
+    fixtures), we lazily attach a fresh extension so each library gets its
+    own indexes.
+    """
+    if library is skill_library:
+        return browser_skill_library
+    cached = getattr(library, "_browser_skill_extension", None)
+    if cached is None:
+        cached = BrowserSkillLibraryExtension(library)
+        library._browser_skill_extension = cached
+    return cached

@@ -93,6 +93,41 @@ async def lifespan(app: FastAPI):
     # Start CSRF protection cleanup task
     csrf_cleanup_task = asyncio.create_task(start_csrf_cleanup_task())
     print("[CSRF_PROTECTION] Background cleanup task started")
+
+    # Eager Redis client init (singleton in backend.core.redis_client) so the
+    # health monitor reflects real connectivity from t=0.
+    try:
+        from backend.core.redis_client import get_redis_client
+        await get_redis_client()
+        print("[REDIS] Distributed client initialized")
+    except Exception as _re:
+        print(f"[REDIS] init skipped: {_re}")
+
+    # Eager DB manager init so the first scan doesn't pay the connection
+    # cost on the hot path (Architecture §29.13).
+    try:
+        from backend.core.database import db_manager
+        await db_manager.initialize()
+        print("[DB] Elite DB manager initialized")
+    except Exception as _de:
+        print(f"[DB] init skipped: {_de}")
+
+    # Boot-time browser stack health probe (Architecture §7 browser arsenal).
+    # Surfaces any OpenClaw / PinchTab unavailability ONCE here with a
+    # concrete reason + remediation hint, instead of letting the first scan
+    # spam generic "unavailable" warnings. Recon and HTTP probe still run
+    # when both engines are offline.
+    try:
+        from backend.core.browser_orchestrator import get_browser_orchestrator
+        _bo = get_browser_orchestrator()
+        _bo_health = await _bo.health_check()
+        print(
+            f"[BROWSER] OpenClaw={_bo_health.get('openclaw')} "
+            f"PinchTab={_bo_health.get('pinchtab')} "
+            f"reasons={_bo_health.get('reasons') or {}}"
+        )
+    except Exception as _bhe:
+        print(f"[BROWSER] health_check skipped: {_bhe}")
     
     await manager.broadcast({
         "type": "LIFECYCLE_EVENT",
@@ -113,7 +148,24 @@ async def lifespan(app: FastAPI):
             await csrf_cleanup_task
         except asyncio.CancelledError:
             pass
+        # Cancel the StateManager background writer cleanly so we don't see
+        # the "Task was destroyed but it is pending" warning on Windows.
+        try:
+            await stats_db_manager.shutdown()
+        except Exception as _se:
+            print(f"[LIFECYCLE] stats_db_manager.shutdown warning: {_se}")
         await manager.stop_tasks()
+        # Close DB + Redis clients (Architecture §29.13).
+        try:
+            from backend.core.database import db_manager as _dbm
+            await _dbm.close()
+        except Exception as _ce:
+            print(f"[LIFECYCLE] db_manager.close warning: {_ce}")
+        try:
+            from backend.core.redis_client import shutdown_redis_client
+            await shutdown_redis_client()
+        except Exception as _re:
+            print(f"[LIFECYCLE] redis_client shutdown warning: {_re}")
         print("[LIFECYCLE] Shutdown complete.")
 
 app = FastAPI(title="Vigilagent Scanner", lifespan=lifespan)
@@ -211,11 +263,23 @@ app.include_router(alpha_recon_router, tags=["Alpha Recon"])
 @app.websocket("/ws/live")
 async def websocket_endpoint(websocket: WebSocket, client_type: str = Query("ui"), token: str = Query(None)):
     from backend.api.endpoints.dashboard import load_config, load_session
-    
-    # WebSocket Authentication Handshake
-    config = load_config()
-    if config.get("enabled", False):
-        session = load_session()
+
+    # WebSocket Authentication Handshake.
+    # Dev-friendly default: when 2FA is NOT explicitly enabled in
+    # user_config.json (or the file is missing / unreadable), accept the
+    # connection without a token so the Live Monitor works out of the box.
+    # When ``enabled: true`` is set we still require a valid session token —
+    # that's an explicit operator opt-in to enforced auth.
+    try:
+        config = load_config() or {}
+    except Exception:
+        config = {}
+    auth_required = bool(config.get("enabled", False))
+    if auth_required:
+        try:
+            session = load_session() or {}
+        except Exception:
+            session = {}
         # Disconnect any unauthenticated or token-mismatched websockets
         if not session.get("authenticated") or session.get("token") != token:
             await websocket.close(code=1008, reason="Policy Violation: Invalid Auth Token")

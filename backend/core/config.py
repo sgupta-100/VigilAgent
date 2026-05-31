@@ -99,6 +99,11 @@ class GlobalSettings:
     ALPHA_ENABLE_PINCHTAB: bool = os.getenv("ALPHA_ENABLE_PINCHTAB", "true").lower() == "true"
     ALPHA_RECON_VIA_PLANNER: bool = os.getenv("ALPHA_RECON_VIA_PLANNER", "true").lower() == "true"
     ALPHA_RECON_TIMEOUT_SECONDS: int = int(os.getenv("ALPHA_RECON_TIMEOUT_SECONDS", "180"))
+    # Hard upper bound on how long Omega waits for the recon RECON_COMPLETE
+    # event before degrading gracefully and proceeding with whatever recon
+    # was able to emit. Read by the orchestrator at scan time
+    # (Architecture §29.13: never starve the attack phase on a slow recon).
+    RECON_MAX_WAIT_SECONDS: int = int(os.getenv("RECON_MAX_WAIT_SECONDS", "180"))
     ALPHA_EXPLICIT_AUTHORIZATION: bool = os.getenv("ALPHA_EXPLICIT_AUTHORIZATION", "false").lower() == "true"
     PINCHTAB_BASE_URL: str = os.getenv("PINCHTAB_BASE_URL", "http://127.0.0.1:9867")
     ALPHA_ENABLE_NEO4J: bool = os.getenv("ALPHA_ENABLE_NEO4J", "false").lower() == "true"

@@ -21,25 +21,59 @@ class MasterNode:
 
     def __init__(self, redis_url: str, supabase_url: str, supabase_key: str):
         import redis.asyncio as aioredis
+        # Redis is required for distribution; use decode_responses for JSON safety.
         self.redis_client = aioredis.from_url(redis_url, decode_responses=True)
-        from supabase import create_client, Client
-        self.supabase: Client = create_client(supabase_url, supabase_key)
+        self.supabase = None  # Optional — populated below if creds provided.
+        if supabase_url and supabase_key:
+            try:
+                from supabase import create_client, Client  # noqa: F401
+                self.supabase = create_client(supabase_url, supabase_key)
+            except Exception as exc:
+                logger.warning(
+                    "MasterNode: Supabase init failed (%s) — running without "
+                    "persistent task ledger; cluster keeps coordinating via "
+                    "Redis alone.", exc)
+                self.supabase = None
+        else:
+            logger.info("MasterNode: Supabase creds not configured — running "
+                        "in Redis-only mode (Architecture §29.13).")
         self.workers: Dict[str, Dict[str, Any]] = {}
         self.attack_graph = GraphEngine()
         self._task_manager = TaskManager("MasterNode")
+        self.active = False
 
     async def start(self):
         self.active = True
         await self._discover_swarm()
         self._task_manager.create_task(self.monitor_workers(), name="worker_monitor")
-        while self.active:
-            try:
-                task_data = await self.redis_client.brpop("pending_tasks", timeout=5)
-                if task_data:
-                    task = json.loads(task_data[1])
-                    await self.distribute_tasks([task])
-            except Exception:
-                await asyncio.sleep(1)
+        try:
+            while self.active:
+                try:
+                    task_data = await self.redis_client.brpop("pending_tasks", timeout=5)
+                    if task_data:
+                        task = json.loads(task_data[1])
+                        await self.distribute_tasks([task])
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.debug("MasterNode loop error: %s", exc)
+                    await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await self.shutdown()
+
+    async def shutdown(self):
+        """Clean shutdown: stop the monitor task and close Redis."""
+        self.active = False
+        try:
+            await self._task_manager.cancel_all()
+        except Exception:
+            pass
+        try:
+            await self.redis_client.close()
+        except Exception:
+            pass
 
     async def _discover_swarm(self):
         try:
@@ -73,27 +107,41 @@ class MasterNode:
             if worker_id:
                 await self.redis_client.lpush(f"worker_queue:{worker_id}", json.dumps(task))
                 self.workers[worker_id].setdefault("current_tasks", []).append(task["task_id"])
+                # Best-effort persistence to Supabase. Cluster MUST keep
+                # coordinating even if the persistent ledger is offline
+                # (Architecture §29.13: Redis is the source of truth for
+                # live coordination; Supabase is the durable replica).
                 try:
                     await db_manager.initialize()
-                    await db_manager.supabase.table("distributed_tasks").insert({
-                        "scan_id": task.get("scan_id", "GLOBAL"),
-                        "task_id": task["task_id"],
-                        "worker_id": worker_id,
-                        "status": "RUNNING",
-                        "locked_by": worker_id,
-                        "lock_time": datetime.now().isoformat()
-                    }).execute()
-                except Exception:
-                    pass
+                    if db_manager.supabase is not None:
+                        await db_manager._run_sync(
+                            lambda: db_manager.supabase.table("distributed_tasks").insert({
+                                "scan_id": task.get("scan_id", "GLOBAL"),
+                                "task_id": task["task_id"],
+                                "worker_id": worker_id,
+                                "status": "RUNNING",
+                                "locked_by": worker_id,
+                                "lock_time": datetime.now().isoformat()
+                            }).execute())
+                except Exception as exc:
+                    logger.debug("Supabase task ledger write skipped: %s", exc)
 
     async def monitor_workers(self):
-        while True:
-            await asyncio.sleep(60)
-            now = datetime.now()
-            for wid, w in list(self.workers.items()):
-                if now - datetime.fromisoformat(w["last_heartbeat"]) > timedelta(minutes=3):
-                    w["status"] = "inactive"
-                    await self.reassign_worker_tasks(wid)
+        # Backoff loop — never busy-spin (Architecture §29.13).
+        try:
+            while self.active:
+                await asyncio.sleep(60)
+                now = datetime.now()
+                for wid, w in list(self.workers.items()):
+                    try:
+                        last = datetime.fromisoformat(w["last_heartbeat"])
+                    except Exception:
+                        continue
+                    if now - last > timedelta(minutes=3):
+                        w["status"] = "inactive"
+                        await self.reassign_worker_tasks(wid)
+        except asyncio.CancelledError:
+            return
 
     async def reassign_worker_tasks(self, failed_worker_id: str):
         worker = self.workers.get(failed_worker_id)

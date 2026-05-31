@@ -1,8 +1,13 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Navigation from './Navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { LIQUID_SPRING } from '../lib/constants';
-import { apiUrl } from '../lib/api';
+import {
+    apiUrl,
+    getHiddenScanIds,
+    addHiddenScanIds,
+    clearHiddenScanIds,
+} from '../lib/api';
 import { handleAutoDownload } from '../lib/downloadReport';
 import { useWebSocket } from '../hooks/useWebSocket';
 
@@ -10,21 +15,31 @@ const Scans = ({ navigate }) => {
     const starsRef = useRef(null);
 
     const [scans, setScans] = useState([]);
+    const [hiddenIds, setHiddenIds] = useState(() => getHiddenScanIds());
     const [progressMap, setProgressMap] = useState({}); // Real-time report progress
     const messageBuffer = useRef([]);
     const lastFlush = useRef(Date.now());
     const { subscribe } = useWebSocket();
     const scansRef = useRef(scans);
     const progressMapRef = useRef(progressMap);
+    const hiddenIdsRef = useRef(hiddenIds);
 
     useEffect(() => { scansRef.current = scans; }, [scans]);
     useEffect(() => { progressMapRef.current = progressMap; }, [progressMap]);
+    useEffect(() => { hiddenIdsRef.current = hiddenIds; }, [hiddenIds]);
+
+    // Visible scans = backend list minus locally hidden ids. Backend storage is untouched.
+    const visibleScans = useMemo(() => {
+        if (!hiddenIds.length) return scans;
+        const hide = new Set(hiddenIds);
+        return scans.filter((s) => !hide.has(s.id));
+    }, [scans, hiddenIds]);
 
     const fetchScans = useCallback(async () => {
         try {
             const res = await fetch(apiUrl('/api/dashboard/scans'));
             const data = await res.json();
-            setScans(data);
+            setScans(Array.isArray(data) ? data : []);
         } catch (err) {
             console.error("Failed to fetch scans:", err);
         }
@@ -108,36 +123,26 @@ const Scans = ({ navigate }) => {
 
     const [downloading, setDownloading] = useState(null); // Track which scan is downloading
 
-    const handleWipeHistory = async () => {
-        if (!confirm("⚠️ WARNING: This will PERMANENTLY delete ALL scan history, reports, and forensic data.\n\nThis includes:\n• All scan records\n• Generated reports\n• Brain episodes\n• Forensic data\n• Session data\n\nThis action CANNOT be undone!\n\nAre you absolutely sure?")) return;
-        
-        try {
-            const response = await fetch(apiUrl('/api/dashboard/reset'), { 
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            });
-            
-            if (response.ok) {
-                const data = await response.json();
-                // Clear local state immediately
-                setScans([]);
-                setProgressMap({});
-                messageBuffer.current = [];
-                
-                // Fetch fresh data
-                await fetchScans();
-                
-                alert("✅ Scan history wiped successfully.\n\nAll scan records, reports, and forensic data have been permanently deleted.");
-            } else {
-                const error = await response.json();
-                alert(`❌ Error: ${error.message || 'Failed to wipe history'}`);
-            }
-        } catch (error) {
-            console.error('Error wiping history:', error);
-            alert(`❌ Error wiping history: ${error.message || 'Network error'}`);
-        }
+    // Frontend-only "Wipe History": hides all currently listed scans from THIS view.
+    // Backend records, reports, and forensic data are NOT touched.
+    const handleWipeHistory = () => {
+        if (!confirm("Hide all current scans from this view? (Backend records stay intact.)")) return;
+
+        const idsToHide = scansRef.current.map((s) => s.id).filter(Boolean);
+        const next = addHiddenScanIds(idsToHide);
+        setHiddenIds(next);
+        hiddenIdsRef.current = next;
+
+        // Reset transient view-only progress; backend data is left alone.
+        setProgressMap({});
+        messageBuffer.current = [];
+    };
+
+    // UX nicety: clears the locally hidden set so previously hidden scans reappear.
+    const handleShowHidden = () => {
+        clearHiddenScanIds();
+        setHiddenIds([]);
+        hiddenIdsRef.current = [];
     };
 
     const handleDownloadPdf = async (scanId) => {
@@ -186,11 +191,24 @@ const Scans = ({ navigate }) => {
                                 whileHover={{ scale: 1.02 }}
                                 whileTap={{ scale: 0.98 }}
                                 onClick={handleWipeHistory}
-                                className="px-4 py-2 rounded-lg text-xs font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all flex items-center gap-2"
+                                title="Hide all listed scans from this view. Backend records remain intact."
+                                className="px-4 py-2 rounded-lg text-xs font-medium text-gray-300 hover:text-white hover:bg-white/10 transition-all flex items-center gap-2"
                             >
-                                <span className="material-symbols-outlined text-sm">delete_sweep</span>
+                                <span className="material-symbols-outlined text-sm">visibility_off</span>
                                 Wipe History
                             </motion.button>
+                            {hiddenIds.length > 0 && (
+                                <motion.button
+                                    whileHover={{ scale: 1.02 }}
+                                    whileTap={{ scale: 0.98 }}
+                                    onClick={handleShowHidden}
+                                    title={`Restore ${hiddenIds.length} hidden scan${hiddenIds.length === 1 ? '' : 's'} to this view.`}
+                                    className="px-3 py-2 rounded-lg text-xs font-medium text-purple-300 hover:text-white hover:bg-purple-500/10 transition-all flex items-center gap-1.5"
+                                >
+                                    <span className="material-symbols-outlined text-sm">visibility</span>
+                                    Show hidden ({hiddenIds.length})
+                                </motion.button>
+                            )}
                             <div className="w-[1px] h-4 bg-white/10 self-center mx-1"></div>
                             <motion.button
                                 whileHover={{ scale: 1.05 }}
@@ -224,18 +242,20 @@ const Scans = ({ navigate }) => {
                                 </thead>
                                 <tbody className="divide-y divide-white/5 text-gray-300">
                                     <AnimatePresence mode='popLayout'>
-                                        {scans.length === 0 ? (
+                                        {visibleScans.length === 0 ? (
                                             <motion.tr
                                                 initial={{ opacity: 0 }}
                                                 animate={{ opacity: 1 }}
                                                 exit={{ opacity: 0 }}
                                             >
                                                 <td colSpan="6" className="text-center py-8 text-gray-500">
-                                                    No scans recorded. Launch a new scan to see results here.
+                                                    {hiddenIds.length > 0
+                                                        ? `All ${hiddenIds.length} scan${hiddenIds.length === 1 ? '' : 's'} hidden from view. Use "Show hidden" to restore.`
+                                                        : 'No scans recorded. Launch a new scan to see results here.'}
                                                 </td>
                                             </motion.tr>
                                         ) : (
-                                            scans.map((scan, index) => (
+                                            visibleScans.map((scan, index) => (
                                                 <motion.tr
                                                     key={scan.id}
                                                     initial={{ opacity: 0, y: 10 }}

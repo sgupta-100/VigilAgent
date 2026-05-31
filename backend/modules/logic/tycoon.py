@@ -1,3 +1,16 @@
+"""
+THE TYCOON (Architecture §9.3 — financial logic flaw).
+
+Hardened gating (Architecture §17, §25):
+  * ``preconditions_met`` requires a money/quantity/price field signal — either
+    a dedicated price/quantity/amount/cost/total field in the request payload,
+    OR a checkout/cart/payment/order/billing keyword in the URL. Without it
+    Tycoon does NOT confirm a financial logic flaw on the wrong endpoint
+    (e.g. /vulnerabilities/sqli/?id=1, /xss_r/?name=test, /brute/).
+  * After analysis, any captured response body that clearly belongs to a
+    different vuln class (SQL error, /etc/passwd, executable XSS reflection,
+    CMDI output) suppresses Tycoon findings.
+"""
 import aiohttp
 import time
 from backend.core.base import BaseArsenalModule
@@ -6,6 +19,34 @@ from backend.core.protocol import JobPacket, ResultPacket, Vulnerability, AgentI
 from backend.ai.cortex import CortexEngine, get_cortex_engine
 
 cortex = get_cortex_engine()
+
+_FINANCIAL_FIELDS = (
+    "price", "quantity", "qty", "amount", "cost", "total", "subtotal",
+    "currency", "discount", "voucher", "coupon", "balance", "fee",
+    "tax", "rate", "value",
+)
+_FINANCIAL_URL_HINTS = (
+    "checkout", "cart", "payment", "pay", "order", "purchase", "buy",
+    "billing", "invoice", "wallet", "transfer", "refund", "subscribe",
+    "subscription", "plan", "pricing",
+)
+
+
+def preconditions_met(packet: JobPacket) -> bool:
+    """Return True iff the target carries a financial signal — either a known
+    money/quantity field in the request body, or a financial-shaped URL.
+    Without one, Tycoon refuses to fabricate a 'financial logic flaw'."""
+    target = getattr(packet, "target", None)
+    if not target:
+        return False
+    payload = getattr(target, "payload", None) or {}
+    if isinstance(payload, dict):
+        keys = {str(k).lower() for k in payload.keys()}
+        if keys & set(_FINANCIAL_FIELDS):
+            return True
+    url = (getattr(target, "url", "") or "").lower()
+    return any(h in url for h in _FINANCIAL_URL_HINTS)
+
 
 class TheTycoon(BaseArsenalModule):
     """
@@ -21,6 +62,10 @@ class TheTycoon(BaseArsenalModule):
         self.name = "The Tycoon"
 
     async def generate_payloads(self, packet: JobPacket) -> list[TaskTarget]:
+        # PRECONDITION GATE: refuse to generate payloads on non-financial targets.
+        if not preconditions_met(packet):
+            return []
+
         target = packet.target
         targets = []
         
@@ -52,7 +97,19 @@ class TheTycoon(BaseArsenalModule):
 
     async def analyze_responses(self, interactions: list[tuple[TaskTarget, str]], packet: JobPacket) -> list[Vulnerability]:
         """Confirm financial logic flaws with >= 2 independent signals (Architecture §9.3)."""
-        from backend.modules.evidence import logic_confirm
+        from backend.modules.evidence import logic_confirm, classify_response_evidence
+
+        # PRECONDITION GATE re-enforced on the analyze side.
+        if not preconditions_met(packet):
+            return []
+
+        # WRONG-CLASS SUPPRESSION: drop everything if any response clearly
+        # belongs to a different vuln class.
+        for _t, text in interactions:
+            if isinstance(text, str):
+                classes = classify_response_evidence(text)
+                if classes - {"FINANCIAL"}:
+                    return []
 
         vulns = []
         for target, text in interactions:

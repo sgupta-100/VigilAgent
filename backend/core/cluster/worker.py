@@ -30,8 +30,18 @@ class WorkerNode:
         self.specialty = specialty
         import redis.asyncio as aioredis
         self.redis_client = aioredis.from_url(redis_url, decode_responses=True)
-        from supabase import create_client, Client
-        self.supabase: Client = create_client(supabase_url, supabase_key)
+        # Supabase is OPTIONAL — keep working with Redis-only when missing
+        # (Architecture §29.13: never block the cluster on a slow/down DB).
+        self.supabase = None
+        if supabase_url and supabase_key:
+            try:
+                from supabase import create_client, Client  # noqa: F401
+                self.supabase = create_client(supabase_url, supabase_key)
+            except Exception as exc:
+                logger.warning(
+                    "WorkerNode[%s]: Supabase init failed (%s) — running "
+                    "without persistent task ledger.", worker_id, exc)
+                self.supabase = None
         self.pinchtab = PinchTabInstance(worker_id, 9867 + hash(worker_id) % 1000)
         self.bus = DistributedEventBus(redis_url)
         self.running = False
@@ -48,13 +58,38 @@ class WorkerNode:
                 if psutil.virtual_memory().percent > 85.0:
                     await asyncio.sleep(5)
                     continue
-                task_data = await self.redis_client.brpop(f"worker_queue:{self.id}", timeout=5)
-                if task_data:
+                try:
+                    task_data = await self.redis_client.brpop(
+                        f"worker_queue:{self.id}", timeout=5)
+                except Exception as exc:
+                    logger.debug("Worker[%s] brpop error: %s", self.id, exc)
+                    await asyncio.sleep(1)
+                    continue
+                if not task_data:
+                    continue
+                try:
                     task = json.loads(task_data[1])
-                    self._task_manager.create_task(
-                        self.execute_task(task),
-                        name=f"task_{task.get('task_id', 'unknown')}"
-                    )
+                except Exception as exc:
+                    logger.warning("Worker[%s] dropped malformed task: %s",
+                                   self.id, exc)
+                    continue
+                # Specialty mismatch — bounce back to pending queue gracefully
+                # rather than failing the task (Architecture §4.3).
+                required = (task.get("worker_requirements") or {}).get("type")
+                if required and required not in (self.specialty, "hybrid"):
+                    try:
+                        await self.redis_client.lpush(
+                            "pending_tasks", json.dumps(task))
+                    except Exception:
+                        pass
+                    logger.debug("Worker[%s] re-queued task %s (needs %s, "
+                                 "have %s)", self.id,
+                                 task.get("task_id"), required, self.specialty)
+                    continue
+                self._task_manager.create_task(
+                    self.execute_task(task),
+                    name=f"task_{task.get('task_id', 'unknown')}"
+                )
         except asyncio.CancelledError:
             pass
         finally:
@@ -73,13 +108,18 @@ class WorkerNode:
             pass
 
     async def send_heartbeat(self):
+        # Heartbeat with backoff on Redis errors so we don't busy-spin
+        # when the cache flips offline (Architecture §29.13).
         while self.running:
             try:
                 heartbeat = {"id": self.id, "last_heartbeat": datetime.now().isoformat(), "status": "active"}
                 await self.redis_client.hset("workers", self.id, json.dumps(heartbeat))
+            except Exception as exc:
+                logger.debug("Worker heartbeat error: %s", exc)
+            try:
                 await asyncio.sleep(30)
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                break
 
     async def execute_task(self, task: Dict):
         tid = task.get("task_id", str(uuid.uuid4()))
@@ -231,9 +271,14 @@ class WorkerNode:
                 pass
 
     async def update_task_status(self, tid: str, status: str):
+        # Persistent ledger update is best-effort. Worker keeps moving even
+        # when Supabase is offline (Architecture §29.13).
+        if self.supabase is None:
+            return
         try:
-            self.supabase.table("task_assignments").update(
-                {"status": status, "updated_at": datetime.now().isoformat()}
-            ).eq("task_id", tid).execute()
-        except Exception:
-            pass
+            await asyncio.to_thread(
+                lambda: self.supabase.table("task_assignments").update(
+                    {"status": status, "updated_at": datetime.now().isoformat()}
+                ).eq("task_id", tid).execute())
+        except Exception as exc:
+            logger.debug("Worker[%s] update_task_status skipped: %s", self.id, exc)

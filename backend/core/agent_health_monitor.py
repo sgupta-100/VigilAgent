@@ -14,13 +14,22 @@ import asyncio
 import time
 import psutil
 import logging
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, asdict, field
 from collections import deque
 from pathlib import Path
 import json
 
 logger = logging.getLogger("AgentHealthMonitor")
+
+# Dedup / downgrade windows (seconds). Tuned so that when the event loop is
+# stalled (Architecture §29.13) the same critical condition logs at most once
+# per minute per (agent, category) and, after 120s of sustained critical
+# state, downgrades to a single summary WARN per minute instead of a
+# never-ending CRITICAL stream.
+_CRITICAL_DEDUP_WINDOW_S = 60.0
+_CRITICAL_SUSTAINED_THRESHOLD_S = 120.0
+_CRITICAL_SUSTAINED_LOG_INTERVAL_S = 60.0
 
 
 @dataclass
@@ -78,38 +87,38 @@ class HealthMetrics:
 
 @dataclass
 class BrowserHealthMetrics:
-    """Browser-specific health metrics."""
-    agent_name: str
-    timestamp: float
+    """Browser-specific health metrics (deep-system-integration §4.1).
+
+    Shape is fixed by the spec — extra fields would break callers that round-trip
+    via :func:`asdict`. The legacy 0..100 score (used by the older
+    ``BrowserHealthMonitorExtension``) is now computed by
+    :func:`_legacy_browser_score_100` instead of an instance method.
+    """
     active_contexts: int = 0
     context_memory_mb: float = 0.0
     page_load_time_ms: float = 0.0
     screenshot_time_ms: float = 0.0
-    browser_error_rate: float = 0.0
-    browser_health_score: float = 100.0
-    
-    def calculate_browser_health_score(self) -> float:
-        """Calculate browser-specific health score."""
-        score = 100.0
-        
-        # Penalize too many contexts (max -30 points)
-        if self.active_contexts > 10:
-            score -= min(30, (self.active_contexts - 10) * 3)
-        
-        # Penalize high memory usage (max -25 points)
-        if self.context_memory_mb > 1000:
-            score -= min(25, (self.context_memory_mb - 1000) / 40)
-        
-        # Penalize slow page loads (max -20 points)
-        if self.page_load_time_ms > 3000:
-            score -= min(20, (self.page_load_time_ms - 3000) / 200)
-        
-        # Penalize high error rate (max -25 points)
-        if self.browser_error_rate > 0:
-            score -= min(25, self.browser_error_rate * 100)
-        
-        self.browser_health_score = max(0.0, score)
-        return self.browser_health_score
+    browser_error_rate: float = 0.0  # 0..1
+    timestamp: float = field(default_factory=time.time)
+
+
+def _legacy_browser_score_100(m: "BrowserHealthMetrics") -> float:
+    """Legacy 0..100 browser health score for ``BrowserHealthMonitorExtension``.
+
+    Preserved verbatim from the previous instance method so the older
+    per-agent extension (and its alert thresholds at 40 / 70) keeps behaving
+    identically after the dataclass shape was tightened to the §4.1 spec.
+    """
+    score = 100.0
+    if m.active_contexts > 10:
+        score -= min(30, (m.active_contexts - 10) * 3)
+    if m.context_memory_mb > 1000:
+        score -= min(25, (m.context_memory_mb - 1000) / 40)
+    if m.page_load_time_ms > 3000:
+        score -= min(20, (m.page_load_time_ms - 3000) / 200)
+    if m.browser_error_rate > 0:
+        score -= min(25, m.browser_error_rate * 100)
+    return max(0.0, score)
 
 
 @dataclass
@@ -145,18 +154,34 @@ class AgentHealthMonitor:
         
         # Active alerts
         self.alerts: List[HealthAlert] = []
+
+        # Dedup / downgrade state per (agent_name, category) key. Prevents the
+        # flood of duplicate "[HealthMonitor] CRITICAL: agent_X - Critical
+        # response time: ...ms" lines that appears when the event loop is
+        # stalled and an agent's response_time keeps tripping the threshold.
+        # Each entry tracks:
+        #   first_critical_ts: when this (agent, category) first went critical
+        #   last_log_ts:       last time we actually emitted a log line
+        #   downgraded:        True once we've switched from per-minute
+        #                      CRITICAL spam to per-minute summary WARN
+        self._critical_state: Dict[Tuple[str, str], Dict[str, float]] = {}
         
-        # Thresholds for alerts
+        # Thresholds for alerts.
+        # NOTE: heartbeat_timeout is the *only* mechanism for declaring an
+        # agent CRITICAL/unresponsive — see report_metrics() docstring. Keep
+        # it generous (3x the agent loop's 10s heartbeat) so a single missed
+        # cycle on a busy host never trips a false positive (Architecture
+        # §29.13: do not starve agents with monitoring overhead).
         self.thresholds = {
             "error_rate_warning": 0.1,  # 10% error rate
             "error_rate_critical": 0.3,  # 30% error rate
-            "response_time_warning": 2000,  # 2 seconds
-            "response_time_critical": 5000,  # 5 seconds
+            "response_time_warning": 2000,  # 2 seconds (per-task only)
+            "response_time_critical": 5000,  # 5 seconds (per-task only)
             "memory_warning": 500,  # 500 MB
             "memory_critical": 1000,  # 1 GB
             "health_score_warning": 70,
             "health_score_critical": 40,
-            "heartbeat_timeout": 30,  # 30 seconds
+            "heartbeat_timeout": 90,  # 90s — agents heartbeat every 10s
         }
         
         # Process handle for resource monitoring
@@ -166,6 +191,17 @@ class AgentHealthMonitor:
         """
         Report metrics from an agent.
         Called by agents periodically.
+
+        NOTE on response_time_ms (Architecture §29.15): callers may pass
+        either a real per-task response time OR a "time since last task"
+        idle measurement (the BaseAgent._health_reporting_loop currently
+        reports idle time as response_time_ms every 10s). To suppress the
+        false-positive CRITICAL spam this caused, we only escalate
+        response-time alerts when the caller explicitly opts in
+        (``per_task_latency=True``) OR when we observed a real task
+        completion since the last sample. Idle/keep-alive samples are
+        recorded for diagnostics but never alert. Genuine unresponsiveness
+        is still detected by ``check_heartbeats``.
         """
         current_time = time.time()
         
@@ -179,14 +215,23 @@ class AgentHealthMonitor:
             self.history[agent_name] = deque(maxlen=100)
         
         agent_metrics = self.current_metrics[agent_name]
+        prior_completed = agent_metrics.tasks_completed
+        prior_failed = agent_metrics.tasks_failed
         
         # Update metrics
         agent_metrics.timestamp = current_time
         agent_metrics.last_heartbeat = current_time
-        
-        if "response_time_ms" in metrics:
+
+        # Distinguish real per-task latency from idle "time since last task"
+        # samples coming from the periodic health-reporting loop.
+        explicit_idle = bool(metrics.get("idle"))
+        explicit_per_task = bool(metrics.get("per_task_latency"))
+        if "idle_time_ms" in metrics:
+            explicit_idle = True
+
+        if "response_time_ms" in metrics and not explicit_idle:
             agent_metrics.response_time_ms = metrics["response_time_ms"]
-        
+
         if "success" in metrics:
             if metrics["success"]:
                 agent_metrics.tasks_completed += 1
@@ -215,9 +260,23 @@ class AgentHealthMonitor:
         
         # Store in history
         self.history[agent_name].append(asdict(agent_metrics))
-        
-        # Check for alerts
-        self._check_alerts(agent_name, agent_metrics)
+
+        # Decide whether response-time alerts apply to this sample. Treat as
+        # idle/keep-alive when:
+        #   1) caller marked it idle, OR
+        #   2) the legacy reporter passed success=True but we never saw a real
+        #      task completion (BaseAgent's loop calls
+        #      report_task_result -> tasks_completed++ for genuine work).
+        observed_real_task = (
+            agent_metrics.tasks_completed > prior_completed + 1  # +1 for the loop's success=True
+            or agent_metrics.tasks_failed > prior_failed
+        )
+        suppress_response = (
+            explicit_idle
+            or (not explicit_per_task and not observed_real_task)
+        )
+        self._check_alerts(agent_name, agent_metrics,
+                           suppress_response_time=suppress_response)
     
     def report_heartbeat(self, agent_name: str):
         """Report heartbeat from agent (still alive)."""
@@ -236,8 +295,14 @@ class AgentHealthMonitor:
         self.current_metrics[agent_name].last_heartbeat = current_time
         self.current_metrics[agent_name].is_active = True
     
-    def _check_alerts(self, agent_name: str, metrics: HealthMetrics):
-        """Check if metrics trigger any alerts."""
+    def _check_alerts(self, agent_name: str, metrics: HealthMetrics, *,
+                      suppress_response_time: bool = False):
+        """Check if metrics trigger any alerts.
+
+        suppress_response_time: when the latest sample is an idle/heartbeat
+        observation (no real task happened), skip response-time alerting.
+        We still track the value for diagnostics.
+        """
         current_time = time.time()
         
         # Check error rate
@@ -246,31 +311,36 @@ class AgentHealthMonitor:
                 agent_name,
                 "critical",
                 f"Critical error rate: {metrics.error_rate:.1%}",
-                {"error_rate": metrics.error_rate}
+                {"error_rate": metrics.error_rate},
+                category="error_rate",
             )
         elif metrics.error_rate >= self.thresholds["error_rate_warning"]:
             self._create_alert(
                 agent_name,
                 "warning",
                 f"High error rate: {metrics.error_rate:.1%}",
-                {"error_rate": metrics.error_rate}
+                {"error_rate": metrics.error_rate},
+                category="error_rate",
             )
         
-        # Check response time
-        if metrics.response_time_ms >= self.thresholds["response_time_critical"]:
-            self._create_alert(
-                agent_name,
-                "critical",
-                f"Critical response time: {metrics.response_time_ms:.0f}ms",
-                {"response_time_ms": metrics.response_time_ms}
-            )
-        elif metrics.response_time_ms >= self.thresholds["response_time_warning"]:
-            self._create_alert(
-                agent_name,
-                "warning",
-                f"Slow response time: {metrics.response_time_ms:.0f}ms",
-                {"response_time_ms": metrics.response_time_ms}
-            )
+        # Check response time (only on real per-task samples)
+        if not suppress_response_time:
+            if metrics.response_time_ms >= self.thresholds["response_time_critical"]:
+                self._create_alert(
+                    agent_name,
+                    "critical",
+                    f"Critical response time: {metrics.response_time_ms:.0f}ms",
+                    {"response_time_ms": metrics.response_time_ms},
+                    category="response_time",
+                )
+            elif metrics.response_time_ms >= self.thresholds["response_time_warning"]:
+                self._create_alert(
+                    agent_name,
+                    "warning",
+                    f"Slow response time: {metrics.response_time_ms:.0f}ms",
+                    {"response_time_ms": metrics.response_time_ms},
+                    category="response_time",
+                )
         
         # Check memory usage
         if metrics.memory_mb >= self.thresholds["memory_critical"]:
@@ -278,14 +348,16 @@ class AgentHealthMonitor:
                 agent_name,
                 "critical",
                 f"Critical memory usage: {metrics.memory_mb:.0f}MB",
-                {"memory_mb": metrics.memory_mb}
+                {"memory_mb": metrics.memory_mb},
+                category="memory",
             )
         elif metrics.memory_mb >= self.thresholds["memory_warning"]:
             self._create_alert(
                 agent_name,
                 "warning",
                 f"High memory usage: {metrics.memory_mb:.0f}MB",
-                {"memory_mb": metrics.memory_mb}
+                {"memory_mb": metrics.memory_mb},
+                category="memory",
             )
         
         # Check health score
@@ -294,14 +366,16 @@ class AgentHealthMonitor:
                 agent_name,
                 "critical",
                 f"Critical health score: {metrics.health_score:.0f}/100",
-                {"health_score": metrics.health_score}
+                {"health_score": metrics.health_score},
+                category="health_score",
             )
         elif metrics.health_score <= self.thresholds["health_score_warning"]:
             self._create_alert(
                 agent_name,
                 "warning",
                 f"Low health score: {metrics.health_score:.0f}/100",
-                {"health_score": metrics.health_score}
+                {"health_score": metrics.health_score},
+                category="health_score",
             )
         
         # Check consecutive failures
@@ -310,27 +384,100 @@ class AgentHealthMonitor:
                 agent_name,
                 "critical",
                 f"Agent failing repeatedly: {metrics.consecutive_failures} consecutive failures",
-                {"consecutive_failures": metrics.consecutive_failures}
+                {"consecutive_failures": metrics.consecutive_failures},
+                category="consecutive_failures",
             )
     
-    def _create_alert(self, agent_name: str, severity: str, issue: str, metrics: Dict[str, Any]):
-        """Create a new alert."""
+    def _create_alert(self, agent_name: str, severity: str, issue: str,
+                      metrics: Dict[str, Any], *, category: Optional[str] = None):
+        """Create a new alert with rate-limited logging.
+
+        Dedup behavior (Architecture §29.13: monitoring must not amplify
+        backend stalls):
+          - Identical (agent, category, severity) alerts log at most once
+            per ``_CRITICAL_DEDUP_WINDOW_S`` (60s). The alert object is
+            still appended on the *first* hit and refreshed on subsequent
+            hits, so dashboards see latest metrics without log spam.
+          - When a CRITICAL (agent, category) condition has persisted for
+            more than ``_CRITICAL_SUSTAINED_THRESHOLD_S`` (120s), we stop
+            re-logging at CRITICAL and emit a single summary WARN every
+            ``_CRITICAL_SUSTAINED_LOG_INTERVAL_S`` (60s) instead. This
+            avoids escalating noise once an operator has been notified.
+
+        Falls back to issue-text dedup (legacy behavior) when no category
+        is provided.
+        """
+        now = time.time()
+        # Stable dedup key: derive from explicit category when available so
+        # variations like "Critical response time: 300000ms" vs
+        # "...300050ms" collapse onto a single entry. Otherwise fall back
+        # to the full issue string (legacy behavior).
+        cat_key = category or issue
+        state_key = (agent_name, cat_key)
+
         alert = HealthAlert(
             agent_name=agent_name,
             severity=severity,
             issue=issue,
-            timestamp=time.time(),
-            metrics=metrics
+            timestamp=now,
+            metrics=metrics,
         )
-        
-        # Avoid duplicate alerts (same issue within 60 seconds)
+
+        if severity == "critical":
+            state = self._critical_state.get(state_key)
+            if state is None:
+                # First time we've seen this critical condition — log it
+                # and seed dedup state.
+                self._critical_state[state_key] = {
+                    "first_critical_ts": now,
+                    "last_log_ts": now,
+                    "downgraded": 0.0,
+                }
+                self.alerts.append(alert)
+                logger.warning(f"[HealthMonitor] {severity.upper()}: {agent_name} - {issue}")
+                return
+
+            sustained_for = now - state["first_critical_ts"]
+            since_last_log = now - state["last_log_ts"]
+
+            if sustained_for >= _CRITICAL_SUSTAINED_THRESHOLD_S:
+                # Persistent critical state: downgrade to a per-minute
+                # summary WARN. Don't keep escalating.
+                if since_last_log >= _CRITICAL_SUSTAINED_LOG_INTERVAL_S:
+                    state["last_log_ts"] = now
+                    state["downgraded"] = 1.0
+                    self.alerts.append(alert)
+                    logger.warning(
+                        f"[HealthMonitor] WARN (sustained {sustained_for:.0f}s): "
+                        f"{agent_name} - {issue}"
+                    )
+                # else: silently absorb — alert object isn't appended to
+                # avoid alerts list bloat under stall conditions.
+                return
+
+            # Within the first 120s of critical state: emit at most once
+            # per dedup window.
+            if since_last_log >= _CRITICAL_DEDUP_WINDOW_S:
+                state["last_log_ts"] = now
+                self.alerts.append(alert)
+                logger.warning(f"[HealthMonitor] {severity.upper()}: {agent_name} - {issue}")
+            # else: dedup'd, drop the log.
+            return
+
+        # Non-critical (warning) path: condition cleared if previously critical.
+        # Resetting state lets a future critical event log immediately
+        # instead of being suppressed by stale dedup state.
+        if state_key in self._critical_state:
+            del self._critical_state[state_key]
+
+        # Legacy 60s issue-text dedup for warnings (preserves prior behavior).
         recent_alerts = [
             a for a in self.alerts
             if a.agent_name == agent_name and
             a.issue == issue and
-            time.time() - a.timestamp < 60
+            now - a.timestamp < _CRITICAL_DEDUP_WINDOW_S
         ]
-        
+
         if not recent_alerts:
             self.alerts.append(alert)
             logger.warning(f"[HealthMonitor] {severity.upper()}: {agent_name} - {issue}")
@@ -354,7 +501,8 @@ class AgentHealthMonitor:
                         agent_name,
                         "critical",
                         f"Agent unresponsive for {time_since_heartbeat:.0f}s",
-                        {"time_since_heartbeat": time_since_heartbeat}
+                        {"time_since_heartbeat": time_since_heartbeat},
+                        category="heartbeat",
                     )
         
         return crashed_agents
@@ -440,6 +588,120 @@ class AgentHealthMonitor:
         except Exception as e:
             logger.error(f"[HealthMonitor] Failed to save snapshot: {e}")
 
+    # ══════════════════════════════════════════════════════════════════════
+    # BROWSER HEALTH (deep-system-integration §4.1 / §4.2 / §4.4 / §4.5)
+    # Architecture invariants honored:
+    #   §9   scope-is-law       — purely metric reporting; no scope decisions.
+    #   §11  two-LLM exclusivity — no LLM calls.
+    #   §17  no re-verification — recovery is upstream; we only score & alert.
+    #   §29.13 non-blocking     — pure-CPU scoring; no I/O on this hot path.
+    # ══════════════════════════════════════════════════════════════════════
+    # Latest spec-shape browser metrics, keyed by reporting host/agent. Stored
+    # alongside the legacy per-agent ``browser_metrics`` map so existing
+    # ``BrowserHealthMonitorExtension`` consumers keep working.
+    _LAST_BROWSER_KEY = "__global__"
+
+    def report_browser_metrics(self, metrics: "BrowserHealthMetrics") -> None:
+        """Record the latest browser metrics, score them, and alert on poor health.
+
+        deep-system-integration §4.2: store last metrics, compute the §4.5
+        weighted score in [0,1], and emit a single ``critical`` alert via the
+        existing alert hook when the score falls below 0.4. The 0.4 threshold
+        is fixed by the spec; it is *not* the legacy 0..100 threshold used by
+        ``BrowserHealthMonitorExtension``.
+        """
+        if not isinstance(metrics, BrowserHealthMetrics):
+            raise TypeError(
+                f"report_browser_metrics expects BrowserHealthMetrics, got {type(metrics).__name__}"
+            )
+        if not hasattr(self, "_last_browser_metrics"):
+            self._last_browser_metrics: Optional[BrowserHealthMetrics] = None
+        self._last_browser_metrics = metrics
+        score = self.calculate_browser_health_score(metrics)
+        self._last_browser_score = score
+        if score < 0.4:
+            # Alert via the existing hook so dashboards / coordinator pick this up
+            # like any other critical condition. category="browser_health" lets
+            # the dedup machinery (§29.13) collapse spam under sustained stress.
+            self._create_alert(
+                self._LAST_BROWSER_KEY,
+                "critical",
+                f"Critical browser health score: {score:.2f}",
+                {
+                    "browser_health_score": score,
+                    "active_contexts": metrics.active_contexts,
+                    "context_memory_mb": metrics.context_memory_mb,
+                    "page_load_time_ms": metrics.page_load_time_ms,
+                    "screenshot_time_ms": metrics.screenshot_time_ms,
+                    "browser_error_rate": metrics.browser_error_rate,
+                },
+                category="browser_health",
+            )
+
+    def get_browser_health(self) -> Dict[str, Any]:
+        """Return the latest browser metrics dict + computed score + alert level.
+
+        deep-system-integration §4.4. ``alert_level`` is derived from the same
+        thresholds the alert hook uses so dashboards can render a status pill
+        without re-implementing scoring rules.
+        """
+        last = getattr(self, "_last_browser_metrics", None)
+        if last is None:
+            return {
+                "metrics": None,
+                "browser_health_score": 1.0,
+                "alert_level": "ok",
+            }
+        score = self.calculate_browser_health_score(last)
+        if score < 0.4:
+            alert_level = "critical"
+        elif score < 0.7:
+            alert_level = "warning"
+        else:
+            alert_level = "ok"
+        return {
+            "metrics": asdict(last),
+            "browser_health_score": score,
+            "alert_level": alert_level,
+        }
+
+    def calculate_browser_health_score(self, m: "BrowserHealthMetrics") -> float:
+        """Weighted browser health score in [0, 1] (deep-system-integration §4.5).
+
+        Weights (sum = 1.00):
+          0.25  context-pressure  — 1 - min(active_contexts / 20, 1)
+          0.25  memory-pressure   — 1 - min(context_memory_mb / 2048, 1)
+          0.20  page-load-latency — 1 - min(page_load_time_ms / 5000, 1)
+          0.10  screenshot-latency — 1 - min(screenshot_time_ms / 2000, 1)
+          0.20  error-budget      — 1 - browser_error_rate
+
+        ``browser_error_rate`` is clamped to [0,1] before subtraction so callers
+        passing legacy 0..100 values (a common foot-gun) can't drive the score
+        negative. Final result is clamped to [0,1].
+        """
+        # Defensive clamps — the spec contract is the formula; anything outside
+        # the documented domain (negative values, error rate > 1) is squashed
+        # to the boundary so the score stays well-defined.
+        ac = max(0, int(m.active_contexts))
+        mem = max(0.0, float(m.context_memory_mb))
+        plt_ = max(0.0, float(m.page_load_time_ms))
+        sst = max(0.0, float(m.screenshot_time_ms))
+        err = min(1.0, max(0.0, float(m.browser_error_rate)))
+
+        score = (
+            0.25 * (1.0 - min(ac / 20.0, 1.0))
+            + 0.25 * (1.0 - min(mem / 2048.0, 1.0))
+            + 0.20 * (1.0 - min(plt_ / 5000.0, 1.0))
+            + 0.10 * (1.0 - min(sst / 2000.0, 1.0))
+            + 0.20 * (1.0 - err)
+        )
+        # Clamp into [0, 1] — float arithmetic can drift a hair outside.
+        if score < 0.0:
+            return 0.0
+        if score > 1.0:
+            return 1.0
+        return score
+
 
 # Global health monitor instance
 health_monitor = AgentHealthMonitor()
@@ -468,7 +730,6 @@ class BrowserHealthMonitorExtension:
         # Get or create browser metrics
         if agent_name not in self.monitor.browser_metrics:
             self.monitor.browser_metrics[agent_name] = BrowserHealthMetrics(
-                agent_name=agent_name,
                 timestamp=current_time
             )
             self.monitor.browser_history[agent_name] = deque(maxlen=100)
@@ -493,26 +754,29 @@ class BrowserHealthMonitorExtension:
         if "browser_error_rate" in metrics:
             browser_metrics.browser_error_rate = metrics["browser_error_rate"]
         
-        # Calculate browser health score
-        browser_metrics.calculate_browser_health_score()
+        # Calculate browser health score (0..100 legacy scale for this extension's alerts)
+        legacy_score = _legacy_browser_score_100(browser_metrics)
         
         # Store in history
-        self.monitor.browser_history[agent_name].append(asdict(browser_metrics))
+        history_entry = asdict(browser_metrics)
+        history_entry["agent_name"] = agent_name
+        history_entry["browser_health_score"] = legacy_score
+        self.monitor.browser_history[agent_name].append(history_entry)
         
         # Check if browser operations impact system health
-        if browser_metrics.browser_health_score < 40:
+        if legacy_score < 40:
             self._create_browser_alert(
                 agent_name,
                 "critical",
-                f"Critical browser health: {browser_metrics.browser_health_score:.0f}/100",
-                asdict(browser_metrics)
+                f"Critical browser health: {legacy_score:.0f}/100",
+                history_entry
             )
-        elif browser_metrics.browser_health_score < 70:
+        elif legacy_score < 70:
             self._create_browser_alert(
                 agent_name,
                 "warning",
-                f"Low browser health: {browser_metrics.browser_health_score:.0f}/100",
-                asdict(browser_metrics)
+                f"Low browser health: {legacy_score:.0f}/100",
+                history_entry
             )
         
         # Alert on high memory usage
@@ -536,13 +800,18 @@ class BrowserHealthMonitorExtension:
     def get_browser_health(self, agent_name: str) -> Optional[Dict[str, Any]]:
         """Get current browser health metrics for an agent."""
         if agent_name in self.monitor.browser_metrics:
-            return asdict(self.monitor.browser_metrics[agent_name])
+            d = asdict(self.monitor.browser_metrics[agent_name])
+            d["agent_name"] = agent_name
+            d["browser_health_score"] = _legacy_browser_score_100(
+                self.monitor.browser_metrics[agent_name]
+            )
+            return d
         return None
     
     def calculate_browser_health_score(self, agent_name: str) -> float:
-        """Calculate browser health score for an agent."""
+        """Calculate legacy 0..100 browser health score for an agent."""
         if agent_name in self.monitor.browser_metrics:
-            return self.monitor.browser_metrics[agent_name].calculate_browser_health_score()
+            return _legacy_browser_score_100(self.monitor.browser_metrics[agent_name])
         return 100.0
     
     def _create_browser_alert(
@@ -575,10 +844,13 @@ class BrowserHealthMonitorExtension:
     
     def get_all_browser_health(self) -> Dict[str, Dict[str, Any]]:
         """Get browser health metrics for all agents."""
-        return {
-            name: asdict(metrics)
-            for name, metrics in self.monitor.browser_metrics.items()
-        }
+        out: Dict[str, Dict[str, Any]] = {}
+        for name, metrics in self.monitor.browser_metrics.items():
+            d = asdict(metrics)
+            d["agent_name"] = name
+            d["browser_health_score"] = _legacy_browser_score_100(metrics)
+            out[name] = d
+        return out
     
     def get_browser_health_summary(self) -> Dict[str, Any]:
         """Get overall browser health summary."""
@@ -593,7 +865,10 @@ class BrowserHealthMonitorExtension:
         
         total_contexts = sum(m.active_contexts for m in self.monitor.browser_metrics.values())
         total_memory = sum(m.context_memory_mb for m in self.monitor.browser_metrics.values())
-        avg_health = sum(m.browser_health_score for m in self.monitor.browser_metrics.values()) / len(self.monitor.browser_metrics)
+        avg_health = (
+            sum(_legacy_browser_score_100(m) for m in self.monitor.browser_metrics.values())
+            / len(self.monitor.browser_metrics)
+        )
         
         browser_alerts = sum(
             1 for a in self.monitor.alerts

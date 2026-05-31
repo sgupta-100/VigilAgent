@@ -1,390 +1,346 @@
 """
 FORENSIC LEARNING BRIDGE
-Connects forensic evidence collection with the learning engine.
+Connects forensic evidence collection with the continuous learning engine.
 
-This bridge:
-1. Analyzes evidence quality for vulnerabilities
-2. Learns evidence requirements from successful exploits
-3. Adapts evidence collection strategies based on learned patterns
-4. Tracks evidence value scores
+Responsibilities (deep-system-integration spec §8 / §13.6-13.10):
+  • analyze_evidence_quality   — score the completeness of an evidence bundle
+                                 against a per-vuln-type requirement map
+  • learn_evidence_requirements — record which evidence types accompany
+                                 confirmed findings, building per-vuln-type
+                                 value scores in the learning engine
+  • adapt_evidence_collection  — return a tiered collection strategy
+                                 (required / recommended / optional) by
+                                 querying learned requirements
+
+Architecture invariants honoured here:
+  §9   scope-is-law      — vuln targets/hosts pulled from evidence are
+                            stored as advisory metadata only; nothing in
+                            this bridge ever issues a scope grant.
+  §11  two-LLM exclusivity — no LLM calls. Quality scoring + adaptation
+                              are pure rules + learned-pattern recall.
+  §17  ≥2-signal evidence  — this bridge does NOT re-verify findings. It
+                              consumes evidence the caller already gathered.
+  §29.13 non-blocking      — every persistence write is dispatched via
+                              ``asyncio.to_thread`` so the event loop stays
+                              responsive under burst load.
+
+Phase-1 default: ``learning_engine`` and ``forensic_collector`` may both be
+``None``. The class degrades gracefully: read methods return safe defaults,
+write methods become no-ops returning ``False``.
 """
 
+from __future__ import annotations
+
+import asyncio
 import logging
-from typing import Dict, List, Any, Optional
-from dataclasses import dataclass
 import time
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger("ForensicLearningBridge")
 
 
-@dataclass
-class EvidenceQualityScore:
-    """Quality score for collected evidence"""
-    vulnerability_id: str
-    quality_score: float  # 0.0 to 1.0
-    completeness: float  # 0.0 to 1.0
-    gaps: List[str]
-    evidence_types_present: List[str]
-    evidence_types_missing: List[str]
-    timestamp: float
+# ----------------------------------------------------------------------
+# Per-vuln-type evidence requirement map (§8.2)
+# ----------------------------------------------------------------------
+# Spec contract: keys are the canonical lower-case vuln_type strings used
+# across the codebase; values are the set of evidence-type tokens that must
+# be present for an evidence bundle to be considered "complete" for that
+# vulnerability class.
+#
+# Lookup is case-insensitive (we lower the incoming vuln_type). Unknown
+# vuln_types fall back to the ``_DEFAULT`` entry — we still expect at least
+# a request/response pair so the finding is reproducible.
+# ----------------------------------------------------------------------
+_EVIDENCE_TYPE_MAP: Dict[str, Set[str]] = {
+    "xss":     {"screenshot", "dom_snapshot", "console_log"},
+    "sqli":    {"request_response", "differential", "timing"},
+    "_DEFAULT": {"request_response"},
+}
+
+
+def _required_types_for(vuln_type: Optional[str]) -> Set[str]:
+    """Return the required evidence-type set for ``vuln_type`` (case-insensitive)."""
+    if not isinstance(vuln_type, str) or not vuln_type.strip():
+        return set(_EVIDENCE_TYPE_MAP["_DEFAULT"])
+    return set(_EVIDENCE_TYPE_MAP.get(vuln_type.strip().lower(), _EVIDENCE_TYPE_MAP["_DEFAULT"]))
 
 
 class ForensicLearningBridge:
-    """
-    Bridges forensic evidence collection with learning engine.
-    Learns what evidence is valuable and adapts collection strategies.
+    """Bridge between forensic evidence collection and the learning engine.
+    
+    The bridge is a thin coordinator. It owns no pattern store of its own —
+    every learned signal is written through ``learning_engine.patterns``
+    using the ``pattern_type="evidence_requirement"`` row schema. This keeps
+    the learning surface unified (§14: shared memory and knowledge stores).
     """
     
-    def __init__(self, learning_engine: Any, forensic_collector: Any):
+    # Quality scoring weights — exposed as a class attribute so tests /
+    # operators can introspect the metric without monkey-patching.
+    EVIDENCE_QUALITY_METRICS: Dict[str, float] = {
+        # Base score = (# present required types) / (# required types)
+        "completeness_weight": 1.0,
+        # Per-extra-type bonus capped so completeness still dominates.
+        "extra_type_bonus": 0.05,
+        "extra_type_bonus_cap": 0.20,
+    }
+    
+    def __init__(
+        self,
+        learning_engine: Any = None,
+        forensic_collector: Any = None,
+    ) -> None:
+        # Both dependencies may be ``None`` in Phase-1; methods degrade
+        # gracefully rather than raising at import or call time.
         self.learning_engine = learning_engine
         self.forensic_collector = forensic_collector
-        
-        # Evidence requirements per vulnerability type
-        self.evidence_requirements: Dict[str, Dict[str, float]] = {}
-        
-        # Evidence value scores
-        self.evidence_values: Dict[str, float] = {}
-        
-        # Quality history
-        self.quality_history: List[EvidenceQualityScore] = []
-    
-    def analyze_evidence_quality(
-        self,
-        vulnerability_id: str,
-        evidence_data: Dict[str, Any]
-    ) -> EvidenceQualityScore:
-        """
-        Analyze quality of collected evidence for a vulnerability.
-        Returns quality score with identified gaps.
-        """
-        vuln_type = evidence_data.get("vuln_type", "unknown")
-        
-        # Get required evidence types for this vulnerability
-        required_types = self._get_required_evidence_types(vuln_type)
-        
-        # Check what evidence is present
-        present_types = []
-        missing_types = []
-        
-        for evidence_type in required_types:
-            if evidence_type in evidence_data.get("evidence", {}):
-                present_types.append(evidence_type)
-            else:
-                missing_types.append(evidence_type)
-        
-        # Calculate completeness
-        completeness = len(present_types) / len(required_types) if required_types else 1.0
-        
-        # Calculate quality score based on completeness and evidence richness
-        quality_score = completeness
-        
-        # Bonus for having high-value evidence
-        for evidence_type in present_types:
-            value = self.evidence_values.get(evidence_type, 0.5)
-            quality_score += value * 0.1  # Small bonus per high-value evidence
-        
-        quality_score = min(1.0, quality_score)
-        
-        # Identify gaps
-        gaps = []
-        if completeness < 1.0:
-            gaps.append(f"Missing {len(missing_types)} required evidence types")
-        
-        if not evidence_data.get("evidence", {}).get("screenshot"):
-            gaps.append("No screenshot evidence")
-        
-        if not evidence_data.get("evidence", {}).get("http_request"):
-            gaps.append("No HTTP request captured")
-        
-        score = EvidenceQualityScore(
-            vulnerability_id=vulnerability_id,
-            quality_score=quality_score,
-            completeness=completeness,
-            gaps=gaps,
-            evidence_types_present=present_types,
-            evidence_types_missing=missing_types,
-            timestamp=time.time()
-        )
-        
-        self.quality_history.append(score)
-        
-        logger.info(f"[ForensicBridge] Evidence quality for {vulnerability_id}: {quality_score:.2f}")
-        
-        return score
-    
-    def learn_evidence_requirements(
-        self,
-        vuln_type: str,
-        evidence_data: Dict[str, Any],
-        exploit_success: bool
-    ):
-        """
-        Learn what evidence types are valuable for a vulnerability type.
-        Tracks which evidence correlates with successful exploits.
-        """
-        if vuln_type not in self.evidence_requirements:
-            self.evidence_requirements[vuln_type] = {}
-        
-        # Track evidence types present
-        evidence_types = list(evidence_data.get("evidence", {}).keys())
-        
-        for evidence_type in evidence_types:
-            if evidence_type not in self.evidence_requirements[vuln_type]:
-                self.evidence_requirements[vuln_type][evidence_type] = {
-                    "success_count": 0,
-                    "total_count": 0,
-                    "value_score": 0.5
-                }
-            
-            req = self.evidence_requirements[vuln_type][evidence_type]
-            req["total_count"] += 1
-            
-            if exploit_success:
-                req["success_count"] += 1
-            
-            # Calculate value score (correlation with success)
-            if req["total_count"] > 0:
-                req["value_score"] = req["success_count"] / req["total_count"]
-            
-            # Update global evidence value
-            self.evidence_values[evidence_type] = req["value_score"]
-        
-        logger.info(f"[ForensicBridge] Learned evidence requirements for {vuln_type}")
-    
-    def adapt_evidence_collection(
-        self,
-        vuln_type: str
-    ) -> Dict[str, Any]:
-        """
-        Get adapted evidence collection strategy based on learned requirements.
-        Returns collection strategy with prioritized evidence types.
-        """
-        strategy = {
-            "priority_evidence": [],
-            "optional_evidence": [],
-            "collection_method": "standard"
+        # Local cache of the requirement map so callers can introspect it
+        # (e.g. from /api/dashboard/evidence). Mirrors module-level constant.
+        self.evidence_type_map: Dict[str, Set[str]] = {
+            k: set(v) for k, v in _EVIDENCE_TYPE_MAP.items()
         }
-        
-        # Get learned requirements for this vulnerability type
-        if vuln_type not in self.evidence_requirements:
-            # No learned data, use default strategy
-            strategy["priority_evidence"] = [
-                "screenshot",
-                "http_request",
-                "http_response",
-                "payload"
-            ]
-            return strategy
-        
-        requirements = self.evidence_requirements[vuln_type]
-        
-        # Sort evidence types by value score
-        sorted_evidence = sorted(
-            requirements.items(),
-            key=lambda x: x[1]["value_score"],
-            reverse=True
-        )
-        
-        # High-value evidence (score > 0.7)
-        for evidence_type, data in sorted_evidence:
-            if data["value_score"] > 0.7:
-                strategy["priority_evidence"].append(evidence_type)
-            elif data["value_score"] > 0.4:
-                strategy["optional_evidence"].append(evidence_type)
-        
-        # Determine collection method based on requirements
-        if len(strategy["priority_evidence"]) > 5:
-            strategy["collection_method"] = "comprehensive"
-        elif len(strategy["priority_evidence"]) < 3:
-            strategy["collection_method"] = "minimal"
-        
-        logger.info(f"[ForensicBridge] Adapted strategy for {vuln_type}: {len(strategy['priority_evidence'])} priority items")
-        
-        return strategy
     
-    def _get_required_evidence_types(self, vuln_type: str) -> List[str]:
-        """Get required evidence types for a vulnerability type."""
-        # Default requirements
-        default_requirements = [
-            "screenshot",
-            "http_request",
-            "http_response",
-            "payload"
-        ]
+    # ------------------------------------------------------------------
+    # Task 8.2 — analyze_evidence_quality
+    # ------------------------------------------------------------------
+    def analyze_evidence_quality(self, evidence: Dict[str, Any]) -> Dict[str, Any]:
+        """Score an evidence bundle against the per-vuln-type requirement map.
         
-        # Type-specific requirements
-        type_requirements = {
-            "XSS": ["screenshot", "http_request", "http_response", "payload", "dom_state"],
-            "SQLi": ["http_request", "http_response", "payload", "database_error"],
-            "CSRF": ["http_request", "http_response", "session_token"],
-            "SSRF": ["http_request", "http_response", "internal_request"],
-        }
+        Accepts two shapes for ``evidence``:
+            • flat:    ``{"vuln_type": "xss", "screenshot": "...", "dom_snapshot": "..."}``
+            • nested:  ``{"vuln_type": "xss", "evidence": {"screenshot": "...", ...}}``
         
-        return type_requirements.get(vuln_type, default_requirements)
-    
-    def get_evidence_stats(self) -> Dict[str, Any]:
-        """Get statistics about evidence learning."""
-        total_analyzed = len(self.quality_history)
-        
-        if total_analyzed == 0:
-            return {
-                "total_analyzed": 0,
-                "avg_quality_score": 0.0,
-                "avg_completeness": 0.0,
-                "learned_requirements": 0
-            }
-        
-        avg_quality = sum(s.quality_score for s in self.quality_history) / total_analyzed
-        avg_completeness = sum(s.completeness for s in self.quality_history) / total_analyzed
-        
-        return {
-            "total_analyzed": total_analyzed,
-            "avg_quality_score": round(avg_quality, 2),
-            "avg_completeness": round(avg_completeness, 2),
-            "learned_requirements": len(self.evidence_requirements),
-            "evidence_types_tracked": len(self.evidence_values),
-            "timestamp": time.time()
-        }
-
-
-# Global forensic learning bridge instance (will be initialized with dependencies)
-forensic_learning_bridge: Optional[ForensicLearningBridge] = None
-
-
-def initialize_bridge(learning_engine: Any, forensic_collector: Any):
-    """Initialize the global forensic learning bridge."""
-    global forensic_learning_bridge
-    forensic_learning_bridge = ForensicLearningBridge(learning_engine, forensic_collector)
-    return forensic_learning_bridge
-
-
-# ============================================================================
-# EVIDENCE COLLECTION SKILLS (Section 18.3, 18.5)
-# ============================================================================
-
-class EvidenceCollectionSkillManager:
-    """
-    Manages evidence collection patterns as skills.
-    """
-    
-    def __init__(self, forensic_bridge: ForensicLearningBridge):
-        self.bridge = forensic_bridge
-        self.collection_skills: Dict[str, Dict[str, Any]] = {}
-    
-    def create_evidence_collection_skill(
-        self,
-        vuln_type: str,
-        evidence_pattern: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        Returns:
+            ``{"score": float in [0,1],
+               "missing": List[str],   # required types not found
+               "present": List[str]}`` # required types found
         """
-        Create evidence collection skill from learned pattern.
-        """
-        skill = {
-            "skill_id": f"evidence_{vuln_type}_{int(time.time())}",
-            "vuln_type": vuln_type,
-            "priority_evidence": evidence_pattern.get("priority_evidence", []),
-            "optional_evidence": evidence_pattern.get("optional_evidence", []),
-            "collection_method": evidence_pattern.get("collection_method", "standard"),
-            "created_at": time.time()
-        }
+        if not isinstance(evidence, dict):
+            return {"score": 0.0, "missing": [], "present": []}
         
-        self.collection_skills[skill["skill_id"]] = skill
+        vuln_type = evidence.get("vuln_type") or evidence.get("type")
+        required = _required_types_for(vuln_type)
         
-        logger.info(f"[EvidenceSkills] Created collection skill for {vuln_type}")
+        # Build the set of evidence-type tokens present. We accept either
+        # nested ``evidence.evidence[type]`` keys or flat ``evidence[type]``
+        # keys so callers don't have to reshape upstream payloads.
+        present_pool: Set[str] = set()
+        nested = evidence.get("evidence")
+        if isinstance(nested, dict):
+            present_pool.update(k for k, v in nested.items() if v)
+        for key, value in evidence.items():
+            if key in {"vuln_type", "type", "evidence", "scan_id"}:
+                continue
+            if value:
+                present_pool.add(key)
         
-        return skill
-    
-    def get_collection_skill(self, vuln_type: str) -> Optional[Dict[str, Any]]:
-        """Get evidence collection skill for vulnerability type."""
-        for skill in self.collection_skills.values():
-            if skill["vuln_type"] == vuln_type:
-                return skill
-        return None
-    
-    def enforce_required_evidence(
-        self,
-        vuln_type: str,
-        collected_evidence: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Ensure required evidence is collected for vulnerability type.
-        Returns validation result with missing evidence.
-        """
-        required_types = self.bridge._get_required_evidence_types(vuln_type)
+        present = sorted(required & present_pool)
+        missing = sorted(required - present_pool)
+        extras = present_pool - required
         
-        missing = []
-        present = []
-        
-        for evidence_type in required_types:
-            if evidence_type in collected_evidence:
-                present.append(evidence_type)
-            else:
-                missing.append(evidence_type)
-        
-        result = {
-            "complete": len(missing) == 0,
-            "present": present,
-            "missing": missing,
-            "completeness": len(present) / len(required_types) if required_types else 1.0
-        }
-        
-        if not result["complete"]:
-            logger.warning(f"[EvidenceSkills] Missing required evidence for {vuln_type}: {missing}")
-        
-        return result
-    
-    def track_evidence_quality_over_time(
-        self,
-        vuln_type: str
-    ) -> Dict[str, Any]:
-        """Track evidence quality metrics over time."""
-        # Get quality history for this vuln type
-        relevant_scores = [
-            score for score in self.bridge.quality_history
-            if score.vulnerability_id.startswith(vuln_type)
-        ]
-        
-        if not relevant_scores:
-            return {
-                "vuln_type": vuln_type,
-                "samples": 0,
-                "avg_quality": 0.0,
-                "trend": "no_data"
-            }
-        
-        # Calculate average quality
-        avg_quality = sum(s.quality_score for s in relevant_scores) / len(relevant_scores)
-        
-        # Calculate trend (compare first half vs second half)
-        mid = len(relevant_scores) // 2
-        if mid > 0:
-            first_half_avg = sum(s.quality_score for s in relevant_scores[:mid]) / mid
-            second_half_avg = sum(s.quality_score for s in relevant_scores[mid:]) / (len(relevant_scores) - mid)
-            
-            if second_half_avg > first_half_avg + 0.1:
-                trend = "improving"
-            elif second_half_avg < first_half_avg - 0.1:
-                trend = "declining"
-            else:
-                trend = "stable"
+        # Score: completeness ratio + capped bonus for extra evidence types.
+        # No required types -> treat as fully satisfied (score 1.0) so we
+        # don't penalise vuln classes we haven't mapped yet.
+        if required:
+            completeness = len(present) / len(required)
         else:
-            trend = "insufficient_data"
+            completeness = 1.0
+        
+        bonus = min(
+            self.EVIDENCE_QUALITY_METRICS["extra_type_bonus"] * len(extras),
+            self.EVIDENCE_QUALITY_METRICS["extra_type_bonus_cap"],
+        )
+        score = max(0.0, min(1.0, completeness * self.EVIDENCE_QUALITY_METRICS["completeness_weight"] + bonus))
         
         return {
-            "vuln_type": vuln_type,
-            "samples": len(relevant_scores),
-            "avg_quality": round(avg_quality, 2),
-            "trend": trend,
-            "latest_quality": relevant_scores[-1].quality_score if relevant_scores else 0.0
+            "score": round(score, 4),
+            "missing": missing,
+            "present": present,
         }
-
-
-# Global evidence collection skill manager
-evidence_skill_manager: Optional[EvidenceCollectionSkillManager] = None
-
-
-def initialize_evidence_skills(forensic_bridge: ForensicLearningBridge):
-    """Initialize the global evidence collection skill manager."""
-    global evidence_skill_manager
-    evidence_skill_manager = EvidenceCollectionSkillManager(forensic_bridge)
-    return evidence_skill_manager
+    
+    # ------------------------------------------------------------------
+    # Task 8.4 — learn_evidence_requirements
+    # ------------------------------------------------------------------
+    async def learn_evidence_requirements(
+        self,
+        vuln_type: str,
+        evidence: Dict[str, Any],
+        scan_id: str,
+    ) -> bool:
+        """Record which evidence types accompanied a finding, per vuln_type.
+        
+        For every evidence-type token present in ``evidence``, this method
+        either creates or reinforces a ``pattern_type="evidence_requirement"``
+        row in ``learning_engine.patterns`` keyed by ``(vuln_type, evidence_type)``.
+        Each row's ``success_count`` increments on every observation so the
+        resulting confidence/success_rate doubles as a value score.
+        
+        Returns ``True`` if at least one pattern row was written or
+        reinforced; ``False`` on invalid input or when no learning_engine is
+        attached (Phase-1 default).
+        """
+        if self.learning_engine is None:
+            return False
+        if not isinstance(vuln_type, str) or not vuln_type.strip():
+            return False
+        if not isinstance(evidence, dict):
+            return False
+        
+        vuln_norm = vuln_type.strip().lower()
+        
+        # Collect evidence-type tokens (same dual-shape handling as
+        # analyze_evidence_quality so callers can pass the same dict).
+        evidence_types: Set[str] = set()
+        nested = evidence.get("evidence")
+        if isinstance(nested, dict):
+            evidence_types.update(k for k, v in nested.items() if v)
+        for key, value in evidence.items():
+            if key in {"vuln_type", "type", "evidence", "scan_id"}:
+                continue
+            if value:
+                evidence_types.add(key)
+        
+        if not evidence_types:
+            return False
+        
+        # Lazy import — keeps this module importable even in environments
+        # where learning_engine's heavy deps (memory_store, knowledge_graph)
+        # are stubbed or unavailable.
+        try:
+            from backend.core.learning_engine import LearningPattern
+        except Exception as e:  # pragma: no cover - import path issue
+            logger.warning("[ForensicBridge] LearningPattern import failed: %s", e)
+            return False
+        
+        patterns_store = getattr(self.learning_engine, "patterns", None)
+        if not isinstance(patterns_store, dict):
+            return False
+        
+        now = time.time()
+        wrote_any = False
+        required_set = _required_types_for(vuln_type)
+        
+        for ev_type in sorted(evidence_types):
+            pattern_data = {
+                "vuln_type": vuln_norm,
+                "evidence_type": ev_type,
+                # Tag whether this evidence type is "required" by the static
+                # map — useful when adapt_evidence_collection wants to split
+                # learned signals from baseline requirements.
+                "is_required_by_map": ev_type in required_set,
+                "scan_id": scan_id,
+                "source": "evidence_requirement",
+            }
+            pattern_id = self._generate_pattern_id(
+                "evidence_requirement",
+                {"vuln_type": vuln_norm, "evidence_type": ev_type},
+            )
+            
+            existing = patterns_store.get(pattern_id)
+            if existing is not None:
+                existing.success_count += 1
+                existing.scan_count += 1
+                existing.last_seen = now
+                existing.pattern_data["scan_id"] = scan_id
+                if hasattr(existing, "update_confidence"):
+                    existing.update_confidence()
+                wrote_any = True
+            else:
+                pattern = LearningPattern(
+                    pattern_id=pattern_id,
+                    pattern_type="evidence_requirement",
+                    pattern_data=pattern_data,
+                    confidence=0.5,
+                    success_count=1,
+                    failure_count=0,
+                    last_seen=now,
+                    first_seen=now,
+                    scan_count=1,
+                )
+                if hasattr(pattern, "update_confidence"):
+                    pattern.update_confidence()
+                patterns_store[pattern_id] = pattern
+                wrote_any = True
+        
+        # Persist off the event loop (§29.13). Persistence failure is
+        # logged but not propagated — learning is best-effort.
+        if wrote_any:
+            saver = getattr(self.learning_engine, "_save_patterns", None)
+            if callable(saver):
+                try:
+                    await asyncio.to_thread(saver)
+                except Exception as e:  # pragma: no cover - disk hiccup
+                    logger.warning("[ForensicBridge] persist failed: %s", e)
+        
+        return wrote_any
+    
+    # ------------------------------------------------------------------
+    # Task 8.6 — adapt_evidence_collection
+    # ------------------------------------------------------------------
+    def adapt_evidence_collection(self, vuln_type: str) -> Dict[str, List[str]]:
+        """Return a tiered evidence-collection strategy for ``vuln_type``.
+        
+        The strategy splits evidence-type tokens into three buckets:
+          ``required``    — types in the static map for this vuln_type
+                            (always collected)
+          ``recommended`` — types with high learned value (success_rate > 0.6
+                            AND success_count >= 3)
+          ``optional``    — types with at least one observation but below
+                            the recommended threshold
+        
+        Each bucket is sorted, de-duplicated, and disjoint (a type promoted
+        to a higher tier won't reappear in a lower tier).
+        """
+        required = sorted(_required_types_for(vuln_type))
+        recommended: List[str] = []
+        optional: List[str] = []
+        
+        # Phase-1 fallback: no learning_engine -> just emit baseline required.
+        patterns_store = (
+            getattr(self.learning_engine, "patterns", None)
+            if self.learning_engine is not None
+            else None
+        )
+        if not isinstance(patterns_store, dict):
+            return {"required": required, "recommended": [], "optional": []}
+        
+        vuln_norm = (vuln_type or "").strip().lower()
+        seen: Set[str] = set(required)
+        
+        for pattern in patterns_store.values():
+            if getattr(pattern, "pattern_type", None) != "evidence_requirement":
+                continue
+            data = getattr(pattern, "pattern_data", {}) or {}
+            if data.get("vuln_type") != vuln_norm:
+                continue
+            ev_type = data.get("evidence_type")
+            if not ev_type or ev_type in seen:
+                continue
+            
+            success_count = int(getattr(pattern, "success_count", 0) or 0)
+            success_rate = float(getattr(pattern, "success_rate", 0.0) or 0.0)
+            
+            if success_rate > 0.6 and success_count >= 3:
+                recommended.append(ev_type)
+            elif success_count >= 1:
+                optional.append(ev_type)
+            seen.add(ev_type)
+        
+        recommended.sort()
+        optional.sort()
+        return {
+            "required": required,
+            "recommended": recommended,
+            "optional": optional,
+        }
+    
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _generate_pattern_id(pattern_type: str, key_data: Dict[str, Any]) -> str:
+        """Deterministic SHA-256-based id matching learning_engine.py's scheme."""
+        import hashlib
+        import json
+        data_str = json.dumps(key_data, sort_keys=True, default=str)
+        digest = hashlib.sha256(f"{pattern_type}:{data_str}".encode()).hexdigest()[:16]
+        return f"{pattern_type}_{digest}"

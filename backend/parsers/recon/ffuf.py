@@ -1,16 +1,37 @@
 """Parser for ffuf JSON output."""
 from __future__ import annotations
+import json
 from pathlib import Path
-from backend.parsers.recon.base import ParsedEntity, safe_json_file
+from backend.parsers.recon.base import ParsedEntity, safe_json_file, safe_json_lines
 
 
 def parse_ffuf_json(path: Path | str) -> list[ParsedEntity]:
+    """Parse ffuf output. Handles BOTH the canonical JSON file (-o ...json)
+    where ffuf writes ``{"results":[...]}`` and the JSON-Lines stream that
+    ``-json`` emits to stdout (one record per line). Many real runs end up
+    writing JSONL to the stdout artifact when ffuf exits via -maxtime, so the
+    parser falls back to per-line parsing if the whole-file JSON load returns
+    nothing useful."""
     entities: list[ParsedEntity] = []
-    data = safe_json_file(path)
-    results = data.get("results", []) if isinstance(data, dict) else data if isinstance(data, list) else []
+    p = Path(path)
+    if not p.exists():
+        return entities
+    data = safe_json_file(p)
+    results: list[dict] = []
+    if isinstance(data, dict):
+        results = data.get("results", []) or []
+    elif isinstance(data, list):
+        results = data
+    if not results:
+        # Stream of JSONL records (ffuf -json on stdout) — yield each obj.
+        for row in safe_json_lines(p):
+            if isinstance(row, dict) and (row.get("url") or row.get("input")):
+                results.append(row)
     seen: set[str] = set()
     for r in results:
-        url = str(r.get("url", r.get("input", {}).get("FUZZ", "")))
+        if not isinstance(r, dict):
+            continue
+        url = str(r.get("url", r.get("input", {}).get("FUZZ", "") if isinstance(r.get("input"), dict) else ""))
         if not url or url in seen: continue
         seen.add(url)
         status = int(r.get("status", 0) or 0)
