@@ -80,8 +80,8 @@ class WorkerNode:
                     try:
                         await self.redis_client.lpush(
                             "pending_tasks", json.dumps(task))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Worker[%s] re-queue lpush failed: %s", self.id, e)
                     logger.debug("Worker[%s] re-queued task %s (needs %s, "
                                  "have %s)", self.id,
                                  task.get("task_id"), required, self.specialty)
@@ -104,8 +104,8 @@ class WorkerNode:
         try:
             await self.redis_client.hdel("workers", self.id)
             await self.redis_client.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Worker[%s] shutdown cleanup failed: %s", self.id, e)
 
     async def send_heartbeat(self):
         # Heartbeat with backoff on Redis errors so we don't busy-spin
@@ -124,7 +124,12 @@ class WorkerNode:
     async def execute_task(self, task: Dict):
         tid = task.get("task_id", str(uuid.uuid4()))
         scan_id = task.get("scan_id", "GLOBAL")
-        module_id = task.get("config", {}).get("module_id")
+        # HIGH-08: Validate task config structure before use
+        task_config = task.get("config", {}) or {}
+        if not isinstance(task_config, dict):
+            logger.warning("[Worker] Invalid task config type: %s", type(task_config).__name__)
+            return
+        module_id = task_config.get("module_id")
         agent_class = task.get("agent_class")
 
         # Delegation task path (Architecture §5.1.2): a child-agent packet from
@@ -154,13 +159,17 @@ class WorkerNode:
                 "tech_auth_bypass": ("backend.modules.tech.auth_bypass", "AuthBypassTester")
             }
 
-            if module_id in module_map:
-                path, class_name = module_map[module_id]
-                module_pkg = importlib.import_module(path)
-                module_class = getattr(module_pkg, class_name)
-                instance = module_class()
+            if module_id not in module_map:
+                raise ValueError(f"Unknown module_id: {module_id}")
+            path, class_name = module_map[module_id]
+            module_pkg = importlib.import_module(path)
+            module_class = getattr(module_pkg, class_name)
+            instance = module_class()
 
                 from backend.core.protocol import JobPacket
+                # FIX-019: Validate task data before constructing JobPacket
+                if not isinstance(task, dict) or not task.get("target"):
+                    raise ValueError("Invalid task: missing 'target' field")
                 packet = JobPacket(**task)
 
                 # 1. Generate Payloads
@@ -247,8 +256,14 @@ class WorkerNode:
         result = {"status": "failed", "findings": [], "artifacts": [], "summary": "", "budget_used": 0}
         try:
             await self.update_task_status(tid, "RUNNING")
-            runner = DelegationManager._runners.get(agent_class)
-            if runner is None:
+            # FIX-011: Validate agent_class against explicit allowlist before execution
+        allowed_runner_classes = {k for k in DelegationManager._runners.keys()}
+        if agent_class not in allowed_runner_classes:
+            result["summary"] = f"agent_class '{agent_class}' not in allowlist"
+            await self.update_task_status(tid, "FAILED")
+            return
+        runner = DelegationManager._runners.get(agent_class)
+        if runner is None:
                 result["summary"] = f"no in-process runner for {agent_class}"
             else:
                 out = await runner(context, budget) or {}
@@ -267,8 +282,8 @@ class WorkerNode:
         finally:
             try:
                 await self.redis_client.set(f"delegation_result:{tid}", json.dumps(result), ex=900)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Worker[%s] delegation_result write failed: %s", self.id, e)
 
     async def update_task_status(self, tid: str, status: str):
         # Persistent ledger update is best-effort. Worker keeps moving even
@@ -276,9 +291,9 @@ class WorkerNode:
         if self.supabase is None:
             return
         try:
-            await asyncio.to_thread(
+            await asyncio.wait_for(asyncio.to_thread(
                 lambda: self.supabase.table("task_assignments").update(
                     {"status": status, "updated_at": datetime.now().isoformat()}
-                ).eq("task_id", tid).execute())
+                ).eq("task_id", tid).execute()), timeout=30)
         except Exception as exc:
             logger.debug("Worker[%s] update_task_status skipped: %s", self.id, exc)

@@ -59,14 +59,12 @@ const NewScan = ({ navigate }) => {
 
         const handleMessage = (event) => {
             if (event.data?.type === 'ANTIGRAVITY_EXTENSION_CONNECTED') {
-                console.log("[FRONTEND] Extension Handshake Success (postMessage)");
                 setIsConnected(true);
                 localConnectedRef.current = true;
             }
         };
 
         const handleCustomEvent = () => {
-            console.log("[FRONTEND] Extension Handshake Success (CustomEvent)");
             setIsConnected(true);
             localConnectedRef.current = true;
         };
@@ -84,7 +82,6 @@ const NewScan = ({ navigate }) => {
                 if (res.ok) {
                     const data = await res.json();
                     if (data.spy_connected || data.extensions_active > 0) {
-                        console.log("[FRONTEND] Extension detected via backend health poll");
                         setIsConnected(true);
                         localConnectedRef.current = true;
                     }
@@ -106,7 +103,6 @@ const NewScan = ({ navigate }) => {
     useEffect(() => {
         const unsub = subscribe((data) => {
             if (data.type === 'RECON_PACKET') {
-                console.log("Recon Data:", data.payload);
                 const url = data.payload.url || "";
                 const isBackendTraffic = url.includes('127.0.0.1:8000') ||
                     url.includes('localhost:8000') ||
@@ -121,9 +117,7 @@ const NewScan = ({ navigate }) => {
                     }
                 }
             } else if (data.type === 'ATTACK_HIT') {
-                console.log("Attack Result:", data.payload);
             } else if (data.type === 'SPY_STATUS') {
-                console.log("Spy Status Update:", data.payload);
                 if (isExtensionEnabledRef.current) {
                     if (data.payload.connected) {
                         setIsConnected(true);
@@ -207,7 +201,6 @@ const NewScan = ({ navigate }) => {
         setIsLaunching(true);
 
         try {
-            console.log("Launching scan via POST /api/scans", { target_url: targetUrl, modules: selectedModules });
             const result = await createScan({
                 target_url: targetUrl,
                 mode: "STANDARD",
@@ -215,7 +208,6 @@ const NewScan = ({ navigate }) => {
             });
 
             const scanId = result?.scan_id || null;
-            console.log("Scan accepted:", scanId);
             setLaunchedScanId(scanId);
 
             // Brief pause so the backend can register the new scan record before the
@@ -223,7 +215,7 @@ const NewScan = ({ navigate }) => {
             await new Promise((resolve) => setTimeout(resolve, 800));
             navigate('scans');
         } catch (err) {
-            console.error("Launch failed:", err);
+            // console.error("Launch failed:", err);
             const msg = err && err.message ? err.message : 'Unknown error';
             const friendly = msg.includes('Failed to reach backend')
                 ? "Backend is offline. Please ensure the VulAgent Terminal is running on port 8000."

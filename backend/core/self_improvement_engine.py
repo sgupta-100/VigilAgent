@@ -128,8 +128,8 @@ class SelfImprovementEngine:
                 for aid, d in json.loads(pf.read_text(encoding="utf-8")).items():
                     self.profiles[aid] = AgentProfile(agent_id=aid, **{
                         k: v for k, v in d.items() if k != "agent_id"})
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[SelfImprovement] episode dedup skipped: %s", e)
 
     def _save(self) -> None:
         try:

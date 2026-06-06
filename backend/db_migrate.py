@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 
+
 def main():
     from dotenv import load_dotenv
     load_dotenv()

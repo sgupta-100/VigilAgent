@@ -24,7 +24,8 @@ import logging
 
 try:  # PyYAML is already a transitive dep used elsewhere in backend.core
     import yaml  # type: ignore
-except Exception:  # pragma: no cover - graceful degradation
+except Exception as _yaml_exc:  # pragma: no cover - graceful degradation
+    logger.debug("PyYAML not available: %s", _yaml_exc)
     yaml = None  # type: ignore
 
 logger = logging.getLogger(__name__)
@@ -382,7 +383,9 @@ class IntegrationConfig:
         
         # Gradual rollout - use consistent hashing
         # This ensures same scan_id always gets same result
-        scan_hash = hash(scan_id) % 100
+        # HIGH-71: Use deterministic hash (hash() is randomized per-process)
+        import hashlib as _hl
+        scan_hash = int.from_bytes(_hl.sha256(scan_id.encode()).digest()[:4], 'big') % 100
         return scan_hash < rollout_pct
     
     def get_feature_status(self) -> Dict[str, Dict[str, any]]:

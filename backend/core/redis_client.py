@@ -63,7 +63,9 @@ class RedisClient:
                 max_connections=self.config.max_connections,
                 socket_timeout=self.config.socket_timeout,
                 socket_connect_timeout=self.config.socket_connect_timeout,
-                decode_responses=self.config.decode_responses
+                decode_responses=self.config.decode_responses,
+                retry_on_timeout=True,
+                health_check_interval=self.config.health_check_interval,
             )
             
             # Test connection
@@ -92,6 +94,20 @@ class RedisClient:
                 if self._is_healthy:
                     logger.error(f"Redis health check failed: {e}")
                 self._is_healthy = False
+                # HIGH-40: Attempt reconnection on health check failure
+                try:
+                    if self._client:
+                        await self._client.close()
+                    self._client = aioredis.from_url(
+                        self.config.url,
+                        max_connections=self.config.max_connections,
+                        socket_timeout=self.config.socket_timeout,
+                        socket_connect_timeout=self.config.socket_connect_timeout,
+                        decode_responses=self.config.decode_responses,
+                        retry_on_timeout=True,
+                    )
+                except Exception as reconnect_err:
+                    logger.debug(f"Redis reconnect attempt failed: {reconnect_err}")
     
     async def shutdown(self) -> None:
         """Shutdown Redis client and cleanup resources"""

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Awaitable, Callable
 
 from backend.core.conversation_ast import BodyPair, ConversationAST
+
+logger = logging.getLogger("ConversationCompactor")
 
 
 MAX_CHAIN_BYTES = 64 * 1024
@@ -57,8 +60,9 @@ async def _summarize_text(text: str, summarizer: Callable[[str], Awaitable[str]]
     if summarizer:
         try:
             return await summarizer(text)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"[ConversationCompactor] summarizer failed: {exc}")
+            # Summarizer failure is non-fatal; fall through to fallback.
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     head = " ".join(lines[:12])
     return (head[:1800] or "Older conversation/tool output summarized due to context limits.")

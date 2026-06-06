@@ -182,8 +182,8 @@ class GeneralIntelligence5:
         try:
             rot13_decoded = codecs.encode(text, 'rot_13')
             candidates.add(rot13_decoded)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("ROT13 decode failed: %s", e)
         
         # 3. RECURSIVE DECODING LOOP (Base64, URL, Hex)
         current = text
@@ -197,8 +197,8 @@ class GeneralIntelligence5:
                     candidates.add(url_decoded)
                     current = url_decoded
                     decoded_something = True
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("URL decode failed at depth %d: %s", depth, e)
             
             # B. Base64 Decode
             if not decoded_something:
@@ -210,8 +210,8 @@ class GeneralIntelligence5:
                         candidates.add(b64_decoded)
                         current = b64_decoded
                         decoded_something = True
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Base64 decode failed at depth %d: %s", depth, e)
             
             # C. Hex Decode
             if not decoded_something:
@@ -221,8 +221,8 @@ class GeneralIntelligence5:
                         candidates.add(hex_decoded)
                         current = hex_decoded
                         decoded_something = True
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Hex decode failed at depth %d: %s", depth, e)
             
             if not decoded_something:
                 break

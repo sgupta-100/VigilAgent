@@ -20,10 +20,13 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import re
 
 from backend.core.base import BaseArsenalModule
 from backend.core.protocol import JobPacket, TaskTarget, Vulnerability
+
+logger = logging.getLogger("JWTCracker")
 
 
 def _b64url_decode(value: str) -> bytes:
@@ -257,7 +260,8 @@ class JWTTokenCracker(BaseArsenalModule):
                     cortex = get_cortex_engine()
                     jwt_analysis = await cortex.analyze_jwt_weakness(
                         token=token, url=target.url)
-                except Exception:
+                except Exception as exc:
+                    logger.debug("[JWTCracker] AI JWT weakness analysis failed: %s", exc)
                     jwt_analysis = None
 
                 weaknesses = (jwt_analysis or {}).get("weaknesses") or []

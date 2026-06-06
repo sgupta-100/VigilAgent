@@ -496,7 +496,8 @@ class BrowserOrchestrator:
             return False
         try:
             return bool(self.pinchtab.is_available())
-        except Exception:
+        except Exception as exc:
+            logger.debug("[BrowserOrchestrator] PinchTab ready check failed: %s", exc)
             return False
 
     def _select_engine(self, requested: BrowserEngine, stealth: bool, url: str) -> BrowserEngine:
@@ -917,7 +918,8 @@ class BrowserOrchestrator:
             try:
                 probe = await self.openclaw.is_truly_available()
                 openclaw_state = "ok" if probe else "degraded"
-            except Exception:
+            except Exception as exc:
+                logger.debug("[BrowserOrchestrator] OpenClaw health probe failed: %s", exc)
                 openclaw_state = "degraded"
 
         pinchtab_state = "ok" if (

@@ -13,7 +13,11 @@ from typing import List, Dict
 from pydantic import BaseModel
 from backend.core.state import stats_db_manager
 from backend.core.rate_limiter import rate_limit
+import logging
+import hmac
 from backend.core.csrf_protection import csrf_protection, get_session_id, csrf_protect
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -27,7 +31,8 @@ def load_config():
     try:
         with open(CONFIG_FILE, "r") as f:
             return json.load(f)
-    except Exception:
+    except Exception as e:
+        logger.debug("Dashboard config load failed: %s", e)
         return {"secret": None, "enabled": False}
 
 def save_config(config):
@@ -45,7 +50,8 @@ def load_session():
             if data.get("expires", 0) < time.time():
                 return {"authenticated": False, "token": None, "expires": 0}
             return data
-    except Exception:
+    except Exception as e:
+        logger.debug("Dashboard session load failed: %s", e)
         return {"authenticated": False, "token": None, "expires": 0}
 
 def save_session(session_data):
@@ -77,7 +83,7 @@ def _validate_auth(authorization: str = None):
     if not authorization or not authorization.startswith("Bearer "):
         return False, session
     provided_token = authorization.split(" ", 1)[1]
-    if provided_token != session.get("token"):
+    if not hmac.compare_digest(provided_token, session.get("token") or ""):
         return False, session
     return True, session
 
@@ -117,7 +123,8 @@ def _get_browser_health_block():
     }
     try:
         from backend.core.agent_health_monitor import health_monitor
-    except Exception:
+    except Exception as e:
+        logger.debug("Agent health monitor unavailable: %s", e)
         return block
 
     # The browser-health API may live on the monitor itself or on a sibling
@@ -129,7 +136,8 @@ def _get_browser_health_block():
         ext = getattr(_ahm_mod, "browser_health_monitor", None)
         if ext is not None and ext is not health_monitor:
             candidates.append(ext)
-    except Exception:
+    except Exception as ext_e:
+        logger.debug("Browser health monitor extension unavailable: %s", ext_e)
         pass
 
     for src in candidates:
@@ -146,9 +154,11 @@ def _get_browser_health_block():
                 continue
             try:
                 data = summary_fn()
-            except Exception:
+            except Exception as _sum_e:
+            logger.debug("Browser health summary fallback failed: %s", _sum_e)
                 continue
-        except Exception:
+        except Exception as _getter_e:
+            logger.debug("Browser health getter failed: %s", _getter_e)
             continue
 
         if not isinstance(data, dict):
@@ -390,6 +400,7 @@ async def get_csrf_token(request: Request):
 
 @router.post("/settings/2fa/generate")
 @rate_limit()
+@csrf_protect()
 async def generate_2fa(request: Request, authorization: str = Header(None)):
     config = load_config()
     # If 2FA is enabled OR an active session exists, require valid auth token
@@ -419,7 +430,6 @@ async def generate_2fa(request: Request, authorization: str = Header(None)):
     img_str = base64.b64encode(buffered.getvalue()).decode()
     
     return {
-        "secret": secret,
         "qr_code": f"data:image/png;base64,{img_str}",
         "qr_code_base64": f"data:image/png;base64,{img_str}"
     }

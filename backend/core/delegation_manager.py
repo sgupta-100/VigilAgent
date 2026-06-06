@@ -243,8 +243,7 @@ class DelegationManager:
         if hook is None:
             return
         try:
-            hook({"event": event, "scan_id": self.scan_id, "depth": self.depth, **fields})
-        except Exception:  # pragma: no cover - telemetry must never break control flow
+            hook({"event": event, "scan_id": self.scan_id, "depth": self.depth, **fields})            except Exception:  # pragma: no cover - telemetry must never break control flow
             logger.debug("delegation event hook failed for %s", event, exc_info=True)
 
     # ── Runner registration (Architecture §5.1.2 worker specialties) ──────────
@@ -414,12 +413,12 @@ class DelegationManager:
         # Await result key written by the worker (durable task lease §5.6).
         redis = master.redis_client
         deadline = time.time() + spec.timeout_s
-        while time.time() < deadline:
-            try:
+        while time.time() < deadline:            try:
                 raw = await redis.get(result_key)
-            except Exception:
+            except Exception as redis_exc:
+                logger.debug(f"Delegation result key read failed: {redis_exc}")
                 raw = None
-            if raw:
+        if raw:
                 import json
                 data = json.loads(raw)
                 raw_status = str(data.get("status", "completed"))

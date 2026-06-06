@@ -38,7 +38,8 @@ class EndpointTracker:
             if parsed.query:
                 normalized += f"?{parsed.query}"
             return normalized.lower().rstrip('/')
-        except Exception:
+        except Exception as exc:
+            logger.debug("EndpointTracker: URL parse failed for %s: %s", url, exc)
             return url.lower().rstrip('/')
     
     def add_discovered(self, url: str, source: str = "unknown") -> bool:

@@ -41,7 +41,7 @@ const Scans = ({ navigate }) => {
             const data = await res.json();
             setScans(Array.isArray(data) ? data : []);
         } catch (err) {
-            console.error("Failed to fetch scans:", err);
+            // console.error("Failed to fetch scans:", err);
         }
     }, []);
 
@@ -161,7 +161,7 @@ const Scans = ({ navigate }) => {
             window.URL.revokeObjectURL(url);
             document.body.removeChild(a);
         } catch (error) {
-            console.error('Error downloading PDF:', error);
+            // console.error('Error downloading PDF:', error);
             alert('Failed to download PDF report. Ensure backend is running.');
         } finally {
             setDownloading(null);

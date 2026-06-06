@@ -10,6 +10,7 @@ Provides performance optimizations for browser operations:
 """
 
 import asyncio
+import logging
 from typing import Dict, Optional, List
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,6 +18,8 @@ import json
 
 from backend.core.browser_orchestrator import BrowserOrchestrator
 from backend.core.task_manager import TaskManager
+
+logger = logging.getLogger("BrowserOptimization")
 
 
 class BrowserContextPool:
@@ -40,7 +43,7 @@ class BrowserContextPool:
                 context = self._available_contexts.pop()
                 if scan_id:
                     self._active_contexts[scan_id] = context
-                print(f"[BrowserContextPool] Reused context (available: {len(self._available_contexts)})")
+                logger.debug(f"[BrowserContextPool] Reused context (available: {len(self._available_contexts)})")
                 return context
             
             # Create new context if under limit
@@ -53,11 +56,11 @@ class BrowserContextPool:
                 }
                 if scan_id:
                     self._active_contexts[scan_id] = context
-                print(f"[BrowserContextPool] Created new context (active: {len(self._active_contexts)})")
+                logger.debug(f"[BrowserContextPool] Created new context (active: {len(self._active_contexts)})")
                 return context
             
             # Wait for a context to become available
-            print(f"[BrowserContextPool] Pool exhausted, waiting for available context...")
+            logger.warning(f"[BrowserContextPool] Pool exhausted, waiting for available context...")
             await asyncio.sleep(1)
             return await self.acquire(scan_id)
     
@@ -73,7 +76,7 @@ class BrowserContextPool:
             # Add back to available pool if under limit
             if len(self._available_contexts) < self.max_contexts:
                 self._available_contexts.append(context)
-                print(f"[BrowserContextPool] Released context (available: {len(self._available_contexts)})")
+                logger.debug(f"[BrowserContextPool] Released context (available: {len(self._available_contexts)})")
             else:
                 # Close context if pool is full
                 await self._close_context(context)
@@ -94,12 +97,12 @@ class BrowserContextPool:
                 await self._close_context(context)
             
             if to_remove:
-                print(f"[BrowserContextPool] Cleaned up {len(to_remove)} idle contexts")
+                logger.debug(f"[BrowserContextPool] Cleaned up {len(to_remove)} idle contexts")
     
     async def _close_context(self, context: dict):
         """Close a browser context."""
         # Would close actual browser context here
-        print(f"[BrowserContextPool] Closed context {context.get('id')}")
+        logger.debug(f"[BrowserContextPool] Closed context {context.get('id')}")
     
     async def close_all(self):
         """Close all contexts in the pool."""
@@ -112,7 +115,7 @@ class BrowserContextPool:
                 await self._close_context(context)
             self._active_contexts.clear()
             
-            print(f"[BrowserContextPool] Closed all contexts")
+            logger.debug(f"[BrowserContextPool] Closed all contexts")
 
 
 class FrameworkDetectionCache:
@@ -135,7 +138,7 @@ class FrameworkDetectionCache:
                 
                 # Check if cache is still valid
                 if (datetime.now() - cached_at).total_seconds() < self.cache_ttl:
-                    print(f"[FrameworkCache] Cache hit for {domain}: {entry.get('framework')}")
+                    logger.debug(f"[FrameworkCache] Cache hit for {domain}: {entry.get('framework')}")
                     return entry.get("framework")
                 else:
                     # Cache expired
@@ -150,13 +153,13 @@ class FrameworkDetectionCache:
                 "framework": framework,
                 "cached_at": datetime.now()
             }
-            print(f"[FrameworkCache] Cached {domain}: {framework}")
+            logger.debug(f"[FrameworkCache] Cached {domain}: {framework}")
     
     async def clear(self):
         """Clear all cached results."""
         async with self._lock:
             self._cache.clear()
-            print(f"[FrameworkCache] Cache cleared")
+            logger.debug(f"[FrameworkCache] Cache cleared")
     
     def get_stats(self) -> dict:
         """Get cache statistics."""
@@ -187,14 +190,14 @@ class BrowserResourceMonitor:
             self._monitor_loop(context_pool),
             name="resource_monitor"
         )
-        print(f"[BrowserResourceMonitor] Started monitoring (threshold: {self.memory_threshold_mb}MB)")
+        logger.info(f"[BrowserResourceMonitor] Started monitoring (threshold: {self.memory_threshold_mb}MB)")
     
     async def stop_monitoring(self):
         """Stop resource monitoring."""
         self._monitoring = False
         await self._task_manager.cancel_all()
         self._monitor_task = None
-        print(f"[BrowserResourceMonitor] Stopped monitoring")
+        logger.info(f"[BrowserResourceMonitor] Stopped monitoring")
     
     async def _monitor_loop(self, context_pool: BrowserContextPool):
         """Monitor resource usage and trigger cleanup."""
@@ -204,7 +207,7 @@ class BrowserResourceMonitor:
                 memory_usage_mb = await self._get_memory_usage()
                 
                 if memory_usage_mb > self.memory_threshold_mb:
-                    print(f"[BrowserResourceMonitor] Memory threshold exceeded: {memory_usage_mb}MB")
+                    logger.warning(f"[BrowserResourceMonitor] Memory threshold exceeded: {memory_usage_mb}MB")
                     await context_pool.cleanup_idle(idle_timeout=60)
                 
                 # Check every 30 seconds
@@ -213,7 +216,7 @@ class BrowserResourceMonitor:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                print(f"[BrowserResourceMonitor] Monitoring error: {e}")
+                logger.error(f"[BrowserResourceMonitor] Monitoring error: {e}")
                 await asyncio.sleep(30)
     
     async def _get_memory_usage(self) -> int:
@@ -264,7 +267,7 @@ class OptimizedBrowserOrchestrator:
                     # Start resource monitoring
                     await cls._resource_monitor.start_monitoring(cls._context_pool)
                     
-                    print("[OptimizedBrowserOrchestrator] Singleton instance created with optimizations")
+                    logger.info("[OptimizedBrowserOrchestrator] Singleton instance created with optimizations")
         
         return cls._instance
     
@@ -315,7 +318,7 @@ class OptimizedBrowserOrchestrator:
             await cls._instance.close()
             cls._instance = None
         
-        print("[OptimizedBrowserOrchestrator] Cleanup complete")
+        logger.info("[OptimizedBrowserOrchestrator] Cleanup complete")
     
     @classmethod
     def get_stats(cls) -> dict:

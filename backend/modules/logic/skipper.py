@@ -30,10 +30,13 @@ Architecture §17/§25 reinforcement:
 """
 from __future__ import annotations
 
+import logging
 from urllib.parse import urljoin, urlparse
 
 from backend.core.base import BaseArsenalModule
 from backend.core.protocol import JobPacket, TaskTarget, Vulnerability
+
+logger = logging.getLogger("TheSkipper")
 
 _WORKFLOW_HINTS = (
     "checkout", "payment", "confirm", "success", "complete", "order",
@@ -77,10 +80,15 @@ class TheSkipper(BaseArsenalModule):
         # Resolve the workflow chain via Cortex (best effort).
         success_url = target.url
         try:
-            workflow_steps = await self.cortex.infer_workflow_chain(target.url)
+            cortex_engine = getattr(self, 'cortex', None)
+            if cortex_engine is None:
+                from backend.ai.cortex import get_cortex_engine
+                cortex_engine = get_cortex_engine()
+            workflow_steps = await cortex_engine.infer_workflow_chain(target.url)
             if workflow_steps:
                 success_url = urljoin(target.url, workflow_steps[-1])
-        except Exception:
+        except Exception as exc:
+            logger.debug("[Skipper] Workflow chain inference failed: %s", exc)
             workflow_steps = []
 
         targets: list[TaskTarget] = []

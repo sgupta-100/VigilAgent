@@ -11,6 +11,9 @@ from backend.core.queue import command_lane
 # Hybrid AI Engine
 from backend.ai.cortex import CortexEngine, get_cortex_engine
 from backend.core.content_boundary import content_boundary
+import logging
+
+logger = logging.getLogger("AgentZeta")
 
 class ZetaAgent(BrowserEnabledAgent):
     """
@@ -49,7 +52,7 @@ class ZetaAgent(BrowserEnabledAgent):
         self.base_concurrency = command_lane.max_concurrent
         self.throttled = False       # current governor throttle state
         self.waf_pressure = 0        # rolling 403/429/5xx burst pressure (0..10)
-        self._skill_rec_cache: Dict[str, Any] = {}
+        self._skill_rec_cache: Dict[str, Any] = {}  # HIGH-69: bounded via SkillRecallMixin or manual eviction
 
     async def setup(self):
         self.bus.subscribe(EventType.JOB_COMPLETED, self.handle_job_completion)
@@ -71,18 +74,21 @@ class ZetaAgent(BrowserEnabledAgent):
         """Kappa-style skill recall (Architecture §5.3.5, §29.9): Zeta receives
         rate-limiting, anomaly-detection, detection-of-scan, WAF-pressure, and
         runtime-governance skills. Cached per target to avoid rework."""
-        cache = self._skill_rec_cache
-        if target_url in cache:
-            return cache[target_url]
+        # HIGH-69: Use SkillRecallMixin._skill_cache() for bounded eviction
+        cache = self._skill_cache()
+        cache_key = (target_url, ("rate-limit", "waf", "anomaly", "runtime-governance"))
+        if cache_key in cache:
+            return cache[cache_key]
         recs = []
         try:
             from backend.core.skill_library import skill_library
             for vuln_class in ("rate-limit", "waf", "anomaly", "runtime-governance"):
                 recs.extend(skill_library.get_recommendations(
                     target_url=target_url, vuln_class=vuln_class, limit=3))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[{self.name}] Governance skill recall failed: {e}")
             recs = []
-        cache[target_url] = recs
+        cache[cache_key] = recs
         return recs
 
     async def handle_job_completion(self, event: HiveEvent):
@@ -109,7 +115,7 @@ class ZetaAgent(BrowserEnabledAgent):
                  if stress_level in ["HIGH", "MEDIUM"]:
                      penalty = 10 if stress_level == "HIGH" else 5
                      self.error_budget_current -= penalty
-                     print(f"[{self.name}] Server Sentiment: {stress_level} (AI: {indicators}) -> Action: {action}")
+                     logger.warning(f"[{self.name}] Server Sentiment: {stress_level} (AI: {indicators}) -> Action: {action}")
                      
                      if action == "ABORT":
                          await self.broadcast_signal("STEALTH_MODE", {"reason": f"AI: Server Stress {stress_level}"})
@@ -145,7 +151,7 @@ class ZetaAgent(BrowserEnabledAgent):
         # 4. STATISTICAL ANOMALY DETECTION (Z-Score)
         is_anomaly, reason = self.detect_anomalies()
         if is_anomaly:
-            print(f"[{self.name}] ANOMALY DETECTED: {reason}")
+            logger.warning(f"[{self.name}] ANOMALY DETECTED: {reason}")
             await self.broadcast_signal("THROTTLE", {"level": "CRITICAL", "reason": reason})
             self.error_budget_current -= 10  # Severe penalty for triggering defensive mechanisms
 
@@ -303,12 +309,12 @@ class ZetaAgent(BrowserEnabledAgent):
         if self.latency_window:
             avg_latency = sum(self.latency_window) / len(self.latency_window)
             if avg_latency > 500:
-                print(f"[{self.name}]: DENY JOB {packet.id}. High Latency ({avg_latency:.1f}ms).")
+                logger.warning(f"[{self.name}]: DENY JOB {packet.id}. High Latency ({avg_latency:.1f}ms).")
                 return False
 
         # 2. Budget Check (< 10?)
         if self.error_budget_current < 10:
-             print(f"[{self.name}]: DENY JOB {packet.id}. Low Budget ({self.error_budget_current}).")
+             logger.warning(f"[{self.name}]: DENY JOB {packet.id}. Low Budget ({self.error_budget_current}).")
              return False
 
         return True
@@ -324,7 +330,7 @@ class ZetaAgent(BrowserEnabledAgent):
             
             # Check if browser memory exceeds threshold
             if memory_info.rss > self.browser_memory_threshold:
-                print(f"[{self.name}] Browser memory threshold exceeded: {memory_info.rss / 1024 / 1024:.1f}MB")
+                logger.warning(f"[{self.name}] Browser memory threshold exceeded: {memory_info.rss / 1024 / 1024:.1f}MB")
                 
                 # Trigger cleanup
                 await self._close_idle_contexts()
@@ -341,7 +347,7 @@ class ZetaAgent(BrowserEnabledAgent):
             }
             
         except Exception as e:
-            print(f"[{self.name}] Browser memory monitoring failed: {e}")
+            logger.error(f"[{self.name}] Browser memory monitoring failed: {e}")
             return {}
     
     async def _get_active_contexts(self) -> list:
@@ -380,13 +386,13 @@ class ZetaAgent(BrowserEnabledAgent):
             return active_contexts
             
         except Exception as e:
-            print(f"[{self.name}] Context enumeration failed: {e}")
+            logger.error(f"[{self.name}] Context enumeration failed: {e}")
             return []
     
     async def _close_idle_contexts(self) -> int:
         """Close idle browser contexts to free memory."""
         try:
-            print(f"[{self.name}] Closing idle browser contexts...")
+            logger.debug(f"[{self.name}] Closing idle browser contexts...")
             
             # Access browser orchestrator through the browser property
             if not hasattr(self, 'browser') or not self.browser:
@@ -407,15 +413,15 @@ class ZetaAgent(BrowserEnabledAgent):
                     try:
                         await orchestrator.close_context(context["context_id"])
                         closed_count += 1
-                        print(f"[{self.name}] Closed idle context: {context['context_id']} (idle: {context['idle_time']:.0f}s)")
+                        logger.debug(f"[{self.name}] Closed idle context: {context['context_id']} (idle: {context['idle_time']:.0f}s)")
                     except Exception as close_err:
-                        print(f"[{self.name}] Failed to close context {context['context_id']}: {close_err}")
+                        logger.error(f"[{self.name}] Failed to close context {context['context_id']}: {close_err}")
             
             if closed_count > 0:
-                print(f"[{self.name}] Closed {closed_count} idle contexts")
+                logger.debug(f"[{self.name}] Closed {closed_count} idle contexts")
             
             return closed_count
             
         except Exception as e:
-            print(f"[{self.name}] Context cleanup failed: {e}")
+            logger.error(f"[{self.name}] Context cleanup failed: {e}")
             return 0

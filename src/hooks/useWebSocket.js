@@ -44,7 +44,7 @@ function _notifyConnect(state) {
 
 function _dispatch(data) {
     _listeners.forEach(fn => {
-        try { fn(data); } catch (e) { console.error('[useWebSocket] listener error', e); }
+        try { fn(data); } catch (e) { /* listener error — swallow to protect other subscribers */ }
     });
 }
 
@@ -67,13 +67,12 @@ function _connect() {
         // websocketUrl handles the empty-token (dev) case — token param omitted.
         _ws = new WebSocket(websocketUrl('/stream', { client_type: 'ui' }));
     } catch (e) {
-        console.error('[useWebSocket] Failed to create WebSocket', e);
+        // console.error('[useWebSocket] Failed to create WebSocket', e);
         _scheduleReconnect();
         return;
     }
 
     _ws.onopen = () => {
-        console.log('[WS] Connected to backend stream');
         _reconnectAttempts = 0; // reset on successful connect
         _notifyConnect(true);
     };
@@ -85,7 +84,7 @@ function _connect() {
         try {
             parsed = JSON.parse(event.data);
         } catch (e) {
-            console.error('[WS] Parse error — frame ignored', e);
+            // console.error('[WS] Parse error — frame ignored', e);
             return;
         }
         try {
@@ -95,7 +94,7 @@ function _connect() {
                 _dispatch(parsed);
             }
         } catch (e) {
-            console.error('[WS] Dispatch error', e);
+            // console.error('[WS] Dispatch error', e);
         }
     };
 
@@ -115,7 +114,7 @@ function _scheduleReconnect() {
 
     if (_reconnectAttempts >= MAX_ATTEMPTS) {
         _gaveUp = true;
-        console.warn(`[WS] Reconnect limit reached (${MAX_ATTEMPTS} attempts) — surfacing WS_GIVEUP`);
+        // console.warn(`[WS] Reconnect limit reached (${MAX_ATTEMPTS} attempts) — surfacing WS_GIVEUP`);
         // Notify subscribers (e.g. LiveMonitor) so they can render an
         // "OFFLINE — please refresh" state.
         _dispatch({ type: 'WS_GIVEUP', payload: { attempts: _reconnectAttempts } });
@@ -124,7 +123,6 @@ function _scheduleReconnect() {
 
     const delay = _computeBackoffMs(_reconnectAttempts);
     _reconnectAttempts += 1;
-    console.log(`[WS] Reconnect attempt ${_reconnectAttempts}/${MAX_ATTEMPTS} in ${delay}ms`);
     _reconnectTimer = setTimeout(_connect, delay);
 }
 

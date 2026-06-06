@@ -3,6 +3,7 @@ Rate Limiting Utility for API Endpoints
 Prevents abuse and DoS attacks with configurable limits per endpoint.
 """
 import time
+import threading
 from collections import defaultdict
 from typing import Dict, Tuple
 import asyncio
@@ -16,13 +17,14 @@ logger = logging.getLogger(__name__)
 class RateLimiter:
     """
     Token bucket rate limiter with per-IP tracking.
-    Thread-safe for async operations.
+    Uses threading.Lock for thread-safety when accessed from asyncio.to_thread.
     """
     
     def __init__(self):
         # Structure: {ip: {endpoint: (tokens, last_refill_time)}}
         self._buckets: Dict[str, Dict[str, Tuple[float, float]]] = defaultdict(dict)
-        self._lock = asyncio.Lock()
+        # FIX-048: Use threading.Lock for thread-safety (asyncio.Lock only protects within same event loop)
+        self._lock = threading.Lock()
         
         # Default limits (requests per minute)
         self._limits = {
@@ -58,13 +60,14 @@ class RateLimiter:
         Check if request is within rate limit.
         Returns True if allowed, raises HTTPException if rate limited.
         """
-        async with self._lock:
-            limit = self._get_limit(endpoint)
-            refill_rate = limit / 60.0  # tokens per second
-            capacity = limit  # max tokens
-            
-            current_time = time.time()
-            
+        limit = self._get_limit(endpoint)
+        refill_rate = limit / 60.0  # tokens per second
+        capacity = limit  # max tokens
+        
+        current_time = time.time()
+        
+        # FIX-048: Synchronous lock for thread-safety
+        with self._lock:
             # Get or initialize bucket for this IP+endpoint
             if endpoint not in self._buckets[client_ip]:
                 self._buckets[client_ip][endpoint] = (capacity, current_time)
@@ -96,10 +99,10 @@ class RateLimiter:
     
     async def cleanup_old_buckets(self, max_age_seconds: int = 3600):
         """Remove buckets for IPs that haven't made requests recently."""
-        async with self._lock:
-            current_time = time.time()
-            ips_to_remove = []
-            
+        current_time = time.time()
+        ips_to_remove = []
+        
+        with self._lock:
             for ip, endpoints in self._buckets.items():
                 endpoints_to_remove = []
                 for endpoint, (tokens, last_refill) in endpoints.items():
@@ -114,9 +117,9 @@ class RateLimiter:
             
             for ip in ips_to_remove:
                 del self._buckets[ip]
-            
-            if ips_to_remove:
-                logger.info(f"Cleaned up {len(ips_to_remove)} stale rate limit buckets")
+        
+        if ips_to_remove:
+            logger.info(f"Cleaned up {len(ips_to_remove)} stale rate limit buckets")
 
 
 # Global rate limiter instance

@@ -65,7 +65,8 @@ class PlaywrightFallback:
         """Full page capture: screenshot + network + cookies + console."""
         try:
             await self._ensure_browser()
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"[Playwright] Browser unavailable: {exc}")
             return {"used": False, "reason": "browser_unavailable"}
 
         context = await self._browser.new_context(
@@ -93,7 +94,8 @@ class PlaywrightFallback:
         try:
             try:
                 resp = await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"[Playwright] networkidle fallback: {exc}")
                 resp = await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             status_code = resp.status if resp else 0
 
@@ -220,8 +222,8 @@ class PlaywrightFallback:
                                 "source_page": url,
                                 "scan_id": self.scan_id,
                             }))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"[Playwright] Network parse failed: {exc}")
 
         # Cookies with security flags
         cookie_path = capture_result.get("cookie_path")
@@ -245,8 +247,8 @@ class PlaywrightFallback:
                                 "path": c.get("path", "/"),
                                 "scan_id": self.scan_id,
                             }))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"[Playwright] Cookie parse failed: {exc}")
 
         return entities
 

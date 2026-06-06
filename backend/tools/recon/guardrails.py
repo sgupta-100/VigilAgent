@@ -12,6 +12,8 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class GuardrailResult:
@@ -95,8 +97,9 @@ def validate_command(argv: tuple[str, ...] | list[str], *, allow_shell: bool = F
                     if re.search(pattern, decoded):
                         return GuardrailResult(allowed=False,
                             reason=f"encoded_dangerous_pattern:{name}")
-            except Exception:
-                pass
+            except Exception as e:
+                import logging as _log
+                _log.debug("Base64 decode check failed: %s", e)
 
     # 5. Validate binary is a known recon tool (Architecture §7, 39-tool matrix)
     known_binaries = {
@@ -124,5 +127,6 @@ def validate_output_path(path: str) -> bool:
     if ".." in normalized:
         return False
     # Must be under data/scans or a temp dir
-    allowed_prefixes = ["data", "D:\\Antigravity", "C:\\Users"]
+    # FIX-019: Restrict to project-specific scan directories only
+    allowed_prefixes = ["data", "scan_states"]
     return any(normalized.startswith(p) for p in allowed_prefixes) or "scans" in normalized

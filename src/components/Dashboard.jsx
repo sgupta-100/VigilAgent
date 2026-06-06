@@ -263,7 +263,7 @@ const Dashboard = ({ navigate, persistentState, setPersistentState }) => {
                     scanActiveRef.current = true;
                 }
             } catch (e) {
-                console.error("Failed to fetch dashboard stats", e);
+                // console.error("Failed to fetch dashboard stats", e);
             }
         };
 

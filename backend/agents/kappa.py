@@ -12,6 +12,9 @@ from backend.core.protocol import JobPacket, ResultPacket, AgentID
 from backend.core.memory import memory_store, cosine_similarity
 from backend.core.sandbox import TempWorkspace
 from backend.core.queue import command_lane
+import logging
+
+logger = logging.getLogger("AgentKappa")
 
 class KappaAgent(BrowserEnabledAgent):
     """
@@ -33,7 +36,8 @@ class KappaAgent(BrowserEnabledAgent):
         try:
             from backend.ai.cortex import CortexEngine, get_cortex_engine
             self.truth_kernel = get_cortex_engine()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[{self.name}] Cortex AI init deferred: {e}")
             self.truth_kernel = None
             
         self._embeddings_disabled = False
@@ -85,7 +89,7 @@ class KappaAgent(BrowserEnabledAgent):
         if hasattr(self.bus, "get_or_create_context"):
             _ctx = self.bus.get_or_create_context(getattr(event, "scan_id", "GLOBAL"))
             _ctx.append_event(event)
-        print(f"[{self.name}] [ARCHIVE] Verified Vulnerability Exploit Captured. Embedding (background)...")
+        logger.debug(f"[{self.name}] [ARCHIVE] Verified Vulnerability Exploit Captured. Embedding (background)...")
 
         # RICHER SCHEMA (V6 Enhancement) — synchronous, cheap.
         archive_data = {
@@ -134,7 +138,7 @@ class KappaAgent(BrowserEnabledAgent):
                 from backend.core.learning_engine import learning_engine
                 await learning_engine.learn_from_vulnerability(archive_data, scan_id)
             except Exception as le_err:
-                print(f"[{self.name}] [LEARN] background learning error: {le_err}")
+                logger.error(f"[{self.name}] [LEARN] background learning error: {le_err}")
 
             # Pattern feedback to Omega (mid-scan adaptation, requirement 6).
             confidence = payload.get("confidence", 0.0)
@@ -153,9 +157,9 @@ class KappaAgent(BrowserEnabledAgent):
                     scan_id=scan_id,
                     payload={"pattern": pattern}
                 ))
-                print(f"[{self.name}] [PATTERN] Fed pattern '{vuln_type}' back to Omega for adaptive replanning.")
+                logger.debug(f"[{self.name}] [PATTERN] Fed pattern '{vuln_type}' back to Omega for adaptive replanning.")
         except Exception as exc:
-            print(f"[{self.name}] [ARCHIVE-BG] background archive error: {exc}")
+            logger.error(f"[{self.name}] [ARCHIVE-BG] background archive error: {exc}")
 
     async def stop(self):
         """Drain any in-flight background archive tasks before shutting down so
@@ -183,11 +187,11 @@ class KappaAgent(BrowserEnabledAgent):
                 f.seek(0)
                 json.dump(data, f, indent=2)
         except Exception as e:
-            print(f"[{self.name}] Memory Write Error: {e}")
+            logger.error(f"[{self.name}] Memory Write Error: {e}")
 
     async def recall_tactics(self, query: str, top_k: int = 3):
         """Vector memory Semantic Search."""
-        print(f"[{self.name}] Semantic search for: {query}")
+        logger.debug(f"[{self.name}] Semantic search for: {query}")
         query_vec = await self._get_embedding(query)
         if not query_vec: return []
 
@@ -209,7 +213,8 @@ class KappaAgent(BrowserEnabledAgent):
             from backend.core.skill_library import skill_library
             recs = skill_library.get_recommendations(
                 target_url=target_url, vuln_class=vuln_class, limit=top_k)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[{self.name}] Skill library recall failed: {e}")
             recs = []
         try:
             from backend.skills import skill_catalog
@@ -220,8 +225,8 @@ class KappaAgent(BrowserEnabledAgent):
                     recs.append({"skill_id": meta.skill_id, "name": meta.name,
                                  "domain": meta.domain, "promotion_state": meta.promotion_state.value,
                                  "source": "catalog"})
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[{self.name}] Skill catalog recall failed: {e}")
         return recs[:top_k]
 
     async def _kappa_recall_legacy(self, query: str):
@@ -234,7 +239,7 @@ class KappaAgent(BrowserEnabledAgent):
     async def _store_browser_session(self, scan_id: str, vuln_id: str, session_data: dict):
         """Archive browser session for later replay."""
         try:
-            print(f"[{self.name}] Archiving browser session for {vuln_id}")
+            logger.debug(f"[{self.name}] Archiving browser session for {vuln_id}")
             
             # Save session with correlation to vulnerability
             success = await self.session_manager.save_session(
@@ -250,12 +255,12 @@ class KappaAgent(BrowserEnabledAgent):
             )
             
             if success:
-                print(f"[{self.name}] Session archived successfully")
+                logger.debug(f"[{self.name}] Session archived successfully")
             
             return success
             
         except Exception as e:
-            print(f"[{self.name}] Session archival failed: {e}")
+            logger.error(f"[{self.name}] Session archival failed: {e}")
             return False
     
     async def _load_browser_session(self, scan_id: str, vuln_id: str) -> dict:
@@ -267,12 +272,12 @@ class KappaAgent(BrowserEnabledAgent):
             )
             
             if session_data:
-                print(f"[{self.name}] Session restored for {vuln_id}")
+                logger.debug(f"[{self.name}] Session restored for {vuln_id}")
             
             return session_data or {}
             
         except Exception as e:
-            print(f"[{self.name}] Session restoration failed: {e}")
+            logger.error(f"[{self.name}] Session restoration failed: {e}")
             return {}
     
     async def _export_session(self, scan_id: str, vuln_id: str) -> str:
@@ -295,12 +300,12 @@ class KappaAgent(BrowserEnabledAgent):
             with open(export_path, 'w') as f:
                 json.dump(export_data, f, indent=2)
             
-            print(f"[{self.name}] Session exported to {export_path}")
+            logger.debug(f"[{self.name}] Session exported to {export_path}")
             
             return export_path
             
         except Exception as e:
-            print(f"[{self.name}] Session export failed: {e}")
+            logger.error(f"[{self.name}] Session export failed: {e}")
             return ""
     
     async def _import_session(self, export_path: str) -> bool:
@@ -320,18 +325,18 @@ class KappaAgent(BrowserEnabledAgent):
             success = await self._store_browser_session(scan_id, vuln_id, session_data)
             
             if success:
-                print(f"[{self.name}] Session imported from {export_path}")
+                logger.debug(f"[{self.name}] Session imported from {export_path}")
             
             return success
             
         except Exception as e:
-            print(f"[{self.name}] Session import failed: {e}")
+            logger.error(f"[{self.name}] Session import failed: {e}")
             return False
     
     async def recall_session(self, scan_id: str, vuln_id: str) -> dict:
         """Recall and replay a browser session."""
         try:
-            print(f"[{self.name}] Replaying session for {vuln_id}")
+            logger.debug(f"[{self.name}] Replaying session for {vuln_id}")
             
             # Load session
             session_data = await self._load_browser_session(scan_id, vuln_id)
@@ -354,5 +359,5 @@ class KappaAgent(BrowserEnabledAgent):
             return {"success": False, "error": "No URL in session"}
             
         except Exception as e:
-            print(f"[{self.name}] Session replay failed: {e}")
+            logger.error(f"[{self.name}] Session replay failed: {e}")
             return {"success": False, "error": str(e)}

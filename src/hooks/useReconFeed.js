@@ -26,7 +26,7 @@ export function useReconLiveFeed(scanId) {
 
         ws.onopen = () => {
             setConnected(true);
-            console.log('[RECON FEED] Connected:', scanId);
+            // LOW-24: Removed console.log from production code
         };
 
         ws.onmessage = (e) => {
@@ -34,7 +34,7 @@ export function useReconLiveFeed(scanId) {
                 const event = JSON.parse(e.data);
                 handleEvent(event);
             } catch (err) {
-                console.warn('[RECON FEED] Parse error:', err);
+                // LOW-24: Removed console.warn from production code
             }
         };
 

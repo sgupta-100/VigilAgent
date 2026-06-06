@@ -1,10 +1,13 @@
 import json
+import logging
 import math
 import os
 import re
 import time
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("DualStoreMemory")
 
 
 def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
@@ -42,7 +45,8 @@ class DualStoreMemory:
     def _read_list(self, path: Path) -> list[dict[str, Any]]:
         try:
             return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            logger.debug("DualStoreMemory: failed to read %s (%s), returning empty list", path, exc)
             return []
 
     def _write_list(self, path: Path, rows: list[dict[str, Any]]) -> None:

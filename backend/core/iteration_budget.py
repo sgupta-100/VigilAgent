@@ -18,9 +18,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 try:
     import yaml  # type: ignore
-except Exception:  # pragma: no cover - yaml is a standard dependency
+except Exception as _yaml_exc:  # pragma: no cover - yaml is a standard dependency
+    import logging as _log
+    _log.getLogger(__name__).debug("PyYAML not available: %s", _yaml_exc)
     yaml = None  # type: ignore
 
 
@@ -130,9 +134,10 @@ class BudgetConfig:
                 data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
                 roles.update({k: int(v) for k, v in (data.get("budgets") or {}).items()})
                 phases.update({k: int(v) for k, v in (data.get("phases") or {}).items()})
-            except Exception:
+            except Exception as exc:
                 # Fail safe to defaults; never crash on a malformed config.
-                pass
+                import logging as _log
+                _log.getLogger('IterationBudget').debug('yaml config fallback: %s', exc)
         return cls(roles=roles, phases=phases)
 
     def for_role(self, role: str) -> int:

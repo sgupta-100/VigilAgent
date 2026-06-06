@@ -103,8 +103,8 @@ def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
                     fm = yaml.safe_load(fm_text) or {}
                     if isinstance(fm, dict):
                         return fm, body
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("[SkillLoader] YAML frontmatter parse failed for %s: %s", path if hasattr(path, 'name') else '?', e)
     return {}, content
 
 
@@ -212,7 +212,8 @@ class SkillLoader:
         """Read index.json → {skill_key: {attack, owasp, nist, ...}}."""
         try:
             data = json.loads(index_path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            logger.debug("[SkillLoader] index.json parse failed: %s", e)
             return {}
         out: dict[str, dict] = {}
         # Accept either {"skills": [ {name, attack, owasp, ...} ]} or a flat map.
@@ -235,7 +236,8 @@ class SkillLoader:
             if f.suffix.lower() == ".json":
                 try:
                     data = json.loads(f.read_text(encoding="utf-8"))
-                except Exception:
+                except Exception as exc:
+                    logger.debug("[SkillLoader] mapping file parse failed %s: %s", f, exc)
                     continue
                 if isinstance(data, dict):
                     for k, v in data.items():

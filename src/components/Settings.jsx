@@ -27,7 +27,7 @@ const Settings = ({ navigate }) => {
                     setToggles(prev => ({ ...prev, '2fa': true }));
                 }
             })
-            .catch(err => console.error("Failed to load settings:", err));
+            .catch(err => { /* settings fetch failed — user sees empty state */ });
     }, []);
 
     const handleToggle = async (id) => {
@@ -45,7 +45,7 @@ const Settings = ({ navigate }) => {
                         alert('Failed to disable 2FA');
                     }
                 } catch (e) {
-                    console.error('Error disabling 2FA:', e);
+                    // console.error('Error disabling 2FA:', e);
                     setToggles(prev => ({ ...prev, '2fa': false }));
                 }
             }
@@ -112,7 +112,7 @@ const Settings = ({ navigate }) => {
                 alert('Failed to save settings');
             }
         } catch (e) {
-            console.error('Error saving settings:', e);
+            // console.error('Error saving settings:', e);
             alert('Error saving settings');
         } finally {
             setIsLoading(false);

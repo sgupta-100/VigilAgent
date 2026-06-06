@@ -1,5 +1,6 @@
 import asyncio
 import re
+import subprocess
 import aiohttp
 import os
 from backend.core.queue import command_lane, LanePriority
@@ -8,6 +9,9 @@ from backend.core.hive import EventType, HiveEvent
 from backend.core.browser_agent import BrowserEnabledAgent
 from backend.core.protocol import JobPacket, ResultPacket, AgentID, TaskTarget
 from backend.core.sandbox import TempWorkspace
+import logging
+
+logger = logging.getLogger("AgentDelta")
 
 class AgentDelta(BrowserEnabledAgent):
     """
@@ -19,7 +23,7 @@ class AgentDelta(BrowserEnabledAgent):
         super().__init__("agent_delta", bus)
         
         self._last_session_id = ""
-        self._skill_rec_cache = {}
+        self._skill_rec_cache: dict = {}  # HIGH-69: bounded via eviction in recall
         
     async def setup(self):
         # Triggered by Recon/Orchestrator when navigating routes
@@ -29,16 +33,19 @@ class AgentDelta(BrowserEnabledAgent):
         """Kappa-style skill recall (Architecture §5.3.5, §29.9): Delta receives
         browser, mobile, session, and dynamic-interaction skills. Cached per
         target to avoid rework."""
-        cache = self._skill_rec_cache
-        if target_url in cache:
-            return cache[target_url]
+        # HIGH-69: Use SkillRecallMixin._skill_cache() for bounded eviction
+        cache = self._skill_cache()
+        cache_key = (target_url, ("browser", "session", "mobile", "dynamic-interaction"))
+        if cache_key in cache:
+            return cache[cache_key]
         recs = []
         try:
             from backend.core.skill_library import skill_library
             for vuln_class in ("browser", "session", "mobile", "dynamic-interaction"):
                 recs.extend(skill_library.get_recommendations(
                     target_url=target_url, vuln_class=vuln_class, limit=3))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[{self.name}] Skill recall failed: {e}")
             recs = []
         cache[target_url] = recs
         return recs
@@ -49,14 +56,19 @@ class AgentDelta(BrowserEnabledAgent):
         try:
             proc.terminate()
             await asyncio.wait_for(proc.wait(), timeout=2.0)
-        except Exception:
+        except Exception as term_exc:
+            logger.debug(f"[{self.name}] Process terminate failed: {term_exc}")
             try:
                 if os.name == 'nt':
                     # Windows Hard-Kill fallback for zombie Chromium processes
-                    os.system(f"taskkill /F /T /PID {proc.pid}")
+                    subprocess.run(
+                        ['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+                        capture_output=True, timeout=5,
+                    )
                 else:
                     proc.kill()
-            except Exception: pass
+            except Exception as e2:
+                logger.debug(f"Delta kill fallback failed: {e2}")
 
     async def _pinch_nav(self, session, url):
         """Navigate using unified browser orchestrator (auto-selects engine)."""
@@ -77,7 +89,7 @@ class AgentDelta(BrowserEnabledAgent):
             return False
             
         except Exception as e:
-            print(f"[{self.name}] Browser navigation error: {e}")
+            logger.error(f"[{self.name}] Browser navigation error: {e}")
             return False
 
     async def _pinch_text(self, session):
@@ -108,7 +120,7 @@ class AgentDelta(BrowserEnabledAgent):
             }
             
         except Exception as e:
-            print(f"[{self.name}] Text extraction error: {e}")
+            logger.error(f"[{self.name}] Text extraction error: {e}")
             return {}
 
     def _semantic_refine(self, dom_data: dict) -> dict:
@@ -140,7 +152,8 @@ class AgentDelta(BrowserEnabledAgent):
             packet = JobPacket(**packet_dict)
             if packet.config.module_id == "delta_pinch_extract":
                 await self.execute_pinchtab_flow(packet)
-        except Exception: pass
+        except Exception as e:
+            logger.debug(f"Delta error: {e}")
              
     async def execute_pinchtab_flow(self, packet: JobPacket):
         target_url = packet.target.url
@@ -180,7 +193,7 @@ class AgentDelta(BrowserEnabledAgent):
     async def _extract_tokens_hybrid(self, url: str, scan_id: str) -> dict:
         """Extract tokens using both engines for maximum coverage."""
         try:
-            print(f"[{self.name}] Hybrid token extraction: {url}")
+            logger.debug(f"[{self.name}] Hybrid token extraction: {url}")
             
             # Fast extraction with PinchTab
             fast_result = await self.browser.extract_tokens(url)
@@ -203,7 +216,7 @@ class AgentDelta(BrowserEnabledAgent):
                     seen.add(token_value)
                     unique_tokens.append(token)
             
-            print(f"[{self.name}] Extracted {len(unique_tokens)} unique tokens (fast: {len(fast_tokens)}, deep: {len(deep_tokens)})")
+            logger.debug(f"[{self.name}] Extracted {len(unique_tokens)} unique tokens (fast: {len(fast_tokens)}, deep: {len(deep_tokens)})")
             
             return {
                 "tokens": unique_tokens,
@@ -213,13 +226,13 @@ class AgentDelta(BrowserEnabledAgent):
             }
             
         except Exception as e:
-            print(f"[{self.name}] Hybrid token extraction failed: {e}")
+            logger.error(f"[{self.name}] Hybrid token extraction failed: {e}")
             return {"tokens": [], "error": str(e)}
     
     async def _coordinate_engines(self, url: str, task_type: str, scan_id: str) -> dict:
         """Coordinate task distribution between OpenClaw and PinchTab."""
         try:
-            print(f"[{self.name}] Coordinating engines for task: {task_type}")
+            logger.debug(f"[{self.name}] Coordinating engines for task: {task_type}")
             
             results = {}
             
@@ -243,5 +256,5 @@ class AgentDelta(BrowserEnabledAgent):
             return results
             
         except Exception as e:
-            print(f"[{self.name}] Engine coordination failed: {e}")
+            logger.error(f"[{self.name}] Engine coordination failed: {e}")
             return {"error": str(e)}

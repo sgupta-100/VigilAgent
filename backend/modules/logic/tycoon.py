@@ -11,14 +11,23 @@ Hardened gating (Architecture §17, §25):
     different vuln class (SQL error, /etc/passwd, executable XSS reflection,
     CMDI output) suppresses Tycoon findings.
 """
-import aiohttp
+import copy
 import time
 from backend.core.base import BaseArsenalModule
-from backend.core.protocol import JobPacket, ResultPacket, Vulnerability, AgentID, TaskTarget
-# Hybrid AI Engine
-from backend.ai.cortex import CortexEngine, get_cortex_engine
+from backend.core.protocol import JobPacket, Vulnerability, TaskTarget
 
-cortex = get_cortex_engine()
+logger = logging.getLogger(__name__)
+
+# Lazy-init: import at call time to avoid blocking app startup (HIGH-49)
+_cortex = None
+
+
+def _get_cortex():
+    global _cortex
+    if _cortex is None:
+        from backend.ai.cortex import get_cortex_engine
+        _cortex = get_cortex_engine()
+    return _cortex
 
 _FINANCIAL_FIELDS = (
     "price", "quantity", "qty", "amount", "cost", "total", "subtotal",
@@ -70,23 +79,28 @@ class TheTycoon(BaseArsenalModule):
         targets = []
         
         # HYBRID AI: Generate financial attack vectors
-        ai_vectors = await cortex.generate_financial_vectors(target.url, target.payload)
+        ai_vectors = await _get_cortex().generate_financial_vectors(target.url, target.payload)
         
         # VECTOR 1: Standard + AI-generated financial attacks
         test_values = [(-1, "Negative Quantity"), (2147483648, "Integer Overflow")]
         for vec in ai_vectors:
-            if isinstance(vec, dict) and "value" in vec:
-                test_values.append((vec["value"], vec.get("attack", "AI_Generated")))
+            try:
+                if isinstance(vec, dict) and isinstance(vec.get("value"), (int, float)) and "attack" in vec:
+                    test_values.append((vec["value"], str(vec.get("attack", "AI_Generated"))[:100]))
+            except Exception as vec_exc:
+                import logging as _log
+                _log.getLogger("Tycoon").debug("Malformed AI vector skipped: %s", vec_exc)
+                continue  # HIGH-55: skip malformed AI vectors without crashing
         
         for qty, attack_name in test_values:
-            payload_qty = target.payload.copy() if target.payload else {}
+            payload_qty = copy.deepcopy(target.payload) if target.payload else {}
             payload_qty["quantity"] = qty
             targets.append(TaskTarget(
                 url=target.url, method="POST", headers=target.headers, payload=payload_qty
             ))
 
         # VECTOR 2: FLOATING POINT ROUNDING
-        payload_float = target.payload.copy() if target.payload else {}
+        payload_float = copy.deepcopy(target.payload) if target.payload else {}
         payload_float["price"] = 0.00001
         payload_float["amount"] = 1000
         targets.append(TaskTarget(

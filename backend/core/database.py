@@ -49,17 +49,23 @@ class EliteDBManager:
             self._initialized = True
         except Exception as e:
             logger.error(f"ELITE-DB Initialization Failed: {e}")
-            self._initialized = True
+            # MED-04: Don't set _initialized=True on failure — allow retry
 
     @staticmethod
-    async def _run_sync(fn, *args, **kwargs):
+    async def _run_sync(fn, *args, _timeout: float = 30.0, **kwargs):
         """Run a blocking call (e.g. supabase-py's HTTPS .execute()) on a worker
         thread so it cannot stall the event loop. The Supabase client is
         synchronous; without this, every recon entity/toolcall upsert blocks
         the entire hive (Sigma/Beta/Gamma response times spiral, the
         recon-complete handoff misses its deadline). Architecture §29.13:
-        execution must not block the orchestrator."""
-        return await asyncio.to_thread(fn, *args, **kwargs)
+        execution must not block the orchestrator.
+
+        HIGH-03: Wrapped with ``asyncio.wait_for`` so a stalled thread
+        cannot hang the event loop indefinitely."""
+        return await asyncio.wait_for(
+            asyncio.to_thread(fn, *args, **kwargs),
+            timeout=_timeout,
+        )
 
     # --- 1. VULNERABILITY MANAGEMENT (Intelligence) ---
 
@@ -92,8 +98,8 @@ class EliteDBManager:
         try:
             # Perform upsert based on the unique constraint (scan_id, endpoint, vuln_type)
             result = await self._run_sync(
-                lambda: self.supabase.table("vulnerabilities")
-                    .upsert(data, on_conflict="scan_id,endpoint,vuln_type").execute())
+                lambda d=data: self.supabase.table("vulnerabilities")
+                    .upsert(d, on_conflict="scan_id,endpoint,vuln_type").execute())
 
             if result.data:
                 vuln_id = result.data[0]["id"]

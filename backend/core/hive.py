@@ -170,8 +170,8 @@ class EventBus:
             if event.type == EventType.RECON_PACKET:
                 try:
                     knowledge_graph.ingest_http_record(event.payload, scan_id=event.scan_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("[EventBus] ingest_http_record failed: %s", e)
         if event.type == EventType.VULN_CONFIRMED:
             knowledge_graph.ingest_finding(event.payload, scan_id=event.scan_id)
 
@@ -201,7 +201,8 @@ class EventBus:
             try:
                 oldest = ctx._recent_events_fifo.popleft()
                 ctx._recent_events.discard(oldest)
-            except IndexError: pass
+            except IndexError:
+                pass  # Race: another coroutine evicted between len check and popleft
 
         # OpenClaw-style no-blackboard chronology: every scan-local event becomes
         # a linear transcript block before any agent consumes it.
@@ -313,8 +314,10 @@ class DistributedEventBus(EventBus):
             await self.redis_client.ping()
             self._is_redis_online = True
             return True
-        except Exception:
+        except Exception as exc:
             self._is_redis_online = False
+            logger.debug("[Hive] Redis ping failed: %s", exc)
+            logger.debug("[Hive] Redis ping failed")
             return False
 
 
@@ -388,6 +391,8 @@ class DistributedEventBus(EventBus):
 # --- 3. THE DNA (Base Agent) ---
 
 from backend.core.database import db_manager
+
+logger = logging.getLogger(__name__)
 
 class BaseAgent:
     """

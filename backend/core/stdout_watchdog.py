@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Awaitable
 
+logger = logging.getLogger(__name__)
+
 
 MAX_TOOL_OUTPUT_BYTES = 16 * 1024
 
@@ -51,8 +53,10 @@ async def watch_output(
     if summarizer:
         try:
             summary = await summarizer(text)
-        except Exception:
-            summary = ""
+        except Exception as sum_exc:
+            import logging as _log
+            _log.getLogger("StdoutWatchdog").debug("Summarizer failed: %s", sum_exc)
+            summary = ""  # Summarizer failure is non-fatal; use fallback.
     if not summary:
         summary = _fallback_summary(text, max_bytes)
     guarded = (

@@ -2,10 +2,17 @@ import difflib
 from backend.core.base import BaseArsenalModule
 from backend.core.protocol import JobPacket, Vulnerability, TaskTarget
 from backend.core.credential_vault import credential_vault
-# Hybrid AI Engine
-from backend.ai.cortex import CortexEngine, get_cortex_engine
 
-cortex = get_cortex_engine()
+# Lazy-init: import at call time to avoid blocking app startup (HIGH-49)
+_cortex = None
+
+
+def _get_cortex():
+    global _cortex
+    if _cortex is None:
+        from backend.ai.cortex import get_cortex_engine
+        _cortex = get_cortex_engine()
+    return _cortex
 
 class Doppelganger(BaseArsenalModule):
     """
@@ -49,9 +56,14 @@ class Doppelganger(BaseArsenalModule):
         
         vulns = []
         if isinstance(attack_text, str) and isinstance(baseline_text, str):
-            ratio = difflib.SequenceMatcher(None, baseline_text, attack_text).ratio()
+            # HIGH-36: Truncate large responses before O(n²) comparison
+            max_cmp = 50000
+            b_text = baseline_text[:max_cmp] if len(baseline_text) > max_cmp else baseline_text
+            a_text = attack_text[:max_cmp] if len(attack_text) > max_cmp else attack_text
+            ratio = difflib.SequenceMatcher(None, b_text, a_text).ratio()
             if ratio > 0.95:
-                idor_analysis = await cortex.classify_idor_response(attack_text, ratio)
+                cortex = _get_cortex()
+            idor_analysis = await cortex.classify_idor_response(attack_text, ratio)
                 sensitivity = idor_analysis.get("sensitivity", "HIGH")
                 data_types = idor_analysis.get("data_types", [])
                 

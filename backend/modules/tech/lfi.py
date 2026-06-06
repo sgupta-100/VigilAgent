@@ -20,11 +20,14 @@ AND the differential confirms it (i.e. >= 2 independent signals).
 from __future__ import annotations
 
 import base64
+import logging
 import re
 import urllib.parse
 
 from backend.core.base import BaseArsenalModule
 from backend.core.protocol import JobPacket, TaskTarget, Vulnerability
+
+logger = logging.getLogger("FileInclusionProbe")
 
 # Path-traversal probes covering Linux, Windows, and PHP wrappers.
 _PASSWD_PROBES = (
@@ -67,7 +70,8 @@ def _b64_decodes_to_php(text: str) -> str | None:
         try:
             decoded = base64.b64decode(token, validate=False).decode(
                 "utf-8", errors="ignore")
-        except Exception:
+        except Exception as exc:
+            logger.debug("[LFI] base64 decode failed: %s", exc)
             continue
         if "<?php" in decoded or "<?=" in decoded or "<?xml" in decoded:
             return decoded[:200]

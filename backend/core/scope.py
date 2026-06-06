@@ -55,8 +55,8 @@ def _parse_iso(value: str | None) -> datetime | None:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt
-    except Exception:
-        logger.warning("Could not parse scope datetime: %s", value)
+    except Exception as exc:
+        logger.warning("Could not parse scope datetime: %s: %s", value, exc)
         return None
 
 
@@ -188,9 +188,10 @@ class ScopePolicy:
         if not self.allow_private_networks and _is_private_like(host):
             return host in self.allowed_hosts or self._cidr_match(host)
 
-        # With no allowlist at all, only allow if private-networks default holds.
+        # MED-13: With no allowlist at all, deny by default (safe-by-default).
+        # Previously this returned True, allowing any public host.
         if not (self.allowed_hosts or self.allowed_cidrs or self.allowed_url_globs):
-            return True
+            return False
 
         return host_allowed or glob_allowed
 

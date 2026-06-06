@@ -64,7 +64,8 @@ def _scope_url(payload: dict[str, Any]) -> str | None:
 async def _ingest(capture_class: str, request: Request) -> JSONResponse:
     try:
         payload = await request.json()
-    except Exception:
+    except Exception as exc:
+        logger.debug(f"[Bridge] Invalid JSON from extension: {exc}")
         return JSONResponse(status_code=400, content={"accepted": False, "reason": "invalid_json"})
 
     # 1. The capture class must be allowed by the engagement scope (Architecture §19).
@@ -88,8 +89,8 @@ async def _ingest(capture_class: str, request: Request) -> JSONResponse:
     try:
         from backend.core.scan_state_db import scan_state_db
         scan_state_db.add_event(scan_id, f"bridge_{capture_class}", "extension", masked)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("[Bridge] scan_state_db persist failed: %s", e)
     return JSONResponse(content={"accepted": True, "capture_class": capture_class})
 
 
@@ -164,5 +165,6 @@ async def bridge_live(websocket: WebSocket):
             await manager.mark_spy_alive()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-    except Exception:  # pragma: no cover - defensive cleanup
+    except Exception as e:  # pragma: no cover - defensive cleanup
+        logger.debug("[Bridge] live WS cleanup: %s", e)
         manager.disconnect(websocket)

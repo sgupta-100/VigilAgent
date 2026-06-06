@@ -72,7 +72,8 @@ async def _scope_allows(url: str) -> bool:
     try:
         from backend.core.scope import scope_guard
         return scope_guard.allows(url)
-    except Exception:
+    except Exception as exc:
+        logger.debug("[seeder] scope_guard check failed: %s", exc)
         return True
 
 
@@ -81,7 +82,8 @@ async def _looks_like_dvwa(base_url: str, scan_id: str) -> bool:
     try:
         resp = await network_interceptor.fetch(
             "GET", urljoin(base_url + "/", "login.php"), timeout=10)
-    except Exception:
+    except Exception as exc:
+        logger.debug("[seeder] DVWA detection request failed: %s", exc)
         return False
     body = (resp.body or "").lower()
     return "dvwa" in body or ("user_token" in body and "login.php" in str(resp.url).lower())
@@ -144,7 +146,8 @@ async def _authenticate_dvwa(base_url: str, scan_id: str,
             "GET", urljoin(base_url + "/", "index.php"), timeout=10,
             headers={"Cookie": cookie_header}, allow_redirects=False)
         authed = idx.status == 200 and "login.php" not in str(idx.url).lower()
-    except Exception:
+    except Exception as exc:
+        logger.debug("[seeder] DVWA auth verification failed, assuming best-effort: %s", exc)
         authed = True  # best effort
     return (cookie_header, username) if authed else (None, None)
 

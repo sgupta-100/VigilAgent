@@ -305,8 +305,8 @@ class PayloadDeliveryEngine:
                     try:
                         msg = await ws.receive(timeout=timeout)
                         body = str(getattr(msg, "data", ""))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("[Delivery] WebSocket receive failed: %s", exc)
             latency = (time.perf_counter() - start) * 1000
             return DeliveryResult("websocket", payload, family, 101, body, latency, ws_url)
         except Exception as exc:

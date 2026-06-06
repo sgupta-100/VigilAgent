@@ -1,8 +1,9 @@
+import os
 import requests
 import json
 
 url = "http://localhost:9000/api/issues/search?componentKeys=api-endpoint-scanner&types=BUG,VULNERABILITY&ps=10"
-auth = ("admin", "AdminPassword1!")
+auth = (os.getenv("SONAR_USER", "admin"), os.getenv("SONAR_PASSWORD", ""))
 
 try:
     response = requests.get(url, auth=auth)

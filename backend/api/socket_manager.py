@@ -118,6 +118,8 @@ class SocketManager:
     # the most recent N broadcasts so it doesn't show a blank screen when it
     # joins after a scan has already started broadcasting events.
     REPLAY_BUFFER_SIZE = 50
+    MAX_UI_CONNECTIONS = 100  # FIX-047: Prevent resource exhaustion from unbounded connections
+    MAX_SPY_CONNECTIONS = 10
 
     def __init__(self):
         self.ui_connections: List[WebSocket] = []
@@ -185,7 +187,8 @@ class SocketManager:
         try:
             await asyncio.wait_for(connection.send_text(msg), timeout=1.0)
             return None
-        except Exception:
+        except Exception as exc:
+            logging.getLogger("Antigravity.SocketManager").debug("WS send timeout/failure: %s", exc)
             return connection
 
     async def _process_batch_queue(self):
@@ -236,6 +239,15 @@ class SocketManager:
         self.packet_count += 1 # Count for RPS
 
     async def connect(self, websocket: WebSocket, client_type: str = "ui"):
+        # FIX-047: Enforce connection limits to prevent resource exhaustion
+        if client_type == "spy" and len(self.spy_connections) >= self.MAX_SPY_CONNECTIONS:
+            self.logger.warning("Spy connection limit reached, rejecting")
+            await websocket.close(code=1013, reason="Too many connections")
+            return
+        if client_type != "spy" and len(self.ui_connections) >= self.MAX_UI_CONNECTIONS:
+            self.logger.warning("UI connection limit reached, rejecting")
+            await websocket.close(code=1013, reason="Too many connections")
+            return
         self._start_tasks()
         await websocket.accept()
         if client_type == "spy":
@@ -262,9 +274,10 @@ class SocketManager:
                         try:
                             await websocket.send_text(
                                 json.dumps(event, default=self._sanitize_bytes))
-                        except Exception:
+                        except Exception as exc:
                             # Client gone mid-replay; bail out, the disconnect
                             # path will clean it up on the next batch tick.
+                            self.logger.debug("replay-on-connect send failed: %s", exc)
                             break
                 except Exception as e:
                     self.logger.debug(f"replay-on-connect failed: {e}")
@@ -293,9 +306,9 @@ class SocketManager:
             evt_type = data.get("type") if isinstance(data, dict) else None
             if evt_type and evt_type not in ("SPY_STATUS",):
                 self._replay_buffer.append(data)
-        except Exception:
+        except Exception as exc:
             # Never let buffer caching kill a broadcast.
-            pass
+            self.logger.debug("replay buffer caching error: %s", exc)
         self.message_queue.append(data)
 
 manager = SocketManager()

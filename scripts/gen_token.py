@@ -1,8 +1,9 @@
+import os
 import requests
 
 url = "http://localhost:9000/api/user_tokens/generate"
 data = {"name": "my-scanner-token-3"}
-auth = ("admin", "AdminPassword1!")
+auth = (os.getenv("SONAR_USER", "admin"), os.getenv("SONAR_PASSWORD", ""))
 
 try:
     response = requests.post(url, data=data, auth=auth)

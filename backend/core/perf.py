@@ -18,6 +18,8 @@ import threading
 import time
 from typing import Any, Callable, Hashable
 
+logger = logging.getLogger(__name__)
+
 try:  # orjson is in requirements.txt; treat as optional in case of slim builds.
     import orjson  # type: ignore[import-untyped]
 
@@ -28,7 +30,9 @@ try:  # orjson is in requirements.txt; treat as optional in case of slim builds.
         except TypeError:
             # orjson is strict; fall back to stdlib for anything it rejects.
             return json.dumps(obj, default=str)
-except Exception:  # pragma: no cover — orjson missing; keep stdlib path.
+except Exception as _exc:  # pragma: no cover — orjson missing; keep stdlib path.
+    import logging as _log
+    _log.getLogger(__name__).debug("orjson unavailable, using stdlib json: %s", _exc)
     def dumps_fast(obj: Any) -> str:
         return json.dumps(obj, default=str)
 

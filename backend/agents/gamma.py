@@ -1,5 +1,6 @@
 import asyncio
 import difflib
+import logging
 import random
 import re
 import math
@@ -12,6 +13,8 @@ from backend.core.protocol import JobPacket, ResultPacket, AgentID, TaskPriority
 from backend.ai.cortex import CortexEngine, get_cortex_engine
 from backend.core.queue import command_lane
 from backend.agents._shared import ScanContextRecorderMixin, SkillRecallMixin
+
+logger = logging.getLogger("AgentGamma")
 
 class GammaAgent(SkillRecallMixin, ScanContextRecorderMixin, BrowserEnabledAgent):
     """
@@ -165,7 +168,7 @@ class GammaAgent(SkillRecallMixin, ScanContextRecorderMixin, BrowserEnabledAgent
             payload = dict(payload)
             payload["transcript_tail"] = ctx.transcript_text(tail=40)
         
-        print(f"[{self.name}] Auditing Candidate Exploit on {url}")
+        logger.info(f"[{self.name}] Auditing Candidate Exploit on {url}")
         
         await self.bus.publish(HiveEvent(
             type=EventType.LIVE_ATTACK,
@@ -195,11 +198,11 @@ class GammaAgent(SkillRecallMixin, ScanContextRecorderMixin, BrowserEnabledAgent
             fp_skills = [s for s in skill_library.get_recommendations(vuln_class=vclass, limit=5)
                          if "recovery" not in s.get("skill_id", "") and s.get("success_rate", 0) >= 0.7]
             if fp_skills:
-                print(f"[{self.name}] [SKILLS] {len(fp_skills)} validation skill(s) inform FP filtering for {vclass}")
-        except Exception:
-            pass
+                logger.debug(f"[{self.name}] [SKILLS] {len(fp_skills)} validation skill(s) inform FP filtering for {vclass}")
+        except Exception as e:
+            logger.debug(f"[{self.name}] Skill recall failed: {e}")
 
-        print(f"[{self.name}] [SIGNALS] Confidence: {heuristic_conf:.2f} | Triggers: {', '.join(triggers) if triggers else 'None'}")
+        logger.debug(f"[{self.name}] [SIGNALS] Confidence: {heuristic_conf:.2f} | Triggers: {', '.join(triggers) if triggers else 'None'}")
         
         # Determine strict reject vs hybrid verification
         confidence = heuristic_conf
@@ -209,7 +212,7 @@ class GammaAgent(SkillRecallMixin, ScanContextRecorderMixin, BrowserEnabledAgent
         # 2. HYBRID AI FALLBACK
         # If signals are ambiguous (between 0.3 and 0.65) or absent but AI is enabled, let Cortex check
         if (self.cortex and self.cortex.enabled) and (0.3 < heuristic_conf < 0.65 or heuristic_conf == 0.0):
-            print(f"[{self.name}] Ambiguous or missing signals. Escalating to CORTEX ENGINE...")
+            logger.debug(f"[{self.name}] Ambiguous or missing signals. Escalating to CORTEX ENGINE...")
             try:
                 verdict = await self.cortex.audit_candidate(payload)
                 ai_confidence = verdict.get('confidence', 0.5)
@@ -219,13 +222,13 @@ class GammaAgent(SkillRecallMixin, ScanContextRecorderMixin, BrowserEnabledAgent
                 # Blend the AI confidence with the heuristic confidence
                 confidence = max(heuristic_conf, ai_confidence)
                 
-                print(f"[{self.name}] [AI AUDIT] Real={is_real} Confidence={confidence:.1f} Reason={reason}")
+                logger.debug(f"[{self.name}] [AI AUDIT] Real={is_real} Confidence={confidence:.1f} Reason={reason}")
             except Exception as e:
-                print(f"[{self.name}] [AI AUDIT] CortexEngine error: {e}")
+                logger.warning(f"[{self.name}] [AI AUDIT] CortexEngine error: {e}")
 
         # 3. VERDICT
         if not is_real and confidence > 0.7:
-            print(f"[{self.name}] [VERDICT] FALSE POSITIVE suppressed.")
+            logger.info(f"[{self.name}] [VERDICT] FALSE POSITIVE suppressed.")
             # Feed the false-positive back to the self-improvement engine so the
             # source agent's confidence/routing is tuned (Architecture §15.1):
             # "Gamma rejects candidates -> self-awareness marks the source agent
@@ -237,8 +240,8 @@ class GammaAgent(SkillRecallMixin, ScanContextRecorderMixin, BrowserEnabledAgent
                 self_improvement_engine.record_false_positive(
                     agent_id=source_agent, vuln_class=vuln_type,
                     scan_id=event.scan_id, reason=reason)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[{self.name}] Self-improvement record failed: {e}")
             await self.bus.publish(HiveEvent(
                 type=EventType.LIVE_ATTACK,
                 source=self.name,
@@ -259,7 +262,7 @@ class GammaAgent(SkillRecallMixin, ScanContextRecorderMixin, BrowserEnabledAgent
                  distinct_signals == 1 and
                  any(t.startswith("reflection(") for t in triggers))
              if distinct_signals < 2 or reflection_only:
-                 print(f"[{self.name}] [VERDICT] Suppressed weak verdict — "
+                 logger.info(f"[{self.name}] [VERDICT] Suppressed weak verdict — "
                        f"need >=2 signals, got {distinct_signals} ({triggers}).")
                  return
 
@@ -288,7 +291,7 @@ class GammaAgent(SkillRecallMixin, ScanContextRecorderMixin, BrowserEnabledAgent
             url = payload.get("url", "")
             attack_payload = payload.get("attack_payload", payload.get("payload", ""))
             
-            print(f"[{self.name}] Verifying exploit in browser: {url}")
+            logger.debug(f"[{self.name}] Verifying exploit in browser: {url}")
             
             # Navigate to URL with payload
             result = await self.browser.test_payload(url, attack_payload, param="test")
@@ -331,13 +334,13 @@ class GammaAgent(SkillRecallMixin, ScanContextRecorderMixin, BrowserEnabledAgent
             return {"verified": False, "confidence": 0.0}
             
         except Exception as e:
-            print(f"[{self.name}] Browser verification failed: {e}")
+            logger.error(f"[{self.name}] Browser verification failed: {e}")
             return {"verified": False, "error": str(e)}
     
     async def _detect_dom_mutation(self, url: str, payload: str, scan_id: str) -> dict:
         """Detect DOM changes caused by payload execution."""
         try:
-            print(f"[{self.name}] Detecting DOM mutations...")
+            logger.debug(f"[{self.name}] Detecting DOM mutations...")
             
             # Get baseline DOM
             baseline_result = await self.browser.navigate(url, stealth=False)
@@ -354,7 +357,7 @@ class GammaAgent(SkillRecallMixin, ScanContextRecorderMixin, BrowserEnabledAgent
                 mutation_detected = similarity < 0.95  # >5% change
                 
                 if mutation_detected:
-                    print(f"[{self.name}] DOM mutation detected: {(1-similarity)*100:.1f}% change")
+                    logger.debug(f"[{self.name}] DOM mutation detected: {(1-similarity)*100:.1f}% change")
                     
                     return {
                         "mutation_detected": True,
@@ -365,7 +368,7 @@ class GammaAgent(SkillRecallMixin, ScanContextRecorderMixin, BrowserEnabledAgent
             return {"mutation_detected": False}
             
         except Exception as e:
-            print(f"[{self.name}] DOM mutation detection failed: {e}")
+            logger.error(f"[{self.name}] DOM mutation detection failed: {e}")
             return {"mutation_detected": False, "error": str(e)}
     
     async def _detect_alert(self, url: str, payload: str, scan_id: str) -> bool:
@@ -374,13 +377,13 @@ class GammaAgent(SkillRecallMixin, ScanContextRecorderMixin, BrowserEnabledAgent
             result = await self.browser.test_payload(url, payload, param="test")
             return result.get("alert_detected", False)
         except Exception as e:
-            print(f"[{self.name}] Alert detection failed: {e}")
+            logger.error(f"[{self.name}] Alert detection failed: {e}")
             return False
     
     async def _analyze_network_traffic(self, url: str, payload: str, scan_id: str) -> dict:
         """Analyze network traffic to verify exploit behavior."""
         try:
-            print(f"[{self.name}] Analyzing network traffic for: {url}")
+            logger.debug(f"[{self.name}] Analyzing network traffic for: {url}")
             
             # Use network interceptor to capture traffic
             from backend.core.proxy import network_interceptor
@@ -428,7 +431,7 @@ class GammaAgent(SkillRecallMixin, ScanContextRecorderMixin, BrowserEnabledAgent
             
             # Report suspicious network activity
             if suspicious_requests:
-                print(f"[{self.name}] Found {len(suspicious_requests)} suspicious network requests")
+                logger.info(f"[{self.name}] Found {len(suspicious_requests)} suspicious network requests")
                 
                 await self.bus.publish(HiveEvent(
                     type=EventType.VULN_CANDIDATE,
@@ -449,5 +452,5 @@ class GammaAgent(SkillRecallMixin, ScanContextRecorderMixin, BrowserEnabledAgent
             }
             
         except Exception as e:
-            print(f"[{self.name}] Network traffic analysis failed: {e}")
+            logger.error(f"[{self.name}] Network traffic analysis failed: {e}")
             return {}

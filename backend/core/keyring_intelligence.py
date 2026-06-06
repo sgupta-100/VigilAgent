@@ -8,7 +8,10 @@ import json
 import time
 import hashlib
 import base64
+import logging
 from enum import Enum
+
+logger = logging.getLogger("KeyringIntelligence")
 
 
 class TokenType(Enum):
@@ -61,7 +64,8 @@ class KeyringIntelligence:
             data = json.loads(payload)
             exp = data.get("exp", 0)
             return time.time() > exp if exp else False
-        except Exception:
+        except Exception as exc:
+            logger.debug("KeyringIntelligence: JWT expiry check failed: %s", exc)
             return False
 
     def fingerprint(self, token: str) -> str:
@@ -90,7 +94,8 @@ class KeyringIntelligence:
         try:
             with open(self.KEYRING_FILE, "r") as f:
                 keyring = json.load(f)
-        except Exception:
+        except Exception as exc:
+            logger.debug("KeyringIntelligence: keyring file load failed: %s", exc)
             keyring = {"tokens": [], "stats": {"total": 0, "deduplicated": 0}}
 
         # Deduplicate by fingerprint
@@ -111,7 +116,8 @@ class KeyringIntelligence:
         try:
             with open(self.KEYRING_FILE, "r") as f:
                 keyring = json.load(f)
-        except Exception:
+        except Exception as exc:
+            logger.debug("KeyringIntelligence: active tokens load failed: %s", exc)
             return []
 
         active = []
@@ -125,7 +131,8 @@ class KeyringIntelligence:
         try:
             with open(self.KEYRING_FILE, "r") as f:
                 keyring = json.load(f)
-        except Exception:
+        except Exception as exc:
+            logger.debug("KeyringIntelligence: stats load failed: %s", exc)
             return {"total": 0, "by_type": {}, "expired": 0}
 
         tokens = keyring.get("tokens", [])

@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import logging
 import random
 import urllib.parse
 from backend.core.hive import EventType, HiveEvent
@@ -21,6 +22,8 @@ from backend.agents._shared import (
     SessionLifecycleMixin,
     SkillRecallMixin,
 )
+
+logger = logging.getLogger("AgentSigma")
 
 # Import Arsenals
 from backend.modules.tech.sqli import SQLInjectionProbe
@@ -52,7 +55,9 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
         # CORTEX AI Generator
         try:
             self.ai = get_cortex_engine()
-        except Exception:self.ai = None
+        except Exception as e:
+            logger.debug(f"[{self.name}] AI Engine initialization deferred: {e}")
+            self.ai = None
 
         # Stage 10 Hardening: Persistent session for high-concurrency network tasks
         self._session = None
@@ -129,7 +134,7 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
             token = event.payload.get("data", {}).get("dom_token")
             if token:
                 self.hybrid_token = token
-                print(f"[{self.name}] [HYBRID FUSION] Assimilated live DOM token: {token[:10]}... Incoming attack sequences updated.")
+                logger.debug(f"[{self.name}] [HYBRID FUSION] Assimilated live DOM token: {token[:10]}... Incoming attack sequences updated.")
 
     # NOTE: handle_control_signal is inherited from ControlSignalMixin —
     # behaviour matches the original inline handler exactly (THROTTLE /
@@ -208,7 +213,8 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
         try:
             from backend.tools.recon.registry import check_tool_availability
             available = bool(check_tool_availability(tool).get("installed"))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[{self.name}] Tool availability check failed for {tool}: {e}")
             available = False
         self._tool_avail_cache[tool] = (now, available)
         return available
@@ -246,7 +252,8 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
             vuln_class = module_id.replace("tech_", "").replace("logic_", "")
             recs = skill_library.get_recommendations(
                 target_url=packet.target.url, vuln_class=vuln_class, limit=5)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[{self.name}] Skill library recall failed: {e}")
             recs = []
 
         url = packet.target.url
@@ -262,7 +269,8 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
         try:
             from backend.core.scope import scope_guard
             in_scope = scope_guard.allows(url)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[{self.name}] Scope check failed, defaulting to in-scope: {e}")
             in_scope = True
 
         # 3. Skill recommendations can steer toward tool orchestration when a
@@ -331,7 +339,9 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
         self.record(event)
         try:
              packet = JobPacket(**packet_dict)
-        except Exception:return
+        except Exception as e:
+            logger.debug(f"[{self.name}] Job packet parse failed: {e}")
+            return
 
         if packet.config.agent_id != AgentID.SIGMA:
             return
@@ -345,22 +355,22 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
         validation_path = {"path": "module"}
         try:
             validation_path = await self._select_validation_path(module_id, packet, event.scan_id)
-            print(f"[{self.name}] [DISPATCH] '{module_id}' -> {validation_path.get('path')}"
+            logger.info(f"[{self.name}] [DISPATCH] '{module_id}' -> {validation_path.get('path')}"
                   f"{(' (' + str(validation_path.get('tool')) + ')') if validation_path.get('tool') else ''}"
                   f"{(' reason=' + validation_path.get('reason')) if validation_path.get('reason') else ''}")
             if validation_path.get("path") == "cli_tool":
                 await self._run_cli_validation(validation_path, packet, event.scan_id)
         except Exception as _se:
-            print(f"[{self.name}] technique-bridge skipped: {_se}")
+            logger.debug(f"[{self.name}] technique-bridge skipped: {_se}")
 
         if module_id in self.arsenal:
-            print(f"[{self.name}] [PLAN] Orchestrating '{module_id}' execution on {packet.target.url}")
+            logger.info(f"[{self.name}] [PLAN] Orchestrating '{module_id}' execution on {packet.target.url}")
             
             # STAGE 11: HYBRID GRAPH ENGINE PREDICTION
             predictions = graph_engine.predict_next(module_id, packet.target.url)
             if predictions:
                 top_pred = predictions[0]
-                print(f"[{self.name}] [GRAPH AI] Intelligence predicts {top_pred['suggestion']} is {top_pred['confidence']}% likely next.")
+                logger.debug(f"[{self.name}] [GRAPH AI] Intelligence predicts {top_pred['suggestion']} is {top_pred['confidence']}% likely next.")
                 # We could mutate the packet here to chain modules, but for safety we just log the intelligence advantage for now.
                 
             module = self.arsenal[module_id]
@@ -381,7 +391,7 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
                            if any(m_target in str(t.payload) for m_target in mapped_targets) or module_id.startswith("logic"):
                                valid_targets.append(t)
                       targets = valid_targets
-                      print(f"[{self.name}] [ROAST] Filtered hallucinated vectors. Clean vectors remaining: {len(targets)}")
+                      logger.debug(f"[{self.name}] [ROAST] Filtered hallucinated vectors. Clean vectors remaining: {len(targets)}")
 
             if not targets:
                 await self.bus.publish(HiveEvent(type=EventType.JOB_COMPLETED, source=self.name, payload={"job_id": packet.id, "status": "SUCCESS"}))
@@ -403,7 +413,7 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
                 
             # 2. EXECUTE: Concurrently fetch
             # Cyber-Organism Protocol: Native gathered orchestration
-            print(f"[{self.name}] [EXECUTE] Dispatching {len(targets)} asynchronous network tasks...")
+            logger.info(f"[{self.name}] [EXECUTE] Dispatching {len(targets)} asynchronous network tasks...")
             
             # PERFORMANCE CONTROL: Concurrency & Rate Limiting (Phase 2)
             rps = packet.config.params.get("rps", 100)
@@ -413,7 +423,7 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
             # just pace the dispatch.
             if self._throttled:
                 rps = max(1, rps // 2)
-                print(f"[{self.name}] [THROTTLE] Reducing RPS to {rps} under governance signal.")
+                logger.warning(f"[{self.name}] [THROTTLE] Reducing RPS to {rps} under governance signal.")
 
             # 1/rps = delay between starts to maintain ceiling
             rate_limit_delay = 1.0 / rps if rps > 0 else 0
@@ -440,7 +450,7 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
 
             
             # 3. OBSERVE: Analyze interactions
-            print(f"[{self.name}] [OBSERVE] Applying pure module evaluation...")
+            logger.debug(f"[{self.name}] [OBSERVE] Applying pure module evaluation...")
             vulns = await module.analyze_responses(list(results), packet)
 
             # Reliability feedback for the in-process module path so future
@@ -477,14 +487,14 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
             return
             
         # 4. IF SIGMA_BYPASS (Weaponssmith generation)
-        print(f"[{self.name}] Forging evasion payloads for {packet.target.url}...")
+        logger.info(f"[{self.name}] Forging evasion payloads for {packet.target.url}...")
         
         # 1. CONTEXT AWARE GENERATION
         generated_payloads = []
         
         # Try AI First (Cortex NVIDIA/Ollama) with Master Prompt Guardrails
         if self.ai and self.ai.enabled:
-             print(f"[{self.name}] >> CORTEX AI: Generating context-aware payloads via NVIDIA/Ollama...")
+             logger.debug(f"[{self.name}] >> CORTEX AI: Generating context-aware payloads via NVIDIA/Ollama...")
              
              # INJECT: Xytherion Master Prompt (DEFINE -> ROAST -> REFINE)
              master_guard = "MASTER RULE: You must NOT hallucinate endpoints. Only generate payloads valid for the observed API behavior."
@@ -500,9 +510,9 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
                  )
                  if ai_payloads:
                      generated_payloads.extend(ai_payloads)
-                     print(f"[{self.name}] >> CORTEX AI: Generated {len(ai_payloads)} ROAST-validated payloads.")
+                     logger.debug(f"[{self.name}] >> CORTEX AI: Generated {len(ai_payloads)} ROAST-validated payloads.")
              except Exception as e:
-                 print(f"[{self.name}] CORTEX AI Failure. Falling back to templates: {e}")
+                 logger.warning(f"[{self.name}] CORTEX AI Failure. Falling back to templates: {e}")
 
         
         # Fallback to Templates if AI produced nothing
@@ -541,7 +551,7 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
                 "data": {"generated_payloads": final_payloads}
             }
         ))
-        print(f"[{self.name}] Forged {len(final_payloads)} SOTA payloads.")
+        logger.info(f"[{self.name}] Forged {len(final_payloads)} SOTA payloads.")
 
         # BUG 6 FIX: Explicitly hand off payloads to Beta for execution
         beta_handoff = JobPacket(
@@ -574,7 +584,7 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
     async def _generate_browser_aware_payloads(self, url: str, scan_id: str) -> list:
         """Generate payloads based on actual DOM structure and forms."""
         try:
-            print(f"[{self.name}] Analyzing DOM structure for browser-aware payloads...")
+            logger.debug(f"[{self.name}] Analyzing DOM structure for browser-aware payloads...")
             
             # Analyze DOM structure
             dom_structure = await self._analyze_dom_structure(url)
@@ -595,24 +605,24 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
                 framework_payloads = self._generate_framework_payloads(framework, url)
                 payloads.extend(framework_payloads)
             
-            print(f"[{self.name}] Generated {len(payloads)} browser-aware payloads")
+            logger.debug(f"[{self.name}] Generated {len(payloads)} browser-aware payloads")
             
             return payloads
             
         except Exception as e:
-            print(f"[{self.name}] Browser-aware payload generation failed: {e}")
+            logger.warning(f"[{self.name}] Browser-aware payload generation failed: {e}")
             return []
     
     async def _analyze_dom_structure(self, url: str) -> dict:
         """Analyze DOM structure to understand forms, inputs, and framework."""
         try:
-            print(f"[{self.name}] Analyzing DOM structure for: {url}")
+            logger.debug(f"[{self.name}] Analyzing DOM structure for: {url}")
             
             # Navigate to page using browser
             nav_result = await self.browser.navigate(url, stealth=False)
             
             if not nav_result.get("success"):
-                print(f"[{self.name}] Navigation failed for DOM analysis")
+                logger.warning(f"[{self.name}] Navigation failed for DOM analysis")
                 return {}
             
             # Detect framework
@@ -628,12 +638,12 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
                 "url": url
             }
             
-            print(f"[{self.name}] DOM analysis complete. Framework: {framework}")
+            logger.debug(f"[{self.name}] DOM analysis complete. Framework: {framework}")
             
             return dom_structure
             
         except Exception as e:
-            print(f"[{self.name}] DOM analysis failed: {e}")
+            logger.warning(f"[{self.name}] DOM analysis failed: {e}")
             return {}
     
     async def _generate_form_specific_payloads(self, form: dict, url: str) -> list:
@@ -683,7 +693,7 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
                     ])
             
         except Exception as e:
-            print(f"[{self.name}] Form-specific payload generation failed: {e}")
+            logger.warning(f"[{self.name}] Form-specific payload generation failed: {e}")
         
         return payloads
     
@@ -716,13 +726,13 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
     async def _test_payload_browser(self, url: str, payload: str, scan_id: str) -> dict:
         """Pre-test payload in browser before mass deployment."""
         try:
-            print(f"[{self.name}] Pre-testing payload in browser: {payload[:50]}...")
+            logger.debug(f"[{self.name}] Pre-testing payload in browser: {payload[:50]}...")
             
             # Test payload using browser
             result = await self.browser.test_payload(url, payload)
             
             if result.get("triggered"):
-                print(f"[{self.name}] [PRE-TEST SUCCESS] Payload effective: {payload[:50]}")
+                logger.debug(f"[{self.name}] [PRE-TEST SUCCESS] Payload effective: {payload[:50]}")
                 
                 # Capture evidence
                 await self.forensics.capture_screenshot(
@@ -741,5 +751,5 @@ class SigmaAgent(SkillRecallMixin, SessionLifecycleMixin, ControlSignalMixin,
             return {"effective": False, "payload": payload}
             
         except Exception as e:
-            print(f"[{self.name}] Payload pre-test failed: {e}")
+            logger.warning(f"[{self.name}] Payload pre-test failed: {e}")
             return {"effective": False, "payload": payload, "error": str(e)}

@@ -74,7 +74,8 @@ class BrowserReconModule:
             try:
                 framework = await self.browser.detect_framework(url)
                 is_spa = str(framework or "").lower() in _SPA_FRAMEWORKS
-            except Exception:
+            except Exception as exc:
+                logger.debug("[BrowserRecon] framework detection failed: %s", exc)
                 is_spa = False
 
         # 2) Endpoints (DOM links, network requests captured by Playwright,
@@ -153,7 +154,8 @@ class BrowserReconModule:
             ws_urls = await self.browser.find_websockets(url)
             return [{"url": w, "method": "WS", "source": "websocket_monitor"}
                     for w in (ws_urls or []) if w]
-        except Exception:
+        except Exception as exc:
+            logger.debug("[BrowserRecon] _find_websockets failed: %s", exc)
             return []
 
     async def _extract_js_routes(self, url: str) -> list[dict[str, Any]]:
@@ -173,7 +175,8 @@ class BrowserReconModule:
                 return []
             routes = await page.evaluate(js)
             return [r for r in (routes or []) if isinstance(r, dict) and r.get("url")]
-        except Exception:
+        except Exception as exc:
+            logger.debug("[BrowserRecon] JS route extraction failed: %s", exc)
             return []
 
     async def _extract_forms(self, url: str) -> list[ParsedEntity]:
@@ -269,7 +272,8 @@ class BrowserReconModule:
         """Inspect response headers captured during navigation."""
         try:
             log = await self.browser.get_network_log()
-        except Exception:
+        except Exception as exc:
+            logger.debug("[BrowserRecon] network log retrieval failed: %s", exc)
             return []
         if not log:
             return []

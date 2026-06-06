@@ -382,7 +382,7 @@ class WorkflowSkillExtractor:
         from backend.core.skill_library import BrowserSkill
         
         skill = BrowserSkill(
-            skill_id=f"workflow_{hashlib.md5(workflow_id.encode()).hexdigest()[:12]}",
+            skill_id=f"workflow_{hashlib.sha256(workflow_id.encode()).hexdigest()[:12]}",
             name=f"Workflow: {workflow_data.get('name', 'Unnamed')}",
             skill_type="browser_workflow",
             execution_context="browser_required",

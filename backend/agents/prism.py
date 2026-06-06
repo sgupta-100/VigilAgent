@@ -41,7 +41,9 @@ class AgentPrism(BrowserEnabledAgent):
         # CORTEX AI Engine (Local Ollama)
         try:
             self.ai = get_cortex_engine()
-        except Exception:self.ai = None
+        except Exception as e:
+            logger.debug(f"[{self.name}] AI Engine initialization deferred: {e}")
+            self.ai = None
         
         # Knowledge Base: Prompt Injection Signatures (regex fallback)
         self.injection_patterns = [
@@ -69,25 +71,29 @@ class AgentPrism(BrowserEnabledAgent):
         self.max_history = 100
 
         # Skill recall cache (Architecture §5.3.5, §29.9)
-        self._skill_rec_cache = {}
+        # HIGH-69: bounded to prevent unbounded memory growth
+        self._skill_rec_cache: dict = {}
 
 
     def _recall_dom_skills(self, target_url: str = "") -> list:
         """Kappa-style skill recall (Architecture §5.3.5, §29.9): Prism receives
         DOM, JavaScript, CSP, XSS, client-side route, and prompt-injection
         skills. Cached per target to avoid rework."""
-        cache = self._skill_rec_cache
-        if target_url in cache:
-            return cache[target_url]
+        # HIGH-69: Use SkillRecallMixin._skill_cache() for bounded eviction
+        cache = self._skill_cache()
+        cache_key = (target_url, ("dom", "csp", "xss", "prompt-injection", "client-side"))
+        if cache_key in cache:
+            return cache[cache_key]
         recs = []
         try:
             from backend.core.skill_library import skill_library
             for vuln_class in ("dom", "csp", "xss", "prompt-injection", "client-side"):
                 recs.extend(skill_library.get_recommendations(
                     target_url=target_url, vuln_class=vuln_class, limit=3))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[{self.name}] DOM skill recall failed: {e}")
             recs = []
-        cache[target_url] = recs
+        cache[cache_key] = recs
         return recs
 
 
@@ -147,7 +153,7 @@ class AgentPrism(BrowserEnabledAgent):
              if "Invisible" in analysis_result['threat_type']: detected_types.append("HIDDEN_TEXT")
              
              for t_type in detected_types:
-                 print(f"[{self.name}]  THREAT DETECTED: {t_type}")
+                 logger.warning(f"[{self.name}] THREAT DETECTED: {t_type}")
                  # Broadcast for Dashboard & Visual Alert
                  await self.bus.publish(HiveEvent(
                     type=EventType.VULN_CONFIRMED,
@@ -212,9 +218,9 @@ class AgentPrism(BrowserEnabledAgent):
                     risk_score = max(risk_score, ai_risk)
                     if technique not in str(threats):
                         threats.append(f"AI-Detected: {technique}")
-                    print(f"[{self.name}] CORTEX AI: Injection detected - {technique} (risk={ai_risk})")
+                    logger.warning(f"[{self.name}] CORTEX AI: Injection detected - {technique} (risk={ai_risk})")
             except Exception as e:
-                pass  # Don't let AI failure break the scan
+                logger.debug(f"[{self.name}] CORTEX AI injection detection failed: {e}")
                 
         return {
             "risk_score": min(risk_score, 100),
@@ -287,7 +293,8 @@ class AgentPrism(BrowserEnabledAgent):
                     result = json.loads(message['data'])
                     status = result.get("response_status", 200)
                     await self._record_status(status)
-                except Exception:pass
+                except Exception as e:
+                    logger.debug(f"[{self.name}] Result interception parse error: {e}")
 
     async def _record_status(self, status: int):
         """Rolling history and immediate threshold analysis."""
@@ -308,7 +315,7 @@ class AgentPrism(BrowserEnabledAgent):
                     lock_status = await self.redis_client.get("cluster_lock")
                     if lock_status == "ABORTED":
                         # Trigger local freeze
-                        print(f"[{self.name}] 🚨 HOST PANIC: Global Cluster Lock is ABORTED. Freezing local hive.")
+                        logger.critical(f"[{self.name}] HOST PANIC: Global Cluster Lock is ABORTED. Freezing local hive.")
                         await self.bus.publish(HiveEvent(
                             type=EventType.CONTROL_SIGNAL,
                             source=self.name,
@@ -316,52 +323,7 @@ class AgentPrism(BrowserEnabledAgent):
                         ))
                 except Exception as e:
                     logger.debug(f"Lock check failure: {e}")
-
-            
-            # Active HTTP probes to detect server behavior
-            try:
-                # Probe for common security headers
-                import aiohttp
-                async with aiohttp.ClientSession() as session:
-                    response = await network_interceptor.fetch(
-                        "GET",
-                        url,
-                        session=session,
-                        timeout=10
-                    )
-                    
-                    # Check for security headers
-                    headers = response.headers
-                    missing_headers = []
-                    
-                    security_headers = [
-                        "X-Frame-Options",
-                        "X-Content-Type-Options",
-                        "Strict-Transport-Security",
-                        "Content-Security-Policy"
-                    ]
-                    
-                    for header in security_headers:
-                        if header.lower() not in [h.lower() for h in headers.keys()]:
-                            missing_headers.append(header)
-                    
-                    if missing_headers:
-                        print(f"[{self.name}] Missing security headers: {', '.join(missing_headers)}")
-                        
-                        # Report as low-severity finding
-                        await self.bus.publish(HiveEvent(
-                            type=EventType.VULN_CANDIDATE,
-                            source=self.name,
-                            scan_id=scan_id,
-                            payload={
-                                "url": url,
-                                "type": "MISSING_SECURITY_HEADERS",
-                                "severity": "LOW",
-                                "evidence": f"Missing headers: {', '.join(missing_headers)}"
-                            }
-                        ))
-            except Exception as probe_err:
-                logger.debug(f"HTTP probe failed: {probe_err}")
+            await asyncio.sleep(30)  # MED-61: Added sleep to prevent tight loop
 
 
 
@@ -375,7 +337,7 @@ class AgentPrism(BrowserEnabledAgent):
         }
         await self.redis_client.publish("xytherion_control", json.dumps(abort_packet))
         await self.redis_client.set("cluster_lock", "ABORTED")
-        print(f"[{self.name}] 🛑 SENTINEL SHIELD ACTIVATED: {reason}")
+        logger.critical(f"[{self.name}] SENTINEL SHIELD ACTIVATED: {reason}")
 
 
 
@@ -384,7 +346,7 @@ class AgentPrism(BrowserEnabledAgent):
     async def _analyze_dom_deep(self, url: str, scan_id: str) -> dict:
         """Analyze shadow DOM and hidden elements."""
         try:
-            print(f"[{self.name}] Deep DOM analysis: {url}")
+            logger.debug(f"[{self.name}] Deep DOM analysis: {url}")
             
             # Navigate with OpenClaw for deep analysis
             result = await self.browser.navigate(url, stealth=False, wait_for="networkidle")
@@ -409,7 +371,7 @@ class AgentPrism(BrowserEnabledAgent):
             }
             
         except Exception as e:
-            print(f"[{self.name}] Deep DOM analysis failed: {e}")
+            logger.error(f"[{self.name}] Deep DOM analysis failed: {e}")
             return {}
     
     async def _find_hidden_elements(self, url: str) -> list:
@@ -465,17 +427,17 @@ class AgentPrism(BrowserEnabledAgent):
                 return hidden;
             }""")
             
-            print(f"[{self.name}] Found {len(hidden_elements)} hidden elements")
+            logger.debug(f"[{self.name}] Found {len(hidden_elements)} hidden elements")
             return hidden_elements
             
         except Exception as e:
-            print(f"[{self.name}] Hidden element detection failed: {e}")
+            logger.error(f"[{self.name}] Hidden element detection failed: {e}")
             return []
     
     async def _analyze_iframes(self, url: str) -> list:
         """Inspect iframe content for suspicious behavior."""
         try:
-            print(f"[{self.name}] Analyzing iframes on: {url}")
+            logger.debug(f"[{self.name}] Analyzing iframes on: {url}")
             
             # Navigate to page and extract iframes
             result = await self.browser.navigate(url, stealth=False)
@@ -516,7 +478,7 @@ class AgentPrism(BrowserEnabledAgent):
             # For now, return empty list as placeholder
             
             if iframes:
-                print(f"[{self.name}] Found {len(iframes)} iframes")
+                logger.debug(f"[{self.name}] Found {len(iframes)} iframes")
                 
                 # Report suspicious iframes
                 suspicious_iframes = [i for i in iframes if i.get("suspicious")]
@@ -536,7 +498,7 @@ class AgentPrism(BrowserEnabledAgent):
             return iframes
             
         except Exception as e:
-            print(f"[{self.name}] Iframe analysis failed: {e}")
+            logger.error(f"[{self.name}] Iframe analysis failed: {e}")
             return []
     
     async def _detect_prompt_injection_dom(self, url: str) -> dict:
@@ -562,7 +524,7 @@ class AgentPrism(BrowserEnabledAgent):
             return {"detected": False, "risk_score": 0}
             
         except Exception as e:
-            print(f"[{self.name}] Prompt injection detection failed: {e}")
+            logger.error(f"[{self.name}] Prompt injection detection failed: {e}")
             return {"detected": False, "error": str(e)}
     
     def _calculate_deep_risk(self, hidden_elements: list, iframes: list, prompt_injection: dict) -> int:

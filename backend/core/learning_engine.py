@@ -12,7 +12,9 @@ This engine:
 """
 
 import asyncio
+import hashlib
 import json
+import logging
 import math
 import time
 from pathlib import Path
@@ -23,6 +25,8 @@ import re
 
 from backend.core.memory import memory_store, cosine_similarity
 from backend.core.unified_knowledge_graph import knowledge_graph
+
+logger = logging.getLogger("LearningEngine")
 
 try:
     import redis
@@ -91,6 +95,13 @@ class ContinuousLearningEngine:
         self.redis_client = redis_client
         self._learning_cache: Dict[str, bool] = {}
         
+        # HIGH-67: Dirty-flag batching — avoid rewriting the entire JSON
+        # file on every single pattern change.
+        self._patterns_dirty = False
+        self._metrics_dirty = False
+        self._last_save_time = 0.0
+        self._SAVE_MIN_INTERVAL = 30.0  # seconds between disk writes
+        
         self._ensure_files()
         self._load_patterns()
         self._load_metrics()
@@ -110,17 +121,31 @@ class ContinuousLearningEngine:
             for item in data:
                 pattern = LearningPattern(**item)
                 self.patterns[pattern.pattern_id] = pattern
-            print(f"[LearningEngine] Loaded {len(self.patterns)} patterns from disk")
+            logger.debug(f"[LearningEngine] Loaded {len(self.patterns)} patterns from disk")
         except Exception as e:
-            print(f"[LearningEngine] Failed to load patterns: {e}")
+            logger.warning(f"[LearningEngine] Failed to load patterns: {e}")
     
     def _save_patterns(self):
-        """Save learned patterns to disk."""
+        """Persist learned patterns to disk.
+        
+        HIGH-67: Only writes when there are pending mutations
+        (``_patterns_dirty``) AND at least ``_SAVE_MIN_INTERVAL`` seconds
+        have elapsed since the last write.  Callers should set
+        ``_patterns_dirty = True`` whenever they mutate ``self.patterns``;
+        this method handles the actual I/O.
+        """
+        if not self._patterns_dirty:
+            return
+        now = time.time()
+        if (now - self._last_save_time) < self._SAVE_MIN_INTERVAL:
+            return  # throttle: skip write, next call will pick it up
         try:
             data = [asdict(p) for p in self.patterns.values()]
             self.patterns_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            self._patterns_dirty = False
+            self._last_save_time = now
         except Exception as e:
-            print(f"[LearningEngine] Failed to save patterns: {e}")
+            logger.error(f"[LearningEngine] Failed to save patterns: {e}")
     
     def _load_metrics(self):
         """Load learning metrics from disk."""
@@ -128,15 +153,52 @@ class ContinuousLearningEngine:
             data = json.loads(self.metrics_file.read_text(encoding="utf-8"))
             self.metrics = LearningMetrics(**data)
         except Exception as e:
-            print(f"[LearningEngine] Failed to load metrics: {e}")
+            logger.warning(f"[LearningEngine] Failed to load metrics: {e}")
     
     def _save_metrics(self):
-        """Save learning metrics to disk."""
+        """Persist learning metrics to disk.
+        
+        HIGH-67: Same dirty-flag + throttle pattern as ``_save_patterns``.
+        """
+        if not self._metrics_dirty:
+            return
+        now = time.time()
+        if (now - self._last_save_time) < self._SAVE_MIN_INTERVAL:
+            return
         try:
             self.metrics_file.write_text(json.dumps(asdict(self.metrics), indent=2), encoding="utf-8")
+            self._metrics_dirty = False
+            self._last_save_time = now
         except Exception as e:
-            print(f"[LearningEngine] Failed to save metrics: {e}")
+            logger.error(f"[LearningEngine] Failed to save metrics: {e}")
     
+    # ------------------------------------------------------------------
+    # HIGH-67: Dirty-flag helpers
+    # ------------------------------------------------------------------
+    # Instead of calling _save_patterns() directly on every mutation,
+    # callers mark the in-memory store dirty and let _batch_save() or
+    # the next _save_patterns() call handle the actual I/O.
+
+    def _mark_patterns_dirty(self):
+        """Mark that patterns have been mutated and need persisting."""
+        self._patterns_dirty = True
+
+    def _mark_metrics_dirty(self):
+        """Mark that metrics have been mutated and need persisting."""
+        self._metrics_dirty = True
+
+    def _batch_save(self):
+        """Flush dirty patterns + metrics to disk in one I/O pass.
+        
+        Called from async contexts via ``asyncio.to_thread(self._batch_save)``
+        so the synchronous JSON serialisation + file writes do NOT block the
+        event loop.  Must remain a plain (sync) function so that
+        ``asyncio.to_thread`` dispatches it to a worker thread rather than
+        scheduling a coroutine on the loop.
+        """
+        self._save_patterns()
+        self._save_metrics()
+
     def _generate_pattern_id(self, pattern_type: str, pattern_data: Dict[str, Any]) -> str:
         """Generate unique pattern ID."""
         import hashlib
@@ -157,7 +219,7 @@ class ContinuousLearningEngine:
         if not vuln_type or not url:
             return
         
-        print(f"[LearningEngine] Learning from {vuln_type} vulnerability at {url}")
+        logger.info(f"[LearningEngine] Learning from {vuln_type} vulnerability at {url}")
         
         # 1. Learn endpoint pattern
         await self._learn_endpoint_pattern(vuln_type, url, success=True)
@@ -171,7 +233,7 @@ class ContinuousLearningEngine:
         # 4. Update metrics
         self.metrics.total_vulns_learned += 1
         self.metrics.last_updated = time.time()
-        self._save_metrics()
+        self._mark_metrics_dirty()
     
     async def learn_from_failure(self, attack_data: Dict[str, Any], scan_id: str):
         """
@@ -224,7 +286,7 @@ class ContinuousLearningEngine:
             pattern.update_confidence()
             self.patterns[pattern_id] = pattern
         
-        self._save_patterns()
+        self._mark_patterns_dirty()
     
     async def _learn_payload_pattern(self, vuln_type: str, payload: str, success: bool):
         """Extract and learn payload patterns."""
@@ -265,7 +327,7 @@ class ContinuousLearningEngine:
             pattern.update_confidence()
             self.patterns[pattern_id] = pattern
         
-        self._save_patterns()
+        self._mark_patterns_dirty()
     
     async def _learn_vuln_correlation(self, scan_id: str, vuln_type: str, url: str):
         """Learn correlations between vulnerabilities in the same scan."""
@@ -313,9 +375,9 @@ class ContinuousLearningEngine:
                         pattern.update_confidence()
                         self.patterns[pattern_id] = pattern
             
-            self._save_patterns()
+            self._mark_patterns_dirty()
         except Exception as e:
-            print(f"[LearningEngine] Failed to learn correlations: {e}")
+            logger.warning(f"[LearningEngine] Failed to learn correlations: {e}")
     
     def _extract_url_pattern(self, url: str) -> str:
         """Convert specific URL to reusable pattern."""
@@ -429,7 +491,7 @@ class ContinuousLearningEngine:
         Consolidate similar patterns to prevent pattern explosion.
         Runs periodically to merge similar patterns.
         """
-        print("[LearningEngine] Consolidating patterns...")
+        logger.debug("[LearningEngine] Consolidating patterns...")
         
         # Group patterns by type
         by_type = defaultdict(list)
@@ -469,8 +531,8 @@ class ContinuousLearningEngine:
                 del self.patterns[pattern_id]
         
         if consolidated_count > 0:
-            print(f"[LearningEngine] Consolidated {consolidated_count} patterns")
-            self._save_patterns()
+            logger.debug(f"[LearningEngine] Consolidated {consolidated_count} patterns")
+            self._mark_patterns_dirty()
         
         return consolidated_count
     
@@ -525,7 +587,7 @@ class ContinuousLearningEngine:
         """
         Called when a scan completes to extract all learnings.
         """
-        print(f"[LearningEngine] Analyzing completed scan: {scan_id}")
+        logger.info(f"[LearningEngine] Analyzing completed scan: {scan_id}")
         
         # Update scan count
         self.metrics.total_scans_analyzed += 1
@@ -534,8 +596,8 @@ class ContinuousLearningEngine:
         if self.metrics.total_scans_analyzed % 10 == 0:
             await self.consolidate_patterns()
         
-        self._save_metrics()
-    
+        self._mark_metrics_dirty()
+
     # ------------------------------------------------------------------
     # Browser-vulnerability learning (deep-system-integration spec, R1.1, R2.1-2.4)
     # ------------------------------------------------------------------
@@ -664,17 +726,16 @@ class ContinuousLearningEngine:
             # Both writes are best-effort — failure to persist must not
             # propagate into the IntegrationCoordinator's circuit breaker.
             try:
-                await asyncio.to_thread(self._save_patterns)
-                await asyncio.to_thread(self._save_metrics)
+                await asyncio.wait_for(asyncio.to_thread(self._batch_save), timeout=15)
             except Exception as e:  # pragma: no cover - disk hiccup
-                print(f"[LearningEngine] browser-vuln persist failed: {e}")
+                logger.warning(f"[LearningEngine] browser-vuln persist failed: {e}")
             
             return True
         except Exception as e:
             # Hard failure — clear the slot so a future retry isn't blocked
             # by stale idempotency state.
             self._clear_browser_learn_lock(lock_key)
-            print(f"[LearningEngine] learn_from_browser_vulnerability failed: {e}")
+            logger.error(f"[LearningEngine] learn_from_browser_vulnerability failed: {e}")
             return False
         finally:
             await self._release_browser_learn_lock(lock_key)
@@ -720,12 +781,12 @@ class ContinuousLearningEngine:
             return True
         try:
             # SET NX EX in a worker thread — redis-py is sync-blocking.
-            result = await asyncio.to_thread(
+            result = await asyncio.wait_for(asyncio.to_thread(
                 self.redis_client.set, lock_key, "1", **{"nx": True, "ex": ttl_seconds}
-            )
+            ), timeout=15)
             return bool(result)
         except Exception as e:
-            print(f"[LearningEngine] lock acquire failed: {e}")
+            logger.warning(f"[LearningEngine] lock acquire failed: {e}")
             # Fail-open on Redis error — better to over-learn than to drop signal.
             return True
     
@@ -748,7 +809,7 @@ class ContinuousLearningEngine:
         try:
             self.redis_client.delete(lock_key)
         except Exception as e:
-            print(f"[LearningEngine] lock clear failed: {e}")
+            logger.warning(f"[LearningEngine] lock clear failed: {e}")
     
     def _extract_browser_context(self, vuln_data: Dict[str, Any]) -> Dict[str, Any]:
         """Capture the browser environment that produced the finding.
@@ -820,7 +881,8 @@ class ContinuousLearningEngine:
         from urllib.parse import urlparse
         try:
             host = urlparse(url).hostname or ""
-        except Exception:
+        except Exception as parse_exc:
+            logger.debug("[LearningEngine] URL parse failed: %s", parse_exc)
             host = ""
         return {
             "host": host,  # informational — NOT a scope grant
@@ -982,17 +1044,16 @@ class ContinuousLearningEngine:
             
             # ---- 4. Persist off the event loop (§29.13) --------------
             try:
-                await asyncio.to_thread(self._save_patterns)
-                await asyncio.to_thread(self._save_metrics)
+                await asyncio.wait_for(asyncio.to_thread(self._batch_save), timeout=15)
             except Exception as e:  # pragma: no cover - disk hiccup
-                print(f"[LearningEngine] browser-workflow persist failed: {e}")
+                logger.warning(f"[LearningEngine] browser-workflow persist failed: {e}")
             
             return True
         except Exception as e:
             # Hard failure — clear the slot so a future retry isn't blocked
             # by stale idempotency state.
             self._clear_browser_learn_lock(lock_key)
-            print(f"[LearningEngine] learn_browser_workflow failed: {e}")
+            logger.error(f"[LearningEngine] learn_browser_workflow failed: {e}")
             return False
         finally:
             await self._release_browser_learn_lock(lock_key)
@@ -1452,15 +1513,14 @@ class ContinuousLearningEngine:
             
             # ---- 4. Persist off the event loop (§29.13) --------------
             try:
-                await asyncio.to_thread(self._save_patterns)
-                await asyncio.to_thread(self._save_metrics)
+                await asyncio.wait_for(asyncio.to_thread(self._batch_save), timeout=15)
             except Exception as e:  # pragma: no cover - disk hiccup
-                print(f"[LearningEngine] framework-pattern persist failed: {e}")
+                logger.warning(f"[LearningEngine] framework-pattern persist failed: {e}")
             
             return True
         except Exception as e:
             self._clear_browser_learn_lock(lock_key)
-            print(f"[LearningEngine] learn_framework_pattern failed: {e}")
+            logger.error(f"[LearningEngine] learn_framework_pattern failed: {e}")
             return False
         finally:
             await self._release_browser_learn_lock(lock_key)
@@ -1550,7 +1610,7 @@ class BrowserLearningExtension:
             result = self.redis.set(lock_key, "1", nx=True, ex=ttl_seconds)
             return bool(result)
         except Exception as e:
-            print(f"[BrowserLearning] Lock acquisition failed: {e}")
+            logger.warning(f"[BrowserLearning] Lock acquisition failed: {e}")
             return False
     
     async def _release_lock(self, lock_key: str):
@@ -1562,7 +1622,7 @@ class BrowserLearningExtension:
         try:
             self.redis.delete(lock_key)
         except Exception as e:
-            print(f"[BrowserLearning] Lock release failed: {e}")
+            logger.warning(f"[BrowserLearning] Lock release failed: {e}")
     
     async def learn_from_browser_vulnerability(
         self,
@@ -1579,7 +1639,7 @@ class BrowserLearningExtension:
         
         # Acquire distributed lock
         if not await self._acquire_lock(lock_key, ttl_seconds=300):
-            print(f"[BrowserLearning] Duplicate vulnerability, skipping: {idem_key}")
+            logger.debug(f"[BrowserLearning] Duplicate vulnerability, skipping: {idem_key}")
             return False
         
         try:
@@ -1621,9 +1681,9 @@ class BrowserLearningExtension:
                 pattern.update_confidence()
                 self.engine.patterns[pattern_id] = pattern
             
-            self.engine._save_patterns()
+            self.engine._mark_patterns_dirty()
             
-            print(f"[BrowserLearning] Learned from browser vulnerability: {vuln_data.get('type')}")
+            logger.info(f"[BrowserLearning] Learned from browser vulnerability: {vuln_data.get('type')}")
             return True
             
         finally:
@@ -1647,7 +1707,8 @@ class BrowserLearningExtension:
                     stats = json.loads(stats_data)
                 else:
                     stats = {"success_count": 0, "failure_count": 0, "total_runs": 0}
-            except Exception:
+            except Exception as redis_exc:
+                logger.debug("[BrowserLearning] workflow stats Redis read failed: %s", redis_exc)
                 stats = {"success_count": 0, "failure_count": 0, "total_runs": 0}
         else:
             stats = {"success_count": 0, "failure_count": 0, "total_runs": 0}
@@ -1666,7 +1727,7 @@ class BrowserLearningExtension:
             try:
                 self.redis.set(stats_key, json.dumps(stats), ex=86400)  # 24 hour expiry
             except Exception as e:
-                print(f"[BrowserLearning] Failed to store workflow stats: {e}")
+                logger.warning(f"[BrowserLearning] Failed to store workflow stats: {e}")
         
         # Promote to skill if threshold reached (>70% success rate, >5 runs)
         if stats["success_rate"] > 0.7 and stats["total_runs"] >= 5:
@@ -1693,9 +1754,9 @@ class BrowserLearningExtension:
             )
             
             self.engine.patterns[pattern_id] = pattern
-            self.engine._save_patterns()
+            self.engine._mark_patterns_dirty()
             
-            print(f"[BrowserLearning] Promoted workflow to skill: {workflow_id}")
+            logger.info(f"[BrowserLearning] Promoted workflow to skill: {workflow_id}")
     
     async def get_browser_recommendations(
         self,
@@ -1780,7 +1841,8 @@ class BrowserLearningExtension:
                     existing_routes = set(json.loads(existing_data))
                 else:
                     existing_routes = set()
-            except Exception:
+            except Exception as redis_exc:
+                logger.debug("[BrowserLearning] framework routes Redis read failed: %s", redis_exc)
                 existing_routes = set()
         else:
             existing_routes = set()
@@ -1798,7 +1860,7 @@ class BrowserLearningExtension:
             try:
                 self.redis.set(routes_key, json.dumps(all_routes), ex=86400 * 7)  # 7 day expiry
             except Exception as e:
-                print(f"[BrowserLearning] Failed to store framework routes: {e}")
+                logger.warning(f"[BrowserLearning] Failed to store framework routes: {e}")
         
         # Extract route patterns
         pattern_data = {
@@ -1828,9 +1890,7 @@ class BrowserLearningExtension:
             )
             self.engine.patterns[pattern_id] = pattern
         
-        self.engine._save_patterns()
-        
-        print(f"[BrowserLearning] Learned {len(new_routes)} new routes for {framework}")
+        self.engine._mark_patterns_dirty()
     
     def _extract_route_patterns(self, routes: List[str]) -> List[str]:
         """Extract common patterns from routes"""
@@ -1976,8 +2036,8 @@ class CrossSystemLearningExtension:
                         self.engine.patterns[pattern_id] = pattern
         
         if hybrid_patterns:
-            self.engine._save_patterns()
-            print(f"[CrossSystemLearning] Identified {len(hybrid_patterns)} hybrid patterns")
+            self.engine._mark_patterns_dirty()
+            logger.info(f"[CrossSystemLearning] Identified {len(hybrid_patterns)} hybrid patterns")
         
         return hybrid_patterns
     
@@ -2040,9 +2100,7 @@ class CrossSystemLearningExtension:
         )
         
         self.engine.patterns[pattern_id] = pattern
-        self.engine._save_patterns()
-        
-        print(f"[CrossSystemLearning] Extracted HTTP payload from browser workflow: {workflow.get('id')}")
+        self.engine._mark_patterns_dirty()
         
         return http_payload
     
@@ -2115,9 +2173,7 @@ class CrossSystemLearningExtension:
             )
             self.engine.patterns[pattern_id] = pattern
         
-        self.engine._save_patterns()
-        
-        print(f"[CrossSystemLearning] Tracked HTTP-browser correlation: {correlation_data['overlap_rate']:.1%} overlap")
+        self.engine._mark_patterns_dirty() {correlation_data['overlap_rate']:.1%} overlap")
     
     def get_correlation_stats(self) -> Dict[str, Any]:
         """Get statistics about HTTP-browser correlations"""
@@ -2209,7 +2265,7 @@ class AuthenticationPatternLearner:
         from backend.core.skill_library import BrowserSkill
         
         skill = BrowserSkill(
-            skill_id=f"auth_{hashlib.md5(pattern['domain'].encode()).hexdigest()[:12]}",
+            skill_id=f"auth_{hashlib.sha256(pattern['domain'].encode()).hexdigest()[:12]}",
             name=f"Auth: {pattern['domain']} ({pattern['method']})",
             skill_type="authentication_workflow",
             execution_context="browser_required",

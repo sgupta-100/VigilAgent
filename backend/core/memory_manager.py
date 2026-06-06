@@ -100,7 +100,8 @@ class ScanMemoryProvider(BaseMemoryProvider):
             return []
         try:
             hits = self._db.search(text, scan_id=scan_id, limit=8)
-        except Exception:
+        except Exception as exc:
+            logger.debug("ScanMemoryProvider prefetch failed: %s", exc)
             return []
         return [f"{h['kind']}: {h['text'][:300]}" for h in hits]
 
@@ -112,8 +113,8 @@ class ScanMemoryProvider(BaseMemoryProvider):
         if scan_id and summary:
             try:
                 self._db.add_message(scan_id, "agent", summary, agent=outcome.get("agent", ""))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("ScanMemoryProvider sync failed: %s", exc)
 
 
 class SemanticSecurityMemoryProvider(BaseMemoryProvider):
@@ -129,7 +130,8 @@ class SemanticSecurityMemoryProvider(BaseMemoryProvider):
             return []
         try:
             rows = self._store._read_list(self._store.semantic_file)
-        except Exception:
+        except Exception as exc:
+            logger.debug("SemanticSecurityMemoryProvider prefetch failed: %s", exc)
             return []
         vuln_class = (query.get("vuln_class") or "").lower()
         out: list[str] = []
@@ -146,8 +148,8 @@ class SemanticSecurityMemoryProvider(BaseMemoryProvider):
         if pattern:
             try:
                 self._store.remember_semantic({"pattern": pattern, "source": outcome.get("agent", "")})
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("SemanticSecurityMemoryProvider sync failed: %s", exc)
 
 
 class SkillMemoryProvider(BaseMemoryProvider):
@@ -161,7 +163,8 @@ class SkillMemoryProvider(BaseMemoryProvider):
     async def prefetch(self, query: dict) -> list[str]:
         try:
             from backend.skills import skill_catalog
-        except Exception:
+        except Exception as exc:
+            logger.debug("SkillMemoryProvider import failed: %s", exc)
             return []
         vuln_class = (query.get("vuln_class") or "").lower()
         domain = (query.get("domain") or "").lower()
@@ -172,7 +175,8 @@ class SkillMemoryProvider(BaseMemoryProvider):
                 if (not vuln_class and not domain) or vuln_class in blob or domain in (meta.domain or "").lower():
                     out.append(f"skill[{meta.promotion_state.value}]: {meta.name} "
                                f"(domain={meta.domain}, risk={meta.risk_class.value})")
-        except Exception:
+        except Exception as exc:
+            logger.debug("SkillMemoryProvider prefetch iteration failed: %s", exc)
             return []
         return out[:8]
 
@@ -279,22 +283,22 @@ class MemoryManager:
         for provider in self._providers.values():
             try:
                 await provider.sync(outcome)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("MemoryManager sync failed for provider %s: %s", getattr(provider, 'name', 'unknown'), exc)
 
     async def before_compression(self) -> None:
         for provider in self._providers.values():
             try:
                 await provider.before_compression()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("MemoryManager before_compression failed for %s: %s", getattr(provider, 'name', 'unknown'), exc)
 
     async def on_delegation_complete(self, result: dict) -> None:
         for provider in self._providers.values():
             try:
                 await provider.on_delegation_complete(result)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("MemoryManager on_delegation_complete failed for %s: %s", getattr(provider, 'name', 'unknown'), exc)
 
 
 def build_default_memory_manager() -> MemoryManager:
@@ -303,13 +307,15 @@ def build_default_memory_manager() -> MemoryManager:
     try:
         from backend.core.scan_state_db import scan_state_db
         mgr.register(ScanMemoryProvider(scan_state_db))
-    except Exception:
+    except Exception as exc:
+        logger.debug("build_default_memory_manager: scan_state_db unavailable: %s", exc)
         mgr.register(ScanMemoryProvider(None))
     try:
         from backend.core.memory import memory_store
         store = getattr(memory_store, "dual", None) or getattr(memory_store, "_dual", None)
         mgr.register(SemanticSecurityMemoryProvider(store))
-    except Exception:
+    except Exception as exc:
+        logger.debug("build_default_memory_manager: memory_store unavailable: %s", exc)
         mgr.register(SemanticSecurityMemoryProvider(None))
     mgr.register(SkillMemoryProvider())
     mgr.register(ToolReliabilityMemoryProvider())

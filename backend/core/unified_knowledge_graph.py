@@ -22,11 +22,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable, Optional, Dict, List
+
+logger = logging.getLogger("unified_knowledge_graph")
 
 from backend.core.perf import TTLCache
 
@@ -126,7 +129,11 @@ class Severity(str, Enum):
 
 def stable_id(*parts: str) -> str:
     raw = "|".join(part.lower().strip() for part in parts)
-    return hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()
+    # NOTE: sha256 is used for node ID stability (not security). Changed from
+    # sha1 per audit HIGH-19. The 64-char hex is a superset of the old 40-char
+    # sha1 output so existing 40-char lookups that were truncated will still
+    # match if they happen to share the same prefix (low risk for graph IDs).
+    return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
 
 
 @dataclass
@@ -297,7 +304,8 @@ class KnowledgeGraph:
                 self.nodes[node.id] = node
                 self._adj_out.setdefault(node.id, [])
                 self._adj_in.setdefault(node.id, [])
-            except Exception:
+            except Exception as node_exc:
+                logger.debug(f"[KnowledgeGraph] Node ingestion failed: {node_exc}")
                 continue
         for e in data.get("edges", []):
             try:
@@ -306,7 +314,8 @@ class KnowledgeGraph:
                 self.edges[edge.id] = edge
                 self._adj_out.setdefault(edge.src_id, []).append(edge.id)
                 self._adj_in.setdefault(edge.dst_id, []).append(edge.id)
-            except Exception:
+            except Exception as edge_exc:
+                logger.debug(f"[KnowledgeGraph] Edge ingestion failed: {edge_exc}")
                 continue
 
 
@@ -408,7 +417,7 @@ class GraphEngine:
                         dst = VulnNode.from_dict(e_data["dst"])
                         self._add_or_update_edge(src, dst, e_data.get("weight", 1))
             except Exception as e:
-                print(f"[GraphEngine] Failed to load intelligence graph: {e}")
+                logger.warning(f"[GraphEngine] Failed to load intelligence graph: {e}")
 
     async def save_graph(self):
         async with self._lock:
@@ -422,7 +431,7 @@ class GraphEngine:
                     os.replace(TMP_GRAPH_FILE, GRAPH_FILE)
                 await asyncio.get_running_loop().run_in_executor(None, _write)
             except Exception as e:
-                print(f"[GraphEngine] Failed to persist intelligence graph: {e}")
+                logger.warning(f"[GraphEngine] Failed to persist intelligence graph: {e}")
 
     def _rebuild_adj(self):
         self._adj = {}
@@ -436,12 +445,12 @@ class GraphEngine:
             pruned_count = len(self.nodes) - max_nodes
             self.nodes = survivors
             self.edges = {e for e in self.edges if e.src in survivors and e.dst in survivors}
-            print(f"[GraphEngine] Pruned {pruned_count} low-confidence nodes.")
+            logger.debug(f"[GraphEngine] Pruned {pruned_count} low-confidence nodes.")
         if len(self.edges) > max_edges:
             sorted_edges = sorted(list(self.edges), key=lambda x: x.weight, reverse=True)
             pruned_count = len(self.edges) - max_edges
             self.edges = set(sorted_edges[:max_edges])
-            print(f"[GraphEngine] Pruned {pruned_count} low-weight edges.")
+            logger.debug(f"[GraphEngine] Pruned {pruned_count} low-weight edges.")
         self._rebuild_adj()
 
     def _add_or_update_node(self, type: str, endpoint: str, weight: int = 1, source: str = "UNKNOWN") -> VulnNode:
@@ -590,6 +599,7 @@ class BrowserKnowledgeGraphExtension:
 
     def __init__(self, knowledge_graph: KnowledgeGraph):
         self.graph = knowledge_graph
+        self._fire_and_forget_tasks: set[asyncio.Task] = set()
 
     def add_browser_discovery(self, discovery: Dict[str, Any], scan_id: str = "GLOBAL") -> str:
         """Ingest a browser-recon discovery and return the node_id (Architecture §12, §29.8).
@@ -632,7 +642,9 @@ class BrowserKnowledgeGraphExtension:
             try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
-                    loop.create_task(asyncio.to_thread(save_async))
+                    task = loop.create_task(asyncio.wait_for(asyncio.to_thread(save_async), timeout=15))
+                    self._fire_and_forget_tasks.add(task)
+                    task.add_done_callback(self._fire_and_forget_tasks.discard)
             except RuntimeError:
                 pass  # no running loop — skip persistence quietly
         return node.id

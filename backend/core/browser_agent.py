@@ -4,11 +4,14 @@ BrowserEnabledAgent: Base class for agents with browser capabilities.
 Consolidates browser initialization and provides common browser methods.
 """
 
+import logging
 from backend.core.hive import BaseAgent
 from backend.core.browser_orchestrator import BrowserOrchestrator
 from backend.core.hybrid_session_manager import HybridSessionManager
 from backend.core.forensic_collector import ForensicCollector
 from backend.core.browser_optimization import get_optimized_browser
+
+logger = logging.getLogger("BrowserAgent")
 
 
 class BrowserEnabledAgent(BaseAgent):
@@ -76,7 +79,7 @@ class BrowserEnabledAgent(BaseAgent):
             else:
                 await self._browser.initialize()
             self._browser_initialized = True
-            print(f"[{self.name}] Browser capabilities initialized")
+            logger.info(f"[{self.name}] Browser capabilities initialized")
     
     async def navigate_browser(self, url: str, stealth: bool = False, scan_id: str = None):
         """Navigate to URL using browser."""
@@ -131,7 +134,7 @@ class BrowserEnabledAgent(BaseAgent):
     async def cleanup_browser(self):
         """Cleanup browser resources."""
         # Context pool handles cleanup automatically
-        print(f"[{self.name}] Browser cleanup complete")
+        logger.info(f"[{self.name}] Browser cleanup complete")
 
 
 class BrowserMixin:
@@ -225,7 +228,7 @@ class ForensicMixin:
             label=f"{label}_network"
         )
         
-        print(f"[ForensicMixin] Captured comprehensive evidence for {label}")
+        logger.info(f"[ForensicMixin] Captured comprehensive evidence for {label}")
     
     async def bundle_scan_evidence(self, scan_id: str, vuln_id: str):
         """Bundle all evidence for a vulnerability."""
@@ -234,5 +237,5 @@ class ForensicMixin:
             self.forensics = ForensicCollector()
         
         bundle_path = await self.forensics.bundle_evidence(scan_id, vuln_id)
-        print(f"[ForensicMixin] Evidence bundled: {bundle_path}")
+        logger.info(f"[ForensicMixin] Evidence bundled: {bundle_path}")
         return bundle_path

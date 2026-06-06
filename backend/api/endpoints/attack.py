@@ -10,6 +10,8 @@ from backend.core.state import stats_db_manager
 from backend.core.rate_limiter import rate_limit
 from backend.core.url_validator import validate_url
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
@@ -58,7 +60,9 @@ async def fire_attack(request: Request, payload: AttackPayload, background_tasks
     if payload.body:
         try:
             parsed_body = json.loads(payload.body)
-        except Exception:
+        except Exception as exc:
+            import logging as _log
+            _log.debug(f"Attack payload JSON parse fallback: {exc}")
             parsed_body = payload.body # Fallback if not JSON string
 
     target_config = {

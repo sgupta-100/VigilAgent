@@ -137,19 +137,30 @@ class CredentialVault:
         This keeps the vault stable across restarts when no VIGILAGENT_VAULT_KEY
         is set, instead of regenerating an ephemeral key each run. The key file
         is gitignored via the scan_states/ data path."""
+        import fcntl
         key_path = self.storage_dir / ".vault_key"
         try:
-            if key_path.exists():
-                data = key_path.read_bytes().strip()
-                if data:
-                    return data
-            key = Fernet.generate_key()
-            key_path.write_bytes(key)
-            try:
-                os.chmod(key_path, 0o600)
-            except Exception:
-                pass  # best-effort on platforms without POSIX perms
-            return key
+            # FIX-019: Atomic file creation to prevent TOCTOU race
+            lock_path = self.storage_dir / ".vault_key.lock"
+            with open(lock_path, "w") as lock_file:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    if key_path.exists():
+                        data = key_path.read_bytes().strip()
+                        if data:
+                            return data
+                    key = Fernet.generate_key()
+                    # Atomic write: write to temp, then rename
+                    tmp_path = self.storage_dir / ".vault_key.tmp"
+                    tmp_path.write_bytes(key)
+                    tmp_path.rename(key_path)
+                    try:
+                        os.chmod(key_path, 0o600)
+                    except Exception as exc:
+                        logger.debug("[Vault] chmod failed (non-POSIX?): %s", exc)  # best-effort on platforms without POSIX perms
+                    return key
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         except Exception as exc:  # pragma: no cover - fall back to in-memory key
             logger.debug("[Vault] local key persistence unavailable (%s); using in-memory key.", exc)
             return Fernet.generate_key()
@@ -158,21 +169,26 @@ class CredentialVault:
         if self.encryption_enabled and self.cipher:
             try:
                 return self.cipher.encrypt(secret.encode("utf-8")).decode("ascii")
-            except Exception:
-                pass
-        # Obfuscation fallback so the cleartext is never stored verbatim.
-        return "b64:" + base64.b64encode(secret.encode("utf-8")).decode("ascii")
+            except Exception as exc:
+                logger.error("[Vault] Fernet encrypt failed: %s", exc)
+        # FIX-017: Base64 is NOT encryption — refuse to store if proper encryption unavailable
+        raise RuntimeError(
+            "Credential vault encryption is unavailable. "
+            "Install 'cryptography' or set VIGILAGENT_VAULT_KEY."
+        )
 
     def _decrypt(self, blob: str) -> str:
         if blob.startswith("b64:"):
             try:
                 return base64.b64decode(blob[4:]).decode("utf-8")
-            except Exception:
+            except Exception as exc:
+                logger.debug("[Vault] b64 decode failed: %s", exc)
                 return ""
         if self.encryption_enabled and self.cipher:
             try:
                 return self.cipher.decrypt(blob.encode("ascii")).decode("utf-8")
-            except Exception:
+            except Exception as exc:
+                logger.debug("[Vault] Fernet decrypt failed: %s", exc)
                 return ""
         return ""
 
@@ -187,7 +203,8 @@ class CredentialVault:
             return
         try:
             rows = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            logger.debug("[Vault] Failed to load credential store: %s", exc)
             return
         with self._lock:
             for r in rows:

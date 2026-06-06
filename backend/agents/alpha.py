@@ -15,12 +15,15 @@ Responsibilities (Architecture §5.1.1 — Alpha Unified):
   - Emit live events; produce recon confidence scores.
   - Hand validated surface data to Omega and Sigma.
 """
+import logging
 from backend.core.hive import EventType, HiveEvent
 from backend.core.browser_agent import BrowserEnabledAgent
 from backend.core.protocol import JobPacket, ResultPacket, AgentID, ModuleConfig, TaskTarget
 from backend.core.config import settings
 from backend.agents.alpha_recon import AlphaOrchestrator
 from backend.ai.cortex import CortexEngine, get_cortex_engine
+
+logger = logging.getLogger("AgentAlpha")
 
 
 class AlphaAgent(BrowserEnabledAgent):
@@ -50,10 +53,10 @@ class AlphaAgent(BrowserEnabledAgent):
         signal = event.payload.get("signal", "")
         if signal in ("THROTTLE", "STEALTH_MODE"):
             self._throttled = True
-            print(f"[{self.name}] Governance: {signal} received. Pausing new recon dispatch.")
+            logger.info(f"[{self.name}] Governance: {signal} received. Pausing new recon dispatch.")
         elif signal == "RESUME":
             self._throttled = False
-            print(f"[{self.name}] Governance: RESUME received. Recon dispatch unpaused.")
+            logger.info(f"[{self.name}] Governance: RESUME received. Recon dispatch unpaused.")
 
     def _resolve_mode(self, *sources) -> str:
         for s in sources:
@@ -70,14 +73,14 @@ class AlphaAgent(BrowserEnabledAgent):
         # When the orchestrator drives recon via the Mission Planner, wait for
         # the planner's assignment instead of double-running.
         if event.source == "Orchestrator" and getattr(settings, "ALPHA_RECON_VIA_PLANNER", True):
-            print(f"[{self.name}] Target received; waiting for Mission Planner recon assignment.")
+            logger.info(f"[{self.name}] Target received; waiting for Mission Planner recon assignment.")
             return
 
         if self._throttled:
-            print(f"[{self.name}] [THROTTLE] New target {target_url} deferred under governance signal.")
+            logger.warning(f"[{self.name}] [THROTTLE] New target {target_url} deferred under governance signal.")
             return
 
-        print(f"[{self.name}] TARGET ACQUIRED: {target_url}. Initiating unified recon...")
+        logger.info(f"[{self.name}] TARGET ACQUIRED: {target_url}. Initiating unified recon...")
         await self.bus.publish(HiveEvent(
             type=EventType.LIVE_ATTACK, source=self.name, scan_id=event.scan_id,
             payload={"url": target_url, "arsenal": "Unified Recon Engine",
@@ -87,7 +90,7 @@ class AlphaAgent(BrowserEnabledAgent):
         try:
             await self.alpha_recon.run(target_url, scan_id=event.scan_id, mode=mode)
         except Exception as exc:
-            print(f"[{self.name}] Unified recon failed: {exc}")
+            logger.error(f"[{self.name}] Unified recon failed: {exc}")
 
     async def handle_job(self, event: HiveEvent):
         """Process an assigned recon job through the single spine."""
@@ -95,7 +98,7 @@ class AlphaAgent(BrowserEnabledAgent):
         try:
             packet = JobPacket(**payload)
         except Exception as e:
-            print(f"[{self.name}] Error parsing job: {e}")
+            logger.error(f"[{self.name}] Error parsing job: {e}")
             return
 
         if packet.config.agent_id != AgentID.ALPHA:
@@ -106,13 +109,13 @@ class AlphaAgent(BrowserEnabledAgent):
         if packet.config.module_id in ("alpha_recon", "alpha_v6_recon", "recon"):
             params = packet.config.params or {}
             mode = self._resolve_mode(params.get("scan_mode"), params.get("mode"))
-            print(f"[{self.name}] Planner assigned unified recon on {packet.target.url} (mode={mode}).")
+            logger.info(f"[{self.name}] Planner assigned unified recon on {packet.target.url} (mode={mode}).")
             status, error = "SUCCESS", ""
             try:
                 await self.alpha_recon.run(packet.target.url, scan_id=event.scan_id, mode=mode)
             except Exception as exc:
                 status, error = "FAILED", str(exc)[:300]
-                print(f"[{self.name}] Unified recon failed: {exc}")
+                logger.error(f"[{self.name}] Unified recon failed: {exc}")
             await self.bus.publish(HiveEvent(
                 type=EventType.JOB_COMPLETED, source=self.name, scan_id=event.scan_id,
                 payload={"job_id": packet.id, "status": status,
@@ -120,7 +123,7 @@ class AlphaAgent(BrowserEnabledAgent):
             return
 
         # Non-recon module jobs are delegated to Sigma for arsenal execution.
-        print(f"[{self.name}] Delegating {packet.config.module_id} to SIGMA on {packet.target.url}")
+        logger.info(f"[{self.name}] Delegating {packet.config.module_id} to SIGMA on {packet.target.url}")
         sigma_job = JobPacket(
             priority=packet.priority,
             target=packet.target,

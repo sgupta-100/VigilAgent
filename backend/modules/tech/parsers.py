@@ -1,9 +1,25 @@
 import json
-import xml.etree.ElementTree as ET
+import logging
 from typing import Any
+
+# HIGH-50: Use defusedxml to prevent XXE attacks
+try:
+    import defusedxml.ElementTree as ET
+except ImportError:
+    import xml.etree.ElementTree as ET  # Fallback if defusedxml not installed
+    logger.warning("defusedxml not installed — XML parser is vulnerable to XXE. pip install defusedxml")
+
+logger = logging.getLogger("parsers")
+
+# MED-43: Maximum input size to prevent OOM on malicious payloads
+_MAX_XML_LEN = 5 * 1024 * 1024  # 5 MB
+_MAX_JSONL_LEN = 5 * 1024 * 1024  # 5 MB
 
 
 def parse_nmap_xml(xml_text: str) -> list[dict[str, Any]]:
+    if len(xml_text) > _MAX_XML_LEN:
+        logger.warning("XML input exceeds %d byte limit, truncating", _MAX_XML_LEN)
+        xml_text = xml_text[:_MAX_XML_LEN]
     root = ET.fromstring(xml_text)
     nodes = []
     for host in root.findall("host"):
@@ -28,11 +44,17 @@ def parse_nmap_xml(xml_text: str) -> list[dict[str, Any]]:
 
 
 def parse_nuclei_jsonl(jsonl_text: str) -> list[dict[str, Any]]:
+    if len(jsonl_text) > _MAX_JSONL_LEN:
+        logger.warning("JSONL input exceeds %d byte limit, truncating", _MAX_JSONL_LEN)
+        jsonl_text = jsonl_text[:_MAX_JSONL_LEN]
     findings = []
     for line in jsonl_text.splitlines():
         if not line.strip():
             continue
-        item = json.loads(line)
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
         info = item.get("info", {})
         findings.append({
             "type": "Vulnerability",
@@ -48,11 +70,17 @@ def parse_nuclei_jsonl(jsonl_text: str) -> list[dict[str, Any]]:
 
 
 def parse_httpx_jsonl(jsonl_text: str) -> list[dict[str, Any]]:
+    if len(jsonl_text) > _MAX_JSONL_LEN:
+        logger.warning("JSONL input exceeds %d byte limit, truncating", _MAX_JSONL_LEN)
+        jsonl_text = jsonl_text[:_MAX_JSONL_LEN]
     endpoints = []
     for line in jsonl_text.splitlines():
         if not line.strip():
             continue
-        item = json.loads(line)
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
         url = item.get("url") or item.get("input")
         endpoints.append({
             "type": "URL",

@@ -203,4 +203,4 @@ class ReconRunResult(BaseModel):
 
 def stable_id(*parts: str) -> str:
     raw = "|".join(str(part).lower().strip() for part in parts)
-    return hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()
+    return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()

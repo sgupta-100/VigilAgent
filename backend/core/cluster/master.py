@@ -68,20 +68,20 @@ class MasterNode:
         self.active = False
         try:
             await self._task_manager.cancel_all()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("MasterNode task cancel failed: %s", e)
         try:
             await self.redis_client.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("MasterNode redis close failed: %s", e)
 
     async def _discover_swarm(self):
         try:
             raw_workers = await self.redis_client.hgetall("workers")
             for worker_id, data in raw_workers.items():
                 self.workers[worker_id] = json.loads(data)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("MasterNode swarm discovery failed: %s", e)
 
     async def register_worker(self, worker_id: str, specialty: str, capabilities: List[str]):
         worker_info = {
@@ -135,7 +135,8 @@ class MasterNode:
                 for wid, w in list(self.workers.items()):
                     try:
                         last = datetime.fromisoformat(w["last_heartbeat"])
-                    except Exception:
+                    except Exception as exc:
+                        logger.debug("MasterNode heartbeat parse failed for %s: %s", wid, exc)
                         continue
                     if now - last > timedelta(minutes=3):
                         w["status"] = "inactive"

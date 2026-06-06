@@ -163,13 +163,15 @@ class SkillExecutor:
         if meta.source_path:
             try:
                 skill_dir = str(Path(meta.source_path).parent)
-            except Exception:
+            except Exception as e:
+                logger.debug("[SkillExecutor] skill_dir resolve failed: %s", e)
                 skill_dir = ""
 
         scope_name = ""
         try:
             scope_name = getattr(self.scope, "engagement_name", "") or ""
-        except Exception:
+        except Exception as e:
+            logger.debug("[SkillExecutor] scope_name resolve failed: %s", e)
             scope_name = ""
 
         variables: dict[str, str] = {

@@ -177,7 +177,8 @@ class NetworkServiceCommander(BaseAgent):
                         "mismatched": rec.get("mismatched"),
                     }
                     break
-                except Exception:
+                except Exception as e:
+                    logger.debug("[NetworkCommander] tlsx JSON parse failed for %s: %s", line[:50], e)
                     continue
 
     # ── Graph ingestion ───────────────────────────────────────────────────────
@@ -204,5 +205,5 @@ class NetworkServiceCommander(BaseAgent):
             await self.bus.publish(HiveEvent(
                 type=EventType.LOG, source=self.name, scan_id=scan_id,
                 payload={"message": message}))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[NetworkCommander] emit_log failed: %s", exc)

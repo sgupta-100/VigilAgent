@@ -400,7 +400,8 @@ class ProxyValidation:
         checks = []
         all_ok = True
         
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+        # LOW-77: Enable SSL verification for proxy validation
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=True)) as session:
             for url in test_urls:
                 try:
                     async with session.get(url, proxy=proxy_url, timeout=10) as resp:

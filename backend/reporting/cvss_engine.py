@@ -7,12 +7,21 @@ adds a per-vuln-class default metric map so findings get deterministic scores.
 """
 from __future__ import annotations
 
+import logging
 import math
 
-# Hybrid AI Engine
-from backend.ai.cortex import CortexEngine, get_cortex_engine
+logger = logging.getLogger("CVSSEngine")
 
-cortex = get_cortex_engine()
+# Lazy-init: import at call time to avoid blocking app startup (HIGH-49)
+_cortex = None
+
+
+def _get_cortex():
+    global _cortex
+    if _cortex is None:
+        from backend.ai.cortex import get_cortex_engine
+        _cortex = get_cortex_engine()
+    return _cortex
 
 
 # ── Official CVSS 3.1 metric weights ──────────────────────────────────────────
@@ -125,8 +134,9 @@ class CVSSCalculator:
         base_score, vector = self.calculate()
         if self.target_url and self.vuln_type:
             try:
-                adjusted = await cortex.adjust_cvss_score(base_score, self.vuln_type, self.target_url)
+                adjusted = await _get_cortex().adjust_cvss_score(base_score, self.vuln_type, self.target_url)
                 return adjusted, vector
-            except Exception:
+            except Exception as exc:
+                logger.debug("[CVSSEngine] AI hybrid CVSS adjustment failed: %s", exc)
                 return base_score, vector
         return base_score, vector

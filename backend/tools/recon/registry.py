@@ -90,8 +90,8 @@ def check_tool_availability(name: str) -> dict:
         from backend.tools.recon.docker_runtime import DOCKER_RECON_TOOLS, docker_recon_ready
         if name in DOCKER_RECON_TOOLS and docker_recon_ready():
             return {"installed": True, "path": "docker://vigilagent-recon", "source": "docker"}
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Docker recon check skipped: %s", e)
 
     # 1. System PATH
     path = shutil.which(binary)
@@ -121,8 +121,8 @@ def check_tool_availability(name: str) -> dict:
         for cand in (scripts_dir / binary, scripts_dir / f"{binary}.exe"):
             if cand.exists():
                 return {"installed": True, "path": str(cand), "source": "pip_scripts"}
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("sysconfig scripts dir check skipped: %s", e)
 
     # 5. Vendored / git-only Python scripts
     if binary == "python":

@@ -46,12 +46,8 @@ export function handleAutoDownload(data, toast) {
 function notify(toast, payload) {
     if (typeof toast === 'function') {
         try { toast(payload); } catch (e) { /* swallow — UI shouldn't crash on toast */ }
-    } else {
-        // Fall back to console so non-toast callers still see the failure.
-        const msg = `[downloadReport] ${payload.title || 'Notice'}: ${payload.message}`;
-        if (payload.type === 'error') console.error(msg);
-        else console.warn(msg);
     }
+    // No toast callback — swallow silently to avoid noisy console output.
 }
 
 async function verifyAndDownload(url, filename, toast) {

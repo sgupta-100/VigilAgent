@@ -4,9 +4,12 @@ Handles session persistence, restoration, and sharing between both browser engin
 Includes session data sanitization for security.
 """
 
+import base64
+import hashlib
 import json
 import os
 import re
+import secrets
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -14,6 +17,13 @@ import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
+
+try:
+    from cryptography.fernet import Fernet
+    _HAS_CRYPTO = True
+except ImportError:
+    _HAS_CRYPTO = False
+    logger.debug("cryptography package not installed; session encryption disabled")
 
 
 class HybridSessionManager:
@@ -51,7 +61,91 @@ class HybridSessionManager:
         
         # Compile regex patterns for performance
         self.sensitive_regex = [re.compile(pattern, re.IGNORECASE) for pattern in self.SENSITIVE_PATTERNS]
+        
+        # CRIT-02: Initialize encryption for session files at rest
+        self._fernet: Optional['Fernet'] = None
+        if _HAS_CRYPTO:
+            try:
+                self._fernet = Fernet(self._get_or_create_key(self.storage_dir))
+            except Exception as e:
+                logger.warning("CRIT-02: Could not initialize session encryption: %s", e)
+        else:
+            logger.warning("CRIT-02: cryptography not installed — session files stored unencrypted. "
+                          "Install with: pip install cryptography")
     
+    # ------------------------------------------------------------------
+    # CRIT-02: Session file encryption at rest (Fernet / AES-128-CBC)
+    # ------------------------------------------------------------------
+    _KEY_FILE = '.session_key'
+    
+    @classmethod
+    def _get_or_create_key(cls, storage_dir: Path) -> bytes:
+        """Get or create a persistent Fernet encryption key.
+        
+        Priority:
+        1. SESSION_ENCRYPTION_KEY env var (explicit)
+        2. Persisted key file in storage_dir (generated once)
+        3. Generate + persist a new random key
+        
+        Returns:
+            32-byte URL-safe base64-encoded key suitable for Fernet.
+        """
+        passphrase = os.environ.get('SESSION_ENCRYPTION_KEY', '')
+        if passphrase:
+            digest = hashlib.sha256(passphrase.encode('utf-8')).digest()
+            return base64.urlsafe_b64encode(digest)
+        
+        # Try to load persisted key
+        key_file = storage_dir / cls._KEY_FILE            if key_file.exists():
+            try:
+                saved = key_file.read_text(encoding='utf-8').strip()
+                # Validate it's a valid Fernet key (44 chars, url-safe base64)
+                if len(saved) == 44:
+                    return saved.encode('ascii')
+            except Exception as _key_err:
+                logger.debug("CRIT-02: Could not read persisted key: %s", _key_err)
+        
+        # Generate a new random key and persist it
+        import stat
+        new_key = Fernet.generate_key()  # Returns 44-char url-safe base64 bytes
+        try:
+            # Atomic write: temp file + rename avoids race condition
+            tmp_path = key_file.with_suffix('.tmp')
+            tmp_path.write_text(new_key.decode('ascii'))
+            os.chmod(str(tmp_path), stat.S_IRUSR | stat.S_IWUSR)  # 0o600
+            os.replace(str(tmp_path), str(key_file))
+            logger.info("CRIT-02: Generated and persisted new session encryption key")
+        except Exception as write_err:
+            logger.warning("CRIT-02: Could not persist session key: %s", write_err)
+        
+        return new_key
+    
+    def _encrypt_data(self, plaintext: str) -> str:
+        """Encrypt plaintext string using Fernet (AES-128-CBC + HMAC-SHA256).
+        
+        Args:
+            plaintext: String to encrypt
+            
+        Returns:
+            Base64-encoded encrypted token
+        """
+        if not self._fernet:
+            return plaintext
+        return self._fernet.encrypt(plaintext.encode('utf-8')).decode('ascii')
+    
+    def _decrypt_data(self, ciphertext: str) -> str:
+        """Decrypt Fernet-encrypted token back to plaintext.
+        
+        Args:
+            ciphertext: Base64-encoded encrypted token
+            
+        Returns:
+            Decrypted plaintext string
+        """
+        if not self._fernet:
+            return ciphertext
+        return self._fernet.decrypt(ciphertext.encode('ascii')).decode('utf-8')
+
     def _is_sensitive_key(self, key: str) -> bool:
         """
         Check if a key contains sensitive information.
@@ -187,7 +281,7 @@ class HybridSessionManager:
         metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
         """
-        Save a browser session to disk with sanitization.
+        Save a browser session to disk with sanitization and encryption.
         
         Args:
             session_id: Unique identifier for the session
@@ -204,26 +298,41 @@ class HybridSessionManager:
             # Sanitize sensitive data before saving
             sanitized_data = self._sanitize_session_data(session_data)
             
+            # CRIT-02: Encrypt session data before writing to disk
+            serialized = json.dumps(sanitized_data)
+            encrypted = False
+            if self._fernet:
+                try:
+                    serialized = self._encrypt_data(serialized)
+                    encrypted = True
+                except Exception as enc_err:
+                    logger.warning("CRIT-02: Encryption failed, storing plaintext: %s", enc_err)
+            
             session_bundle = {
                 "session_id": session_id,
                 "engine": engine,
                 "timestamp": datetime.utcnow().isoformat(),
                 "metadata": metadata or {},
-                "data": sanitized_data,
-                "sanitized": self.sanitize_sensitive
+                "data": serialized,
+                "sanitized": self.sanitize_sensitive,
+                "_encrypted": encrypted
             }
             
             with open(session_file, 'w') as f:
                 json.dump(session_bundle, f, indent=2)
             
-            # Cache in memory
-            self.sessions[f"{session_id}_{engine}"] = session_bundle
+            # Cache in memory (always store decrypted)
+            self.sessions[f"{session_id}_{engine}"] = {
+                **session_bundle,
+                "data": sanitized_data
+            }
             
-            logger.info(f"[HybridSessionManager] Saved session {session_id} for {engine}")
+            logger.info("[HybridSessionManager] Saved session %s for %s (encrypted=%s)",
+                        session_id, engine, encrypted)
             return True
             
         except Exception as e:
-            logger.error(f"[HybridSessionManager] Failed to save session {session_id}: {e}")
+            logger.error("[HybridSessionManager] Failed to save session %s: %s", session_id, e)
             return False
     
     async def restore_session(
@@ -232,7 +341,7 @@ class HybridSessionManager:
         engine: str
     ) -> Optional[Dict[str, Any]]:
         """
-        Restore a browser session from disk.
+        Restore a browser session from disk, decrypting if necessary.
         
         Args:
             session_id: Unique identifier for the session
@@ -244,7 +353,7 @@ class HybridSessionManager:
         try:
             cache_key = f"{session_id}_{engine}"
             
-            # Check memory cache first
+            # Check memory cache first (always stored decrypted)
             if cache_key in self.sessions:
                 return self.sessions[cache_key]["data"]
             
@@ -252,20 +361,44 @@ class HybridSessionManager:
             session_file = self.storage_dir / f"{session_id}_{engine}.json"
             
             if not session_file.exists():
-                logger.warning(f"[HybridSessionManager] Session {session_id} not found")
+                logger.warning("[HybridSessionManager] Session %s not found", session_id)
                 return None
             
             with open(session_file, 'r') as f:
                 session_bundle = json.load(f)
             
-            # Cache in memory
-            self.sessions[cache_key] = session_bundle
+            # CRIT-02: Decrypt session data if encrypted
+            data = session_bundle["data"]
+            if session_bundle.get("_encrypted"):
+                try:
+                    decrypted = self._decrypt_data(data)
+                    data = json.loads(decrypted)
+                except Exception as dec_err:
+                    logger.warning("CRIT-02: Decryption failed for %s: %s", session_id, dec_err)
+                    # Fallback: try parsing as JSON (legacy unencrypted file)
+                    if isinstance(data, str):
+                        try:
+                            data = json.loads(data)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+            elif isinstance(data, str):
+                # Legacy unencrypted file — data is a JSON string
+                try:
+                    data = json.loads(data)
+                except (json.JSONDecodeError, TypeError):
+                    pass
             
-            logger.info(f"[HybridSessionManager] Restored session {session_id} for {engine}")
-            return session_bundle["data"]
+            # Cache in memory
+            self.sessions[cache_key] = {
+                **session_bundle,
+                "data": data
+            }
+            
+            logger.info("[HybridSessionManager] Restored session %s for %s", session_id, engine)
+            return data
             
         except Exception as e:
-            logger.error(f"[HybridSessionManager] Failed to restore session {session_id}: {e}")
+            logger.error("[HybridSessionManager] Failed to restore session %s: %s", session_id, e)
             return None
     
     async def _export_openclaw_session(self, context) -> Dict[str, Any]:
@@ -516,7 +649,8 @@ class HybridSessionManager:
                     "metadata": session_bundle.get("metadata", {})
                 })
                 
-            except Exception:
+            except Exception as e:
+                logger.debug(f"[HybridSessionManager] Session list parse error for {session_file}: {e}")
                 continue
         
         return sessions

@@ -24,7 +24,10 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+import logging
 from backend.schemas.findings import Finding, FindingSeverity, FindingState
+
+logger = logging.getLogger("FindingReport")
 
 _SEV_TO_SARIF = {"critical": "error", "high": "error", "medium": "warning",
                  "low": "note", "informational": "note"}
@@ -202,8 +205,8 @@ class FindingReportEngine:
         out.parent.mkdir(parents=True, exist_ok=True)
         try:
             from fpdf import FPDF
-        except Exception:
-            # Graceful fallback: emit a text rendering when fpdf is unavailable.
+        except Exception as exc:
+            logger.debug("[FindingReport] fpdf unavailable, falling back to text: %s", exc)
             txt = out.with_suffix(".txt")
             txt.write_text(self._pdf_text(active, technical=technical), encoding="utf-8")
             return txt
@@ -219,7 +222,8 @@ class FindingReportEngine:
         # Explicit usable width — some fpdf2 versions mishandle width=0 multi_cell.
         try:
             w = pdf.epw
-        except Exception:
+        except Exception as exc:
+            logger.debug("[FindingReport] fpdf epw unavailable: %s", exc)
             w = 180
         if not w or w <= 1:
             w = 180

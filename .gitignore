@@ -43,6 +43,9 @@ reports/benchmark-tests/*.pdf
 reports/torture-tests/*.pdf
 scan_states/
 
+# Session encryption key (CRIT-02)
+**/.session_key
+
 # Logs
 *.log
 logs/

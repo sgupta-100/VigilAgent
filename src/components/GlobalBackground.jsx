@@ -10,7 +10,7 @@ const GlobalBackground = () => {
 
     useEffect(() => {
         if (starsRef.current) {
-            starsRef.current.innerHTML = '';
+            while (starsRef.current.firstChild) { starsRef.current.removeChild(starsRef.current.firstChild); }
             // Only create 20 animated stars — the rest is a CSS radial pattern
             for (let i = 0; i < 20; i++) {
                 const star = document.createElement('div');

@@ -20,6 +20,21 @@ from typing import Optional
 # Add backend to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# CRIT-20: Gate migration execution behind env var
+MIGRATION_ALLOWED_ENV = os.environ.get('MIGRATION_ALLOWED', '').lower()
+MIGRATION_GATED = MIGRATION_ALLOWED_ENV not in ('true', '1', 'yes')
+
+# CLI output helper — print() is correct here since this is a CLI tool,
+# not a library.  Logger output may be invisible depending on log config.
+def _out(msg: str) -> None:
+    print(msg, flush=True)
+
+# CRIT-13: Whitelist of valid table names for status checks
+_VALID_TABLES = frozenset({
+    'agent_proficiency', 'agent_performance',
+    'agent_decisions', 'agent_adaptations',
+})
+
 from backend.core.database import db_manager
 
 
@@ -65,162 +80,168 @@ class MigrationRunner:
     
     async def run_migration(self) -> bool:
         """Execute migration script"""
-        print("=" * 80)
-        print("SELF-AWARE AGENTS MIGRATION")
-        print("=" * 80)
+        if MIGRATION_GATED:
+            _out('MIGRATION_ALLOWED=true must be set to run migrations.')
+            return False
+        _out("=" * 80)
+        _out("SELF-AWARE AGENTS MIGRATION")
+        _out("=" * 80)
         
         # Check current status
-        print("\n[1/4] Checking current migration status...")
+        _out("\n[1/4] Checking current migration status...")
         status = await self.check_status()
         
         if status.get('error'):
-            print(f"❌ Error checking status: {status['error']}")
+            _out(f"❌ Error checking status: {status['error']}")
             return False
         
         if status['migrated']:
-            print("✅ Migration already applied. All tables exist.")
+            _out("✅ Migration already applied. All tables exist.")
             return True
         
         if status['partial_migration']:
-            print(f"⚠️  Partial migration detected!")
-            print(f"   Found: {status['tables_found']}")
-            print(f"   Missing: {status['tables_missing']}")
-            print("\n   Please rollback first, then re-run migration.")
+            _out(f"⚠️  Partial migration detected!")
+            _out(f"   Found: {status['tables_found']}")
+            _out(f"   Missing: {status['tables_missing']}")
+            _out("\n   Please rollback first, then re-run migration.")
             return False
         
-        print("✅ No existing tables found. Ready to migrate.")
+        _out("✅ No existing tables found. Ready to migrate.")
         
         # Read migration script
-        print("\n[2/4] Reading migration script...")
+        _out("\n[2/4] Reading migration script...")
         if not self.migrate_script.exists():
-            print(f"❌ Migration script not found: {self.migrate_script}")
+            _out(f"❌ Migration script not found: {self.migrate_script}")
             return False
         
         migration_sql = self.migrate_script.read_text(encoding='utf-8')
-        print(f"✅ Loaded migration script ({len(migration_sql)} bytes)")
+        _out(f"✅ Loaded migration script ({len(migration_sql)} bytes)")
         
         # Execute migration
-        print("\n[3/4] Executing migration...")
+        _out("\n[3/4] Executing migration...")
         try:
             await db_manager.initialize()
             await db_manager.execute(migration_sql)
-            print("✅ Migration executed successfully")
+            _out("✅ Migration executed successfully")
         except Exception as e:
-            print(f"❌ Migration failed: {e}")
+            _out(f"❌ Migration failed: {e}")
             return False
         
         # Verify migration
-        print("\n[4/4] Verifying migration...")
+        _out("\n[4/4] Verifying migration...")
         status = await self.check_status()
         
         if status['migrated']:
-            print("✅ Migration verified successfully!")
-            print(f"\nCreated tables:")
+            _out("✅ Migration verified successfully!")
+            _out(f"\nCreated tables:")
             for table in status['tables_found']:
-                print(f"  - {table}")
+                _out(f"  - {table}")
             return True
         else:
-            print("❌ Migration verification failed")
-            print(f"   Expected 4 tables, found {len(status['tables_found'])}")
+            _out("❌ Migration verification failed")
+            _out(f"   Expected 4 tables, found {len(status['tables_found'])}")
             return False
     
     async def run_rollback(self) -> bool:
         """Execute rollback script"""
-        print("=" * 80)
-        print("SELF-AWARE AGENTS ROLLBACK")
-        print("=" * 80)
+        if MIGRATION_GATED:
+            _out('MIGRATION_ALLOWED=true must be set to rollback migrations.')
+            return False
+        _out("=" * 80)
+        _out("SELF-AWARE AGENTS ROLLBACK")
+        _out("=" * 80)
         
         # Check current status
-        print("\n[1/4] Checking current migration status...")
+        _out("\n[1/4] Checking current migration status...")
         status = await self.check_status()
         
         if status.get('error'):
-            print(f"❌ Error checking status: {status['error']}")
+            _out(f"❌ Error checking status: {status['error']}")
             return False
         
         if not status['migrated'] and not status['partial_migration']:
-            print("✅ No tables to rollback. Database is clean.")
+            _out("✅ No tables to rollback. Database is clean.")
             return True
         
-        print(f"⚠️  Found {len(status['tables_found'])} tables to remove:")
+        _out(f"⚠️  Found {len(status['tables_found'])} tables to remove:")
         for table in status['tables_found']:
-            print(f"   - {table}")
+            _out(f"   - {table}")
         
         # Confirm rollback
-        print("\n⚠️  WARNING: This will permanently delete all self-awareness data!")
+        _out("\n⚠️  WARNING: This will permanently delete all self-awareness data!")
         response = input("   Type 'yes' to confirm rollback: ")
         
         if response.lower() != 'yes':
-            print("❌ Rollback cancelled")
+            _out("❌ Rollback cancelled")
             return False
         
         # Read rollback script
-        print("\n[2/4] Reading rollback script...")
+        _out("\n[2/4] Reading rollback script...")
         if not self.rollback_script.exists():
-            print(f"❌ Rollback script not found: {self.rollback_script}")
+            _out(f"❌ Rollback script not found: {self.rollback_script}")
             return False
         
         rollback_sql = self.rollback_script.read_text(encoding='utf-8')
-        print(f"✅ Loaded rollback script ({len(rollback_sql)} bytes)")
+        _out(f"✅ Loaded rollback script ({len(rollback_sql)} bytes)")
         
         # Execute rollback
-        print("\n[3/4] Executing rollback...")
+        _out("\n[3/4] Executing rollback...")
         try:
             await db_manager.initialize()
             await db_manager.execute(rollback_sql)
-            print("✅ Rollback executed successfully")
+            _out("✅ Rollback executed successfully")
         except Exception as e:
-            print(f"❌ Rollback failed: {e}")
+            _out(f"❌ Rollback failed: {e}")
             return False
         
         # Verify rollback
-        print("\n[4/4] Verifying rollback...")
+        _out("\n[4/4] Verifying rollback...")
         status = await self.check_status()
         
         if not status['migrated'] and not status['partial_migration']:
-            print("✅ Rollback verified successfully!")
-            print("   All self-awareness tables removed.")
+            _out("✅ Rollback verified successfully!")
+            _out("   All self-awareness tables removed.")
             return True
         else:
-            print("❌ Rollback verification failed")
-            print(f"   Found {len(status['tables_found'])} remaining tables")
+            _out("❌ Rollback verification failed")
+            _out(f"   Found {len(status['tables_found'])} remaining tables")
             return False
     
     async def print_status(self):
         """Print current migration status"""
-        print("=" * 80)
-        print("SELF-AWARE AGENTS MIGRATION STATUS")
-        print("=" * 80)
+        _out("=" * 80)
+        _out("SELF-AWARE AGENTS MIGRATION STATUS")
+        _out("=" * 80)
         
         status = await self.check_status()
         
         if status.get('error'):
-            print(f"\n❌ Error: {status['error']}")
+            _out(f"\n❌ Error: {status['error']}")
             return
         
-        print(f"\nMigration Status: {'✅ MIGRATED' if status['migrated'] else '❌ NOT MIGRATED'}")
+        _out(f"\nMigration Status: {'✅ MIGRATED' if status['migrated'] else '❌ NOT MIGRATED'}")
         
         if status['tables_found']:
-            print(f"\nTables Found ({len(status['tables_found'])}/4):")
+            _out(f"\nTables Found ({len(status['tables_found'])}/4):")
             for table in status['tables_found']:
-                print(f"  ✅ {table}")
+                _out(f"  ✅ {table}")
         
         if status['tables_missing']:
-            print(f"\nTables Missing ({len(status['tables_missing'])}/4):")
+            _out(f"\nTables Missing ({len(status['tables_missing'])}/4):")
             for table in status['tables_missing']:
-                print(f"  ❌ {table}")
+                _out(f"  ❌ {table}")
         
         if status['partial_migration']:
-            print("\n⚠️  WARNING: Partial migration detected!")
-            print("   Run rollback, then re-run migration.")
+            _out("\n⚠️  WARNING: Partial migration detected!")
+            _out("   Run rollback, then re-run migration.")
         
-        print()
+        _out()
 
 
 async def main():
     """Main entry point"""
     if len(sys.argv) < 2:
-        print("Usage: python run_migration.py [migrate|rollback|status]")
+        _out("Usage: python run_migration.py [migrate|rollback|status]")
         sys.exit(1)
     
     command = sys.argv[1].lower()
@@ -240,15 +261,15 @@ async def main():
             sys.exit(0)
         
         else:
-            print(f"Unknown command: {command}")
-            print("Usage: python run_migration.py [migrate|rollback|status]")
+            _out(f"Unknown command: {command}")
+            _out("Usage: python run_migration.py [migrate|rollback|status]")
             sys.exit(1)
     
     except KeyboardInterrupt:
-        print("\n\n❌ Operation cancelled by user")
+        _out("\n\n❌ Operation cancelled by user")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
+        _out(f"\n❌ Unexpected error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

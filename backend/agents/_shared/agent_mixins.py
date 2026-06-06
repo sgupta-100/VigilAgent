@@ -24,7 +24,10 @@ The mixins make NO assumptions about the agent's base class beyond what
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Iterable, Optional
+
+logger = logging.getLogger("AgentMixins")
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +51,9 @@ class SkillRecallMixin:
     # Default per-class limit, mirrors the original hand-written helpers.
     _SKILL_DEFAULT_LIMIT = 3
 
+    # HIGH-69: Bound per-target skill cache to prevent unbounded memory growth.
+    _SKILL_CACHE_MAX = 500
+
     def _skill_cache(self) -> dict:
         cache = getattr(self, "_skill_rec_cache", None)
         if cache is None:
@@ -55,6 +61,11 @@ class SkillRecallMixin:
             # Use the standard attribute name the hand-written agents used so
             # any incidental introspection or test fixture continues to work.
             self._skill_rec_cache = cache  # type: ignore[attr-defined]
+        elif len(cache) > self._SKILL_CACHE_MAX:
+            # FIFO eviction: drop oldest 25% of entries
+            evict_count = max(1, len(cache) // 4)
+            for _ in range(evict_count):
+                cache.pop(next(iter(cache)), None)
         return cache
 
     def recall_skills(
@@ -101,7 +112,8 @@ class SkillRecallMixin:
             else:
                 recs = skill_library.get_recommendations(
                     target_url=target_url, limit=per_class_limit)
-        except Exception:
+        except Exception as e:
+            logger.debug("Skill recall failed: %s", e)
             recs = []
 
         cache[cache_key] = recs
@@ -139,11 +151,9 @@ class SessionLifecycleMixin:
         if session is not None and not session.closed:
             try:
                 await session.close()
-            except Exception:
-                # Closing must never raise during agent shutdown — Sigma's
-                # original stop() also swallowed close errors implicitly by
-                # only running when ``not closed``.
-                pass
+        except Exception as e:
+            # Closing must never raise during agent shutdown.
+            logger.debug("Session close failed (non-fatal): %s", e)
         # Leave the attribute as None so a later call creates a fresh session.
         self._session = None  # type: ignore[attr-defined]
 
@@ -167,23 +177,24 @@ class ControlSignalMixin:
         signal = ""
         try:
             signal = event.payload.get("signal", "")
-        except Exception:
+        except Exception as e:
+            logger.debug("Control signal extraction failed: %s", e)
             signal = ""
 
         if signal in ("THROTTLE", "STEALTH_MODE"):
             self._throttled = True  # type: ignore[attr-defined]
             if signal == "STEALTH_MODE":
                 self._stealth_mode = True  # type: ignore[attr-defined]
-            print(
-                f"[{getattr(self, 'name', 'agent')}] Governance: {signal} "
-                f"received. Throttling activity."
+            logger.info(
+                "[%s] Governance: %s received. Throttling activity.",
+                getattr(self, 'name', 'agent'), signal
             )
         elif signal == "RESUME":
             self._throttled = False  # type: ignore[attr-defined]
             self._stealth_mode = False  # type: ignore[attr-defined]
-            print(
-                f"[{getattr(self, 'name', 'agent')}] Governance: RESUME "
-                f"received. Activity unpaused."
+            logger.info(
+                "[%s] Governance: RESUME received. Activity unpaused.",
+                getattr(self, 'name', 'agent')
             )
 
     def subscribe_control(self, bus) -> None:
@@ -220,8 +231,7 @@ class ScanContextRecorderMixin:
             ctx = bus.get_or_create_context(scan_id)
             if ctx is not None and hasattr(ctx, "append_event"):
                 ctx.append_event(event)
-        except Exception:
-            # Recording must never raise — the original inline blocks were
-            # also wrapped behind a hasattr-guard that effectively swallowed
-            # context-construction errors.
-            pass
+        except Exception as e:
+            # Recording must never raise — original inline blocks were also
+            # wrapped behind a hasattr-guard that swallowed context errors.
+            logger.debug("ScanContext recording failed: %s", e)

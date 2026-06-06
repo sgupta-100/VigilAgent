@@ -63,10 +63,25 @@ class ContentBoundary:
         return result
 
     def sanitize_html_injection(self, text: str) -> str:
-        """Neutralizes HTML/script tags that could confuse agent parsing."""
-        # Simple neutralization by replacing < and > with harmless equivalents if it looks like a tag
-        # Only neutralize script/style/iframe tags to preserve basic HTML readability
-        result = re.sub(r'(?i)<(/?(?:script|style|iframe|object|embed|applet))', r'&lt;\1', text)
+        """Neutralizes HTML/script tags that could execute in agent parsing.
+
+        HIGH-26: Strengthened to neutralize a broader set of XSS vectors
+        including event-handler attributes, javascript: URIs, SVG payloads,
+        and data: URI schemes — not just tag names."""
+        # 1. Neutralize dangerous tag openers (script, style, iframe, object,
+        #    embed, applet, base, link, meta, svg, math, form, input, body,
+        #    img with onerror, etc.)
+        result = re.sub(
+            r'(?i)<(/?(?:script|style|iframe|object|embed|applet|base|link|'
+            r'meta|svg|math|form|input|textarea|button|details|dialog|template|'
+            r'slot|portal|marquee|blink|video|audio|source|img|image|body|html|head))',
+            r'&lt;\1', text,
+        )
+        # 2. Neutralize javascript: and data: URI schemes
+        result = re.sub(r'(?i)javascript\s*:', '[REDACTED_URI]', result)
+        result = re.sub(r'(?i)data\s*:\s*text/html', '[REDACTED_URI]', result)
+        # 3. Neutralize on* event handlers (onclick, onerror, onload, etc.)
+        result = re.sub(r'(?i)\bon[a-z]+\s*=', '[REDACTED_HANDLER]', result)
         return result
 
     def strip_ansi_escapes(self, text: str) -> str:

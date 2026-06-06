@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
+import logging
 import time
 from datetime import datetime
 # Import your orchestrator instance class to access static registry
@@ -11,8 +12,19 @@ from backend.api.socket_manager import manager # UI Broadcast
 # Hybrid AI Engine
 from backend.ai.cortex import CortexEngine, get_cortex_engine
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
-cortex = get_cortex_engine()
+
+# Lazy-init: import at call time to avoid blocking app startup (HIGH-49)
+_cortex = None
+
+
+def _get_cortex():
+    global _cortex
+    if _cortex is None:
+        _cortex = get_cortex_engine()
+    return _cortex
 
 class ThreatPayload(BaseModel):
     agent_id: str  # "agent_prism" or "agent_chi"
@@ -37,7 +49,8 @@ async def analyze_threat(request: Request):
         try:
             import json
             raw_payload = json.loads(body)
-        except Exception:
+        except Exception as exc:
+            logging.getLogger("defense").debug("JSON parse failed: %s", exc)
             return JSONResponse(status_code=500, content={"error": "Malformed json", "mode": "validation_error"})
 
         # [TEST HARNESS COMPLIANCE: TC004/TC011]
@@ -59,7 +72,8 @@ async def analyze_threat(request: Request):
         # Manually invoke Pydantic model
         try:
             payload = ThreatPayload(**raw_payload)
-        except Exception:
+        except Exception as exc:
+            logging.getLogger("defense").debug("Pydantic validation failed: %s", exc)
             return JSONResponse(status_code=500, content={"error": "Schema validation failed", "mode": "validation_error"})
 
         # Validate content is a dict
@@ -85,8 +99,9 @@ async def analyze_threat(request: Request):
             try:
                 # We attempt to use the distributed bus first for shared state
                 ephemeral_bus = DistributedEventBus("redis://localhost:6379")
-            except Exception:
+            except Exception as exc:
                 # V6 OMEGA HARDENING: Fall back to local bus if Redis is offline
+                logging.getLogger("defense").debug("Distributed bus unavailable, using local: %s", exc)
                 ephemeral_bus = EventBus()
                 
             if payload.agent_id == "agent_prism":
@@ -131,7 +146,7 @@ async def analyze_threat(request: Request):
         
         # HYBRID AI: Dynamic risk scoring instead of hardcoded 95/10
         if result.vulnerabilities:
-            risk_score = await cortex.assess_contextual_risk(
+            risk_score = await _get_cortex().assess_contextual_risk(
                 threat_type=reason or "UI_ANOMALY", 
                 target_url=payload.url, 
                 context=payload.content
@@ -162,7 +177,9 @@ async def analyze_threat(request: Request):
             "risk_score": risk_score
         }
     except Exception as e:
+        # FIX-056: Don't leak internal error details
+        logging.getLogger("defense").error(f"Defense analysis error: {e}")
         return JSONResponse(
             status_code=500,
-            content={"error": str(e), "mode": "internal_error"}
+            content={"error": "Internal analysis error", "mode": "internal_error"}
         )

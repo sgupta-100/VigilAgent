@@ -267,7 +267,7 @@ class ForensicLearningBridge:
             saver = getattr(self.learning_engine, "_save_patterns", None)
             if callable(saver):
                 try:
-                    await asyncio.to_thread(saver)
+                    await asyncio.wait_for(asyncio.to_thread(saver), timeout=15)
                 except Exception as e:  # pragma: no cover - disk hiccup
                     logger.warning("[ForensicBridge] persist failed: %s", e)
         

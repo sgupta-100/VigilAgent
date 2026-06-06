@@ -21,13 +21,23 @@ from __future__ import annotations
 import time
 import uuid
 
+import hashlib
+import re
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 from backend.core.state import stats_db_manager
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# FIX-008: Strict scan_id validation
+_SCAN_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$", re.ASCII)
+_TARGET_URL_PATTERN = re.compile(r"^https?://", re.IGNORECASE)
+# FIX-009: Reject dangerous target URLs
+forbidden_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "169.254.169.254"}
 
 
 class CreateScanRequest(BaseModel):
@@ -35,6 +45,32 @@ class CreateScanRequest(BaseModel):
     mode: str = "STANDARD"
     modules: list[str] = Field(default_factory=list)
     scan_id: str | None = None
+
+    @validator("scan_id", pre=True, always=True)
+    def _validate_scan_id(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, str) or not _SCAN_ID_PATTERN.match(v):
+            raise ValueError("scan_id must contain only alphanumeric, underscore, or hyphen characters")
+        if len(v) > 128:
+            raise ValueError("scan_id must be ≤128 characters")
+        return v
+
+    @validator("target_url")
+    def _validate_target_url(cls, v):
+        if not isinstance(v, str) or not _TARGET_URL_PATTERN.match(v):
+            raise ValueError("target_url must be a valid HTTP/HTTPS URL")
+        # Block private IP ranges and metadata endpoints
+        from urllib.parse import PassiveIPv4AddressDetector, urlparse
+        parsed = urlparse(v)
+        hostname = (parsed.hostname or "").lower()
+        if hostname in forbidden_hosts or hostname.startswith(("192.168.", "10.", "172.")):
+            raise ValueError("target_url points to a private/internal address which is not allowed")
+        if hostname in {"169.254.169.254", "metadata.google.internal", "metadata.azure.com"}:
+            raise ValueError("target_url points to a cloud metadata endpoint which is not allowed")
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError("target_url scheme must be http or https")
+        return v
 
 
 @router.post("")
@@ -89,8 +125,9 @@ async def list_scans():
         try:
             from datetime import datetime as _dt
             return _dt.strptime(s, "%Y-%m-%d %H:%M:%S").isoformat()
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging as _log
+            _log.getLogger("api.scans").debug("datetime parse failed: %s", exc)
         # Float seconds (event-loop time or unix epoch).
         try:
             from datetime import datetime as _dt, timezone as _tz
@@ -101,8 +138,9 @@ async def list_scans():
             # than a 1970 date.
             if ts > 1e9:
                 return _dt.fromtimestamp(ts, tz=_tz.utc).isoformat()
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging as _log
+            _log.getLogger("api.scans").debug("timestamp conversion failed: %s", exc)
         return s
 
     rows = []
@@ -148,7 +186,9 @@ def _signal(scan_id: str, signal: str) -> dict:
                 type=EventType.CONTROL_SIGNAL, source="api.scans", scan_id=scan_id,
                 payload={"signal": signal})))
             delivered = True
-    except Exception:
+    except Exception as exc:
+        import logging as _log
+        _log.getLogger("api.scans").debug("control signal delivery failed: %s", exc)
         delivered = False
     return {"scan_id": scan_id, "signal": signal, "delivered": delivered}
 
@@ -250,10 +290,10 @@ def _enrich_finding_for_api(f: dict, scan_id: str) -> dict:
     out = dict(f)  # preserve every field already present
     # Stable id — fall back to a deterministic hash of (url, type) so
     # downstream UIs can key React lists without colliding.
+    # FIX-016: Use SHA-256 instead of SHA-1 for stable finding IDs
     if not out.get("id"):
-        import hashlib
         sig = f"{scan_id}|{str(f.get('url',''))}|{str(f.get('type',''))}".lower()
-        out["id"] = "F-" + hashlib.sha1(sig.encode("utf-8")).hexdigest()[:10]
+        out["id"] = "F-" + hashlib.sha256(sig.encode("utf-8")).hexdigest()[:10]
 
     out.setdefault("type", f.get("type") or f.get("vuln_type") or "Unknown")
     out.setdefault("severity", f.get("severity") or "INFO")
@@ -274,7 +314,9 @@ def _enrich_finding_for_api(f: dict, scan_id: str) -> dict:
                 else "INFO"
             )
             out.setdefault("cvss_severity", band)
-        except Exception:
+        except Exception as exc:
+            import logging as _log
+            _log.getLogger("api.scans").debug("CVSS scoring failed for finding: %s", exc)
             out.setdefault("cvss_score", 0.0)
             out.setdefault("cvss_severity", out.get("severity", "INFO"))
 

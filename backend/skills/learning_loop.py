@@ -75,13 +75,15 @@ class PerScanLearningLoop:
             try:
                 from backend.core.scan_state_db import scan_state_db as _db
                 self._db = _db
-            except Exception:
+            except Exception as exc:
+                logger.debug("[LearningLoop] scan_state_db unavailable: %s", exc)
                 self._db = None
         if self._mm is None:
             try:
                 from backend.core.memory_manager import memory_manager as _mm
                 self._mm = _mm
-            except Exception:
+            except Exception as exc:
+                logger.debug("[LearningLoop] memory_manager unavailable: %s", exc)
                 self._mm = None
 
     @staticmethod

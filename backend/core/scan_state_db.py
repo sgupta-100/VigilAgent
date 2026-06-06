@@ -259,9 +259,9 @@ def _loads(value: Any) -> dict:
     try:
         out = json.loads(value)
         return out if isinstance(out, dict) else {}
-    except Exception:
+    except Exception as e:
+        logger.debug("[ScanStateDB] _loads decode failed: %s", e)
         return {}
-
 
 class ScanStateDB:
     """Durable SQLite state for scan execution (Architecture §5.6)."""
@@ -654,8 +654,8 @@ class ScanStateDB:
             if k in data:
                 try:
                     data[k] = json.loads(data[k]) if data[k] else None
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("[ScanStateDB] _hydrate JSON decode for %s failed: %s", k, e)
         if "safe" in data and data["safe"] is not None:
             data["safe"] = bool(data["safe"])
         return data
@@ -764,8 +764,8 @@ class ScanStateDB:
             try:
                 self._conn.commit()
                 self._conn.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[ScanStateDB] close error: %s", e)
 
 
 # Global durable scan-state store.

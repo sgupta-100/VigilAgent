@@ -59,7 +59,8 @@ class AlphaOrchestrator:
         if self._browser is None and self._browser_provider is not None:
             try:
                 self._browser = self._browser_provider()
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"[Alpha] Browser provider failed: {exc}")
                 self._browser = None
         return self._browser
 
@@ -82,8 +83,8 @@ class AlphaOrchestrator:
             try:
                 await self._emit_complete(self._build_failed_result(
                     scan_id, target_url, scan_mode, started, f"scope_rejected:{exc}"))
-            except Exception:
-                pass
+            except Exception as emit_exc:
+                logger.debug(f"[Alpha] scope rejection emit failed: {emit_exc}")
             raise
 
         artifacts = ArtifactStore(scan_id)
@@ -186,11 +187,10 @@ class AlphaOrchestrator:
             # A phase blew up — build a failed result so the orchestrator still
             # gets a terminal RECON_COMPLETE event with whatever entities were
             # accumulated. Without this the safety timeout would fire 180s later.
-            logger.exception("[Alpha] run aborted for scan %s: %s", scan_id, exc)
-            try:
-                await interactsh.stop()
-            except Exception:
-                pass
+            logger.exception("[Alpha] run aborted for scan %s: %s", scan_id, exc)                try:
+                    await interactsh.stop()
+                except Exception as cleanup_exc:
+                    logger.debug(f"[Alpha] interactsh cleanup failed: {cleanup_exc}")
             result = self._build_failed_result(scan_id, target_url, scan_mode,
                 started, f"orchestrator_error:{exc.__class__.__name__}:{exc}",
                 tools_run=tools_run, tools_skipped=tools_skipped,
@@ -636,8 +636,8 @@ class AlphaOrchestrator:
                     scan_id=scan_id,
                     payload={"url": url, "reason": "out_of_scope"},
                 ))
-            except Exception:
-                return
+            except Exception as probe_exc:
+                logger.debug(f"[Alpha] HTTP probe failed for {url}: {probe_exc}")
 
         await asyncio.gather(*(probe(path) for path in common_paths))
         return services
@@ -710,7 +710,8 @@ class AlphaOrchestrator:
         try:
             if summary is None and state is not None and entities is not None:
                 summary = self._summarize(attack_surface or [], state, entities)
-        except Exception:
+        except Exception as summarize_exc:
+            logger.debug(f"[Alpha] summary build failed: {summarize_exc}")
             summary = None
         if summary is None:
             summary = ReconRunSummary(
@@ -722,8 +723,8 @@ class AlphaOrchestrator:
                 stats = dict(summary.attack_surface_stats or {})
                 stats["orchestrator_error"] = stats.get("orchestrator_error", 0) + 1
                 summary = summary.model_copy(update={"attack_surface_stats": stats})
-            except Exception:
-                pass
+            except Exception as stats_exc:
+                logger.debug(f"[Alpha] stats update failed: {stats_exc}")
         return ReconRunResult(
             scan_id=scan_id, target=target_url,
             mode=scan_mode if isinstance(scan_mode, ScanMode) else self._coerce_mode(scan_mode),
@@ -741,8 +742,8 @@ class AlphaOrchestrator:
                 source=self.agent_name, scan_id=scan_id,
                 payload={"agent": "alpha", "phase": status, **data})
             await self.bus.publish(event)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"[Alpha] Status emit failed: {exc}")
 
     async def _emit_recon_packet(self, scan_id, ep):
         try:
@@ -750,8 +751,8 @@ class AlphaOrchestrator:
                 source=self.agent_name, scan_id=scan_id,
                 payload=ep.model_dump(mode="json"))
             await self.bus.publish(event)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"[Alpha] Recon packet emit failed: {exc}")
 
     async def _emit_complete(self, result):
         try:
@@ -759,8 +760,8 @@ class AlphaOrchestrator:
                 source=self.agent_name, scan_id=result.scan_id,
                 payload=result.model_dump(mode="json"))
             await self.bus.publish(event)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error(f"[Alpha] Complete emit failed: {exc}")
 
     def _detect_tech(self, headers: dict[str, str], body: str) -> list[str]:
         tech: set[str] = set()

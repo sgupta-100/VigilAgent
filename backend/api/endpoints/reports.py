@@ -2,19 +2,29 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 import os
 import asyncio
+import logging
 
 from backend.core.state import stats_db_manager
 from backend.core.reporting import ReportGenerator
 from backend.core.config import settings
-from backend.core.database import db_manager # [NEW] Distributed Intelligence Backbone
+from backend.core.database import db_manager
 from backend.core.rate_limiter import rate_limit
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 REPORTS_DIR = settings.REPORTS_DIR
 
 @router.get("/download/{filename}")
 async def download_report_file(filename: str):
+    # FIX-059: Validate filename to prevent path traversal
+    import re as _re
+    if not filename or '..' in filename or '/' in filename or '\\' in filename or not _re.match(r'^[A-Za-z0-9_\-. ]+\.pdf$', filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
     file_path = os.path.join(REPORTS_DIR, filename)
+    # Ensure resolved path is within REPORTS_DIR
+    if not os.path.realpath(file_path).startswith(os.path.realpath(REPORTS_DIR)):
+        raise HTTPException(status_code=400, detail="Invalid filename")
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(path=file_path, filename=filename, media_type='application/pdf')
@@ -144,13 +154,13 @@ async def generate_pdf_report(request: Request, scan_id: str):
                         }
                     })
             except Exception as db_err:
-                print(f"[REPORTER] Supabase fetch failed, falling back to local events: {db_err}")
+                logger.warning(f"Supabase fetch failed, falling back to local events: {db_err}")
 
             telemetry = scan_data.get("telemetry", {})
             target_url = scan_data.get("target", scan_data.get("name", "Unknown"))
 
             # CRITICAL FIX: Strictly await the report generation coroutine
-            print(f"[REPORTER] Triggering On-Demand Generation for {scan_id}...")
+            logger.info(f"Triggering On-Demand Generation for {scan_id}...")
             await reporter.generate_report(
                 scan_id=scan_id,
                 events=scan_events,
@@ -165,7 +175,7 @@ async def generate_pdf_report(request: Request, scan_id: str):
                 raise HTTPException(status_code=500, detail="Report generation failed to materialize.")
 
         except Exception as gen_err:
-             print(f"âŒ ON-DEMAND GEN FAILED: {gen_err}")
+             logger.error(f"ON-DEMAND GEN FAILED: {gen_err}")
              raise HTTPException(status_code=500, detail=f"Generation Failure: {str(gen_err)}")
 
     except HTTPException:
@@ -265,7 +275,7 @@ async def generate_consolidated_report(request: Request):
             raise HTTPException(status_code=500, detail="Consolidated report generation failed.")
 
     except Exception as e:
-        print(f"❌ CONSOLIDATED GEN FAILED: {e}")
+        logger.error(f"CONSOLIDATED GEN FAILED: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

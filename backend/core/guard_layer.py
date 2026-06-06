@@ -97,15 +97,15 @@ def _decoded_payload_hits(text: str) -> List[str]:
             decoded = base64.b64decode(token).decode("utf-8", errors="ignore").lower()
             if any(term in decoded for term in dangerous_terms):
                 hits.append("base64_malicious_payload")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("GUARD_LAYER: base64 decode failed for token %s: %s", token[:20], exc)
     for token in re.findall(r"[A-Z2-7]{20,}={0,6}", text):
         try:
             decoded = base64.b32decode(token).decode("utf-8", errors="ignore").lower()
             if any(term in decoded for term in dangerous_terms):
                 hits.append("base32_malicious_payload")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("GUARD_LAYER: base32 decode failed for token %s: %s", token[:20], exc)
     return hits
 
 
@@ -188,7 +188,9 @@ class GuardLayer:
             "blocked_prompt_injection": 0,
             "blocked_dangerous_output": 0,
         }
+        # LOW-81: Bound _seen_hashes to prevent unbounded memory growth
         self._seen_hashes: set[str] = set()
+        self._seen_hashes_max: int = 50000
 
     def inspect_untrusted_text(self, text: Any, *, output: bool = False) -> GuardInspection:
         result = inspect_command_output(text) if output else inspect_prompt_injection(text)
@@ -234,12 +236,11 @@ class GuardLayer:
         passed, reason = self._validate_single(finding)
         if passed:
             self._stats["passed"] += 1
-            print(f"[finding-flow] guard_layer.filter_single: PASS "
-                  f"url={finding.get('url', '?')} type={finding.get('type', '?')}")
+            logger.debug("[finding-flow] guard_layer.filter_single: PASS url=%s type=%s",
+                         finding.get('url', '?'), finding.get('type', '?'))
         else:
-            print(f"[finding-flow] guard_layer.filter_single: DROP reason={reason} "
-                  f"url={finding.get('url', '?')} type={finding.get('type', '?')}")
-            logger.debug("GUARD: rejected single [%s] %s", reason, finding.get("url", "unknown"))
+            logger.debug("[finding-flow] guard_layer.filter_single: DROP reason=%s url=%s type=%s",
+                         reason, finding.get('url', '?'), finding.get('type', '?'))
         return passed
 
     def _validate_single(self, finding: Dict[str, Any]) -> tuple[bool, str]:
@@ -290,13 +291,19 @@ class GuardLayer:
             self._stats["rejected_duplicate"] += 1
             return False, "duplicate"
         self._seen_hashes.add(dedup_key)
+        # LOW-81: Evict oldest entries when capacity exceeded
+        if len(self._seen_hashes) > self._seen_hashes_max:
+            evict_count = self._seen_hashes_max // 4
+            for _ in range(evict_count):
+                self._seen_hashes.pop()
         return True, "passed"
 
     def _compute_hash(self, finding: Dict[str, Any]) -> str:
         endpoint = str(finding.get("url", finding.get("endpoint", ""))).split("?")[0].lower()
         vuln_type = str(finding.get("vuln_type", finding.get("type", ""))).upper()
         response = str(finding.get("response", finding.get("response_body", "")))[:200]
-        response_sig = hashlib.md5(response.encode("utf-8", errors="ignore")).hexdigest()[:8]
+        # FIX-015: Use SHA-256 instead of deprecated MD5 for deduplication
+        response_sig = hashlib.sha256(response.encode("utf-8", errors="ignore")).hexdigest()[:8]
         return hashlib.sha256(f"{endpoint}|{vuln_type}|{response_sig}".encode()).hexdigest()
 
     def cluster_findings(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

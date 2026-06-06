@@ -1,7 +1,10 @@
+import logging
 from backend.core.base import BaseArsenalModule
 from backend.core.protocol import JobPacket, Vulnerability, TaskTarget
 from backend.ai.cortex import CortexEngine, get_cortex_engine
 import urllib.parse
+
+logger = logging.getLogger("sqli")
 
 class SQLInjectionProbe(BaseArsenalModule):
     def __init__(self):
@@ -10,7 +13,9 @@ class SQLInjectionProbe(BaseArsenalModule):
         # CORTEX AI for intelligent payload generation
         try:
             self.ai = get_cortex_engine()
-        except Exception:self.ai = None
+        except Exception as _e:
+            logger.debug("AI engine init deferred: %s", _e)
+            self.ai = None
 
     async def generate_payloads(self, packet: JobPacket) -> list[TaskTarget]:
         targets = []
@@ -26,7 +31,9 @@ class SQLInjectionProbe(BaseArsenalModule):
                 )
                 if ai_payloads:
                     payloads.extend(ai_payloads)
-            except Exception:pass  # Keep base payloads
+            except Exception as e:
+                import logging
+                logging.getLogger("sqli").debug("AI payload generation failed: %s", e)  # Keep base payloads
                 
         if "?" in packet.target.url:
             base_url, query = packet.target.url.split("?", 1)
@@ -34,7 +41,8 @@ class SQLInjectionProbe(BaseArsenalModule):
             
             for param, values in params.items():
                 for payload in payloads:
-                    attack_params = params.copy()
+                    # MED-44: Use copy.deepcopy to prevent mutating shared params
+                    attack_params = {k: list(v) for k, v in params.items()}
                     attack_params[param] = [values[0] + payload]
                     attack_query = urllib.parse.urlencode(attack_params, doseq=True)
                     attack_url = f"{base_url}?{attack_query}"

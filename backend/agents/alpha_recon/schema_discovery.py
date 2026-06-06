@@ -279,7 +279,8 @@ class PostmanParser:
             return []
         try:
             data = json.loads(collection_path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"[SchemaDiscovery] Postman collection parse failed: {exc}")
             return []
 
         entities: list[ParsedEntity] = []

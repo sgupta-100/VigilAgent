@@ -1,7 +1,8 @@
+import os
 import requests
 
 url = "http://localhost:9000/api/measures/component?component=api-endpoint-scanner&metricKeys=bugs,vulnerabilities,code_smells,coverage"
-auth = ("admin", "AdminPassword1!")
+auth = (os.getenv("SONAR_USER", "admin"), os.getenv("SONAR_PASSWORD", ""))
 
 try:
     response = requests.get(url, auth=auth)

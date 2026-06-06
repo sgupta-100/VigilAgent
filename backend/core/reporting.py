@@ -65,6 +65,6 @@ class ReportGenerator:
             out_path = await builder.build()
             logger.info("[REPORTER] Antigravity Scanner report generated: %s", out_path)
             return out_path
-        except Exception:
-            logger.exception("[REPORTER] Failed to generate Antigravity Scanner report")
+        except Exception as exc:
+            logger.exception("[REPORTER] Failed to generate Antigravity Scanner report: %s", exc)
             return None

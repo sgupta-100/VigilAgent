@@ -56,6 +56,7 @@ class CoordinationManager:
         self.agent = agent
         self.config = config
         self._meta_awareness: Dict[str, Dict[str, Any]] = {}
+        self._meta_awareness_max = 50  # HIGH-41: bound size to prevent memory leak
         
         logger.info(f"[CoordinationManager] Initialized for agent {agent_id}")
     
@@ -125,6 +126,10 @@ class CoordinationManager:
             return
         
         self._meta_awareness[agent_id] = capabilities
+        # HIGH-41: Evict oldest entry when capacity exceeded
+        if len(self._meta_awareness) > self._meta_awareness_max:
+            oldest_key = next(iter(self._meta_awareness))
+            del self._meta_awareness[oldest_key]
         logger.debug(f"[CoordinationManager] Updated meta-awareness for {agent_id}")
     
     async def request_assistance(

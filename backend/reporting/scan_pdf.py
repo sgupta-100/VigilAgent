@@ -31,8 +31,11 @@ from urllib.parse import urlparse
 
 from fpdf import FPDF
 
+import logging
 from backend.core.config import settings
 from backend.reporting.cvss_engine import score_for_vuln_class, severity_band
+
+logger = logging.getLogger("ScanPDF")
 
 # ── Color palette (Antigravity Scanner specimen) ─────────────────────────────
 BRAND_BLACK = (15, 15, 15)
@@ -173,7 +176,8 @@ class _AntigravityPDF(FPDF):
     def usable_width(self) -> float:
         try:
             w = self.epw  # fpdf2 exposes effective page width
-        except Exception:
+        except Exception as exc:
+            logger.debug("[ScanPDF] epw property unavailable: %s", exc)
             w = 210 - self.LEFT_MARGIN - self.RIGHT_MARGIN
         if not w or w <= 1:
             w = 180.0
@@ -439,7 +443,8 @@ class AntigravityReportBuilder:
             )
         except asyncio.TimeoutError:
             enriched = [self._fallback_enrichment(f) for f in findings]
-        except Exception:
+        except Exception as exc:
+            logger.warning("[ScanPDF] LLM enrichment failed, using fallback: %s", exc)
             enriched = [self._fallback_enrichment(f) for f in findings]
         if len(enriched) < len(findings):
             # Ensure every finding renders even if enrichment partially failed.
@@ -613,7 +618,8 @@ class AntigravityReportBuilder:
                     ),
                     timeout=self.LLM_PER_CALL_TIMEOUT,
                 )
-        except Exception:
+        except Exception as exc:
+            logger.debug("[ScanPDF] Vulnerability summary LLM call failed: %s", exc)
             summary = {}
         if not isinstance(summary, dict):
             summary = {}
@@ -631,7 +637,8 @@ class AntigravityReportBuilder:
                     ),
                     timeout=self.LLM_PER_CALL_TIMEOUT,
                 )
-        except Exception:
+        except Exception as exc:
+            logger.debug("[ScanPDF] Forensic evidence LLM call failed: %s", exc)
             forensic = {}
         if not isinstance(forensic, dict):
             forensic = {}
@@ -645,7 +652,8 @@ class AntigravityReportBuilder:
                     cortex.generate_remediation_code(f["vuln_type"], tech_stack),
                     timeout=self.LLM_PER_CALL_TIMEOUT,
                 )
-        except Exception:
+        except Exception as exc:
+            logger.debug("[ScanPDF] Remediation code LLM call failed: %s", exc)
             code_fix = ""
 
         # Coerce + fall back deterministically
@@ -743,8 +751,8 @@ class AntigravityReportBuilder:
                 while len(cleaned) < 4:
                     cleaned.append(self._exec_fallback(total_findings)[len(cleaned)])
                 return cleaned
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[ScanPDF] Executive summary LLM call failed: %s", exc)
         return self._exec_fallback(total_findings)
 
     def _exec_fallback(self, total_findings: int) -> List[str]:
@@ -1069,7 +1077,8 @@ class AntigravityReportBuilder:
         for hk, hv in (f["headers"] or {}).items():
             try:
                 cmd.append(f" \\\n  -H '{hk}: {hv}'")
-            except Exception:
+            except Exception as hdr_exc:
+                logger.debug("[ScanPDF] curl header formatting failed: %s", hdr_exc)
                 continue
         if method in {"POST", "PUT", "PATCH", "DELETE"} and f["attack_payload"]:
             cmd.append(f" \\\n  --data-raw '{_truncate(f['attack_payload'], 200)}'")
@@ -1114,7 +1123,8 @@ class AntigravityReportBuilder:
         elif isinstance(ts_raw, (int, float)):
             try:
                 ts = datetime.fromtimestamp(float(ts_raw)).strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
+            except (OSError, ValueError, OverflowError) as exc:
+                logger.debug("[ScanPDF] Timestamp conversion failed: %s", exc)
                 ts = str(ts_raw)
         elif isinstance(ts_raw, str) and ts_raw.strip():
             ts = ts_raw.strip()[:19]

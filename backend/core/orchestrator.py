@@ -8,6 +8,7 @@ import signal
 import psutil
 import importlib
 import aiohttp
+from collections import deque
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
 import redis
@@ -82,6 +83,14 @@ ai_cortex = get_cortex_engine()
 class HiveOrchestrator:
     # Global Registry for API Access (Nervous System)
     active_agents = {}
+    _active_agents_lock: Optional[asyncio.Lock] = None  # CRIT-04: lazily created per-loop
+
+    @classmethod
+    def _get_lock(cls) -> asyncio.Lock:
+        """Return a loop-bound lock, creating it lazily if needed."""
+        if cls._active_agents_lock is None:
+            cls._active_agents_lock = asyncio.Lock()
+        return cls._active_agents_lock
     # Control plane (Architecture §5.5): delegation manager + campaign budget.
     delegation = None
     campaign_budget = None
@@ -113,8 +122,8 @@ class HiveOrchestrator:
             }
             try:
                 await stats_db_manager.register_scan(scan_record)
-            except Exception:
-                pass # DB might be locked
+        except Exception as e:
+            logger.debug("[Orchestrator] DB registration skipped: %s", e)
         else:
              # Just update status if needed
              for s in stats_db_manager.get_stats()["scans"]:
@@ -147,7 +156,7 @@ class HiveOrchestrator:
         # ====================================================================
         is_test_mode = getattr(ai_cortex, 'test_mode', False)
         if is_test_mode:
-            print(f"[Orchestrator] TEST MODE ACTIVE for scan {scan_id}. Fast-path enabled.")
+            logger.info(f"[Orchestrator] TEST MODE ACTIVE for scan {scan_id}. Fast-path enabled.")
             
             # Update status to Running
             for s in stats_db_manager.get_stats()["scans"]:
@@ -199,9 +208,9 @@ class HiveOrchestrator:
                 mock_pdf.cell(0, 10, f"Target: {target_config['url']}", ln=True)
                 mock_pdf.cell(0, 10, f"Status: Completed (Test Mode)", ln=True)
                 mock_pdf.output(report_path)
-                print(f"[Orchestrator] TEST MODE: Mock report saved to {report_path}")
+                logger.info(f"[Orchestrator] TEST MODE: Mock report saved to {report_path}")
             except Exception as e:
-                print(f"[Orchestrator] TEST MODE: Mock report generation failed (non-critical): {e}")
+                logger.warning(f"[Orchestrator] TEST MODE: Mock report generation failed (non-critical): {e}")
             
             stats_db_manager.sync_complete_scan(scan_id, status="Completed", report_ready=True)
             
@@ -222,7 +231,7 @@ class HiveOrchestrator:
             await manager.broadcast_immediate({"type": "REPORT_READY", "payload": {"id": scan_id}})
             await manager.broadcast_immediate({"type": "SCAN_UPDATE", "payload": {"id": scan_id, "status": "Completed"}})
             
-            print(f"[Orchestrator] TEST MODE: Scan {scan_id} completed in {time.time() - loop_start:.1f}s (fast-path).")
+            logger.info(f"[Orchestrator] TEST MODE: Scan {scan_id} completed in {time.time() - loop_start:.1f}s (fast-path).")
             return  # Exit early — no agents, no real HTTP I/O
         # ==== END TEST MODE FAST-PATH ====
 
@@ -279,7 +288,8 @@ class HiveOrchestrator:
 
         
         # --- REPORTING LINK ---
-        scan_events = []
+        # FIX-003: Bound scan_events to prevent OOM on long-running scans
+        scan_events: deque = deque(maxlen=10000)
         alpha_recon_complete = asyncio.Event()
         # Per-scan broadcast throttle: drops repeated (type, url, agent)
         # broadcasts that fire within 500ms of the last one. The synthetic
@@ -369,7 +379,7 @@ class HiveOrchestrator:
                         target_url=sig_data["url"],
                         vuln_type=sig_data["type"]
                     )
-                    cvss_score, cvss_vector = await asyncio.to_thread(cvss_calc.calculate)
+                    cvss_score, cvss_vector = await asyncio.wait_for(asyncio.to_thread(cvss_calc.calculate), timeout=60)
                     # Inject CVSS into payload for downstream consumers
                     real_payload["cvss_score"] = cvss_score
                     real_payload["cvss_vector"] = cvss_vector
@@ -765,40 +775,42 @@ class HiveOrchestrator:
         # ═══════════════════════════════════════════════════════════════════════
             
         # Register in Global State (Dual Keying for String and Enum access)
-        HiveOrchestrator.active_agents["agent_prism"] = sentinel
-        HiveOrchestrator.active_agents[AgentID.PRISM] = sentinel
+        # CRIT-04: Use lock to prevent concurrent mutation of active_agents
+        async with HiveOrchestrator._get_lock():
+            HiveOrchestrator.active_agents["agent_prism"] = sentinel
+            HiveOrchestrator.active_agents[AgentID.PRISM] = sentinel
         
-        HiveOrchestrator.active_agents["agent_chi"] = inspector
-        HiveOrchestrator.active_agents[AgentID.CHI] = inspector
+            HiveOrchestrator.active_agents["agent_chi"] = inspector
+            HiveOrchestrator.active_agents[AgentID.CHI] = inspector
         
-        HiveOrchestrator.active_agents["agent_omega"] = strategist
-        HiveOrchestrator.active_agents[AgentID.OMEGA] = strategist
+            HiveOrchestrator.active_agents["agent_omega"] = strategist
+            HiveOrchestrator.active_agents[AgentID.OMEGA] = strategist
         
-        HiveOrchestrator.active_agents["agent_alpha"] = scout
-        HiveOrchestrator.active_agents[AgentID.ALPHA] = scout
+            HiveOrchestrator.active_agents["agent_alpha"] = scout
+            HiveOrchestrator.active_agents[AgentID.ALPHA] = scout
         
-        HiveOrchestrator.active_agents["agent_beta"] = breaker
-        HiveOrchestrator.active_agents[AgentID.BETA] = breaker
+            HiveOrchestrator.active_agents["agent_beta"] = breaker
+            HiveOrchestrator.active_agents[AgentID.BETA] = breaker
         
-        HiveOrchestrator.active_agents["agent_gamma"] = analyst
-        HiveOrchestrator.active_agents[AgentID.GAMMA] = analyst
+            HiveOrchestrator.active_agents["agent_gamma"] = analyst
+            HiveOrchestrator.active_agents[AgentID.GAMMA] = analyst
         
-        HiveOrchestrator.active_agents["agent_zeta"] = governor
-        HiveOrchestrator.active_agents[AgentID.ZETA] = governor
+            HiveOrchestrator.active_agents["agent_zeta"] = governor
+            HiveOrchestrator.active_agents[AgentID.ZETA] = governor
         
-        HiveOrchestrator.active_agents["agent_sigma"] = sigma
-        HiveOrchestrator.active_agents[AgentID.SIGMA] = sigma
+            HiveOrchestrator.active_agents["agent_sigma"] = sigma
+            HiveOrchestrator.active_agents[AgentID.SIGMA] = sigma
         
-        HiveOrchestrator.active_agents["agent_kappa"] = kappa
-        HiveOrchestrator.active_agents[AgentID.KAPPA] = kappa
+            HiveOrchestrator.active_agents["agent_kappa"] = kappa
+            HiveOrchestrator.active_agents[AgentID.KAPPA] = kappa
         
-        HiveOrchestrator.active_agents["agent_delta"] = delta
-        HiveOrchestrator.active_agents[AgentID.DELTA] = delta
+            HiveOrchestrator.active_agents["agent_delta"] = delta
+            HiveOrchestrator.active_agents[AgentID.DELTA] = delta
         
-        HiveOrchestrator.active_agents["PLANNER"] = planner
+            HiveOrchestrator.active_agents["PLANNER"] = planner
         
-        if net_commander is not None:
-            HiveOrchestrator.active_agents["agent_network_commander"] = net_commander
+            if net_commander is not None:
+                HiveOrchestrator.active_agents["agent_network_commander"] = net_commander
         
         # HYBRID AI: Log campaign strategy
         strategy_name = "Dynamic Multi-Core Heuristics"
@@ -846,10 +858,11 @@ class HiveOrchestrator:
         # the attack pipeline (Architecture §16 phase ordering — phases must
         # advance, not block forever). The seeder + attack stages still run with
         # whatever recon was able to emit.
-        try:
-            recon_max_wait = float(getattr(settings, "RECON_MAX_WAIT_SECONDS", 180))
-        except Exception:
-            recon_max_wait = 180.0
+    try:
+        recon_max_wait = float(getattr(settings, "RECON_MAX_WAIT_SECONDS", 180))
+    except Exception as exc:
+        logger.debug("[Orchestrator] RECON_MAX_WAIT_SECONDS parse failed: %s", exc)
+        recon_max_wait = 180.0
         try:
             await asyncio.wait_for(alpha_recon_complete.wait(), timeout=recon_max_wait)
             logger.info(f"[{scan_id}] Alpha recon COMPLETE signal received - releasing attack agents")
@@ -877,7 +890,8 @@ class HiveOrchestrator:
                     u = payload.get("url") if isinstance(payload, dict) else None
                     if isinstance(u, str) and "?" in u:
                         recon_eps.append(u)
-            except Exception:
+            except Exception as exc:
+                logger.debug("[Orchestrator] recon endpoint extraction failed: %s", exc)
                 recon_eps = []
             seeded_surface = await seed_attack_surface(
                 target_config["url"], scan_id, recon_endpoints=recon_eps)
@@ -1188,9 +1202,10 @@ class HiveOrchestrator:
             for etype in EventType:
                 bus.unsubscribe(etype, event_listener)
             
-            # Clear registry
-            HiveOrchestrator.active_agents.clear()
-            print(f"[Orchestrator] Scan {scan_id} Cleaned Up. Listeners detached.")
+            # Clear registry (CRIT-04: protected by lock)
+            async with HiveOrchestrator._get_lock():
+                HiveOrchestrator.active_agents.clear()
+            logger.info(f"[Orchestrator] Scan {scan_id} Cleaned Up. Listeners detached.")
             
             # --- GENERATE GOD MODE REPORT ---
             try:
@@ -1203,13 +1218,14 @@ class HiveOrchestrator:
             # --- FINAL MEMORY PURGE (Hard-Zero Gap Fix) ---
             try:
                 await bus.evict_scan_context(scan_id)
-            except Exception: pass
+            except Exception as _evict_err:
+                logger.debug("[%s] Scan context eviction skipped: %s", scan_id, _evict_err)
 
             try:
                 async def generate_and_mark_ready():
                     try:
                         report_gen = ReportGenerator()
-                        print(f"[Orchestrator] Starting AI report generation for scan {scan_id}...")
+                        logger.info(f"[Orchestrator] Starting AI report generation for scan {scan_id}...")
                         
                         end_time = datetime.now()
                         requested_concurrency = target_config.get('velocity', len(agents))
@@ -1343,12 +1359,12 @@ class HiveOrchestrator:
                         await manager.broadcast({"type": "REPORT_READY", "payload": {"id": scan_id}})
                         await manager.broadcast({"type": "SCAN_UPDATE", "payload": {"id": scan_id, "status": "Completed"}})
                         
-                        print(f"[Orchestrator] Report Generated. AI Report for {scan_id} is now READY.")
-                        print(f"[Orchestrator] Entering adaptive cooldown for {adaptive_delay:.1f}s before final release...")
+                        logger.info(f"[Orchestrator] Report Generated. AI Report for {scan_id} is now READY.")
+                        logger.info(f"[Orchestrator] Entering adaptive cooldown for {adaptive_delay:.1f}s before final release...")
                         await asyncio.sleep(adaptive_delay)
                         
                     except asyncio.TimeoutError:
-                        print(f"[Orchestrator] Report generation TIMED OUT for {scan_id}. Force completing.")
+                        logger.warning(f"[Orchestrator] Report generation TIMED OUT for {scan_id}. Force completing.")
                         # Fallback to ensure scan isn't stuck in 'Finalizing'
                         stats_db_manager.sync_complete_scan(scan_id, status="Completed", report_ready=True)
                         await manager.broadcast({
@@ -1360,7 +1376,7 @@ class HiveOrchestrator:
                         await manager.broadcast({"type": "SCAN_UPDATE", "payload": {"id": scan_id, "status": "Completed"}})
                         
                     except Exception as ge:
-                        print(f"[Orchestrator] Background Report Async Task Error: {ge}")
+                        logger.error(f"[Orchestrator] Background Report Async Task Error: {ge}")
                         # Even if report failed, we MUST mark the scan as completed to release the UI
                         stats_db_manager.sync_complete_scan(scan_id, status="Completed", report_ready=True)
                         await manager.broadcast({"type": "REPORT_READY", "payload": {"id": scan_id}})
@@ -1372,8 +1388,7 @@ class HiveOrchestrator:
                                 break
                                 
                         stats_db_manager.flush_immediate()
-                        import traceback
-                        traceback.print_exc()
+                        logger.error("[Orchestrator] Report generation failed", exc_info=True)
 
                 task = asyncio.create_task(generate_and_mark_ready())
                 HiveOrchestrator._orphaned_tasks.add(task)

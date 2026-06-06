@@ -110,9 +110,10 @@ class URLValidator:
                 if pattern.match(hostname):
                     return True, "OK"
         
-        # Allow any hostname with non-standard port (likely local service)
-        if parsed.port and parsed.port not in (80, 443):
-            return True, "OK"
+        # FIX-010: Removed non-standard port bypass that allowed SSRF.
+        # Any hostname with a non-standard port must still be in the allowlist.
+        # The previous code returned True for any hostname with a non-standard port,
+        # which completely bypassed the allowlist and enabled SSRF attacks.
         
         # Reject everything else (public domains not in allowlist)
         logger.warning(f"Rejected URL not in allowlist: {url}")

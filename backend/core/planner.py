@@ -276,7 +276,7 @@ class MissionPlanner(BaseAgent):
         if not target_url or target_url in self.active_missions:
              return
 
-        print(f"[{self.name}] [MISSION] Target '{target_url}' acquired. Starting Phase 1: RECON.")
+        logger.info(f"[{self.name}] [MISSION] Target '{target_url}' acquired. Starting Phase 1: RECON.")
 
         # Pre-planning: consume learned skills + graph evidence BEFORE planning
         # (Architecture §29.1 priority 13, §6.7 — query skills/graph up front,
@@ -339,7 +339,7 @@ class MissionPlanner(BaseAgent):
 
         mission = self.active_missions[target_url]
         if mission["state"] == MissionState.RECON:
-            print(f"[{self.name}] [MISSION] '{target_url}' - Recon confirmed potential. Pivoting to Phase 2: ASSESSMENT.")
+            logger.info(f"[{self.name}] [MISSION] '{target_url}' - Recon confirmed potential. Pivoting to Phase 2: ASSESSMENT.")
 
             # Evidence arrived: refresh graph predictions and re-prioritize the
             # DAG before advancing the phase gate (§5.5 graph → planner loop).
@@ -399,7 +399,7 @@ class MissionPlanner(BaseAgent):
             vulns = payload.get("vulnerabilities", [])
             for vuln in vulns:
                 if mission["state"] == MissionState.ASSESSMENT:
-                    print(f"[{self.name}] [MISSION] '{target_url}' - Vuln Vetted ({vuln.get('type')}). Launching Phase 3: EXPLOITATION.")
+                    logger.info(f"[{self.name}] [MISSION] '{target_url}' - Vuln Vetted ({vuln.get('type')}). Launching Phase 3: EXPLOITATION.")
 
                     graph: TaskGraph = mission.get("task_graph")
                     if graph is not None:
@@ -438,7 +438,7 @@ class MissionPlanner(BaseAgent):
         
         elif mission["state"] == MissionState.EXPLOITATION:
              # Mission Over
-             print(f"[{self.name}] [MISSION] '{target_url}' - Mission Successfully Completed.")
+             logger.info(f"[{self.name}] [MISSION] '{target_url}' - Mission Successfully Completed.")
              graph = mission.get("task_graph")
              if graph is not None:
                  graph.mark(f"exploit::{target_url}", TaskStatus.COMPLETED)

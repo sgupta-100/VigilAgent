@@ -141,7 +141,8 @@ class PayloadManager:
                         payloads.append(line)
                         if len(payloads) >= max_count:
                             break
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"[PayloadManager] Failed to read {f}: {exc}")
                 continue
         return payloads
 

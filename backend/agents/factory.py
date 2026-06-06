@@ -4,6 +4,8 @@ import os
 from functools import lru_cache
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 
 AGENT_MODULES = [
     "backend.agents.alpha",
@@ -31,7 +33,9 @@ def discover_agent_classes() -> dict[str, type]:
     for module_path in AGENT_MODULES:
         try:
             module = importlib.import_module(module_path)
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.debug(f"Agent module import failed for {module_path}: {e}")
             continue
         for name, obj in inspect.getmembers(module, inspect.isclass):
             if name.endswith("Agent") or name.startswith("Agent") or name.endswith("Commander"):

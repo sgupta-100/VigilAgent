@@ -13,14 +13,19 @@ For dedicated, evidence-rich detection prefer:
 from __future__ import annotations
 
 import html
+import logging
+import random
 import re
+from urllib.parse import quote as urlquote
 
 from backend.core.base import BaseArsenalModule
 from backend.core.protocol import JobPacket, TaskTarget, Vulnerability
 
-# Sentinels chosen to be unlikely to occur naturally in any response.
-_XSS_SENTINEL = "vgxss777"
-_SSTI_SENTINEL = "vgssti777"
+logger = logging.getLogger("APIFuzzer")
+
+# Sentinels — randomized per-process to avoid false positives from static matches (HIGH-26)
+_XSS_SENTINEL = f"vgxss{random.randint(1000, 9999)}"
+_SSTI_SENTINEL = f"vgssti{random.randint(1000, 9999)}"
 
 _FUZZ_VECTORS = (
     f"<script>alert('{_XSS_SENTINEL}')</script>",
@@ -41,7 +46,8 @@ class APIFuzzer(BaseArsenalModule):
         try:
             from backend.ai.cortex import get_cortex_engine
             self.ai = get_cortex_engine()
-        except Exception:
+        except Exception as exc:
+            logger.debug("[APIFuzzer] AI engine init deferred: %s", exc)
             self.ai = None
 
     async def generate_payloads(self, packet: JobPacket) -> list[TaskTarget]:
@@ -64,12 +70,12 @@ class APIFuzzer(BaseArsenalModule):
                 # Tag AI vectors so the analyzer never accidentally treats an
                 # AI fuzzer string as a confirmed sentinel.
                 vectors.extend(v for v in ai_vectors if isinstance(v, str))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[APIFuzzer] AI fuzz vector generation failed: %s", exc)
 
         sep = "&" if "?" in packet.target.url else "?"
         for vector in vectors:
-            url = f"{packet.target.url}{sep}fuzz={vector}"
+            url = f"{packet.target.url}{sep}fuzz={urlquote(str(vector))}"
             targets.append(TaskTarget(
                 url=url, method="GET",
                 headers=dict(packet.target.headers or {}),

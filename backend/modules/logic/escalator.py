@@ -1,9 +1,18 @@
+import copy
 from backend.core.base import BaseArsenalModule
 from backend.core.protocol import JobPacket, Vulnerability, TaskTarget
 # Hybrid AI Engine
 from backend.ai.cortex import CortexEngine, get_cortex_engine
 
-cortex = get_cortex_engine()
+# HIGH-07: Lazy-init cortex to avoid import-time failures
+_cortex = None
+
+
+def _get_cortex():
+    global _cortex
+    if _cortex is None:
+        _cortex = get_cortex_engine()
+    return _cortex
 
 class TheEscalator(BaseArsenalModule):
     """
@@ -22,14 +31,15 @@ class TheEscalator(BaseArsenalModule):
         ]
         
         # HYBRID AI: Add AI-guessed privilege parameters
-        ai_params = await cortex.guess_privilege_params(target.url, target.payload)
+        ai_params = await _get_cortex().guess_privilege_params(target.url, target.payload)
         for p in ai_params:
             if isinstance(p, dict) and p not in payloads:
                 payloads.append(p)
                 
         targets = []
         for vector in payloads:
-            merged_payload = target.payload.copy() if target.payload else {}
+            # FIX-054: Use deep copy to prevent mutation of original payload
+            merged_payload = copy.deepcopy(target.payload) if target.payload else {}
             merged_payload.update(vector)
             targets.append(TaskTarget(url=target.url, method="POST", headers=target.headers, payload=merged_payload))
             targets.append(TaskTarget(url=target.url, method="PATCH", headers=target.headers, payload=merged_payload))

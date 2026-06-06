@@ -66,7 +66,7 @@ async def ingest_recon_data(payload: ReconPayload):
             "severity": severity
         })
     except Exception as e:
-        print(f"Broadcast Error: {e}")
+        logger.debug(f"Broadcast Error: {e}")
 
     # Legacy RECON_PACKET for components that haven't migrated
     await manager.broadcast({
@@ -80,7 +80,8 @@ async def ingest_recon_data(payload: ReconPayload):
         try:
             scan_payload = packet_data.get("payload", {})
             if "findings" in scan_payload:
-                memory_file = "d:/Antigravity 2/API Endpoint Scanner/brain/memory.json"
+                # FIX-057: Use relative path instead of hardcoded cross-project path
+                memory_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "brain", "memory.json")
                 brain_data = []
                 if os.path.exists(memory_file):
                     with open(memory_file, "r") as f:
@@ -97,7 +98,7 @@ async def ingest_recon_data(payload: ReconPayload):
                 with open(memory_file, "w") as f:
                     json.dump(brain_data, f, indent=2)
         except Exception as e:
-            print(f"Brain Ingest Error: {e}")
+            logger.debug(f"Brain Ingest Error: {e}")
     # -----------------------------------
     return {"status": "ingested"}
 
@@ -108,7 +109,9 @@ async def get_keyring():
     try:
         with open(KEYRING_FILE, "r") as f:
             return json.load(f)
-    except Exception:return []
+    except Exception as e:
+        logger.debug("Keyring load failed: %s", e)
+        return []
 
 @router.post("/keys")
 async def ingest_keys(payload: KeyringPayload):
@@ -124,12 +127,14 @@ async def ingest_keys(payload: KeyringPayload):
         try:
             with open(KEYRING_FILE, "r") as f:
                 keyring = json.load(f)
-        except Exception:pass
+        except Exception as e:
+            logger.debug(f"Recon error: {e}")
     keyring.append(data)
     if len(keyring) > 100: keyring = keyring[-100:]
     try:
         with open(KEYRING_FILE, "w") as f:
             json.dump(keyring, f, indent=4)
-    except Exception:pass
+    except Exception as e:
+        logger.debug(f"Recon error: {e}")
     await manager.broadcast({"type": "KEY_CAPTURE", "payload": data})
     return {"status": "archived"}

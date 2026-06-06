@@ -12,6 +12,8 @@ from typing import Any, List
 
 from backend.core.protocol import JobPacket, TaskTarget, Vulnerability
 
+logger = logging.getLogger(__name__)
+
 
 class BaseArsenalModule(ABC):
     """
@@ -55,7 +57,7 @@ class BaseArsenalModule(ABC):
             path = url.replace("file:///", "").replace("%20", " ")
             try:
                 with open(path, 'r', encoding='utf-8') as f:
-                    return await asyncio.to_thread(f.read)
+                    return await asyncio.wait_for(asyncio.to_thread(f.read), timeout=10)
             except Exception as e:
                 return f"Error reading file: {e}"
         else:

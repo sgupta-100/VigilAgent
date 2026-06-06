@@ -248,8 +248,8 @@ class ReconCommandPlanner:
         try:
             if hosts_file.exists():
                 return hosts_file.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to read hosts file for stdin: %s", e)
         return ""
 
     @staticmethod
@@ -266,7 +266,8 @@ class ReconCommandPlanner:
         urls: list[str] = []
         try:
             raw = hosts_file.read_text(encoding="utf-8", errors="replace") if hosts_file.exists() else ""
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to read hosts file: %s", e)
             raw = ""
         for line in raw.splitlines():
             h = line.strip()

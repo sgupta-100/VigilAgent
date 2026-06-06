@@ -73,7 +73,7 @@ class ReconCommandRunner:
                 skipped_reason="output_path_traversal")
 
         command.output_path.parent.mkdir(parents=True, exist_ok=True)
-        call_id = f"recon_{command.tool_name}_{hashlib.sha1(str(command.argv).encode()).hexdigest()[:12]}"
+        call_id = f"recon_{command.tool_name}_{hashlib.sha256(str(command.argv).encode()).hexdigest()[:12]}"
 
         # Register toolcall in database (audit — retained per §29.13).
         await db_manager.create_toolcall(

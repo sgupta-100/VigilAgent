@@ -41,8 +41,8 @@ class ScanContext:
         payload = getattr(event, "payload", {})
         try:
             payload_text = json.dumps(payload, sort_keys=True, default=str)
-        except Exception:
-            payload_text = str(payload)
+        except Exception as exc:
+            payload_text = str(payload)  # Fallback for non-serializable payloads
         if len(payload_text) > max_payload_chars:
             payload_text = payload_text[:max_payload_chars] + "...[truncated]"
 

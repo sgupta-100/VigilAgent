@@ -577,7 +577,8 @@ class TerminalEngine:
         try:
             op_parent_str = str(Path(output_path).parent)
             extra_prefixes = [op_parent_str] if op_parent_str else []
-        except Exception:
+        except Exception as exc:
+            logger.debug("[TERMINAL] op_parent_str extraction failed: %s", exc)
             extra_prefixes = []
         exec_argv = build_exec_argv(
             argv, container=container, raw_dir=raw_dir, tool_root=tool_root,
@@ -603,8 +604,8 @@ class TerminalEngine:
         try:
             if not raw_dir.is_absolute():
                 raw_prefixes.add(str(raw_dir))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[TERMINAL] raw_prefixes relative form failed: %s", exc)
         # output_path may itself carry the relative form the planner used. Its
         # parent is the canonical relative raw_dir for any sibling tokens (e.g.
         # ffuf's `-o <raw_dir>/ffuf_results.json`). Including it here is what
@@ -613,8 +614,8 @@ class TerminalEngine:
             op_parent = Path(output_path).parent
             if not op_parent.is_absolute():
                 raw_prefixes.add(str(op_parent))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[TERMINAL] op_parent raw_prefixes failed: %s", exc)
         tool_s = str(tool_root)
         out_host = str(output_path)
         out_host_abs = str(Path(output_path).resolve())
@@ -667,7 +668,8 @@ class TerminalEngine:
             low = norm.lower()
             try:
                 is_file = os.path.isfile(s)
-            except Exception:
+            except Exception as exc:
+                logger.debug("[TERMINAL] isfile check failed for %s: %s", s, exc)
                 is_file = False
             if not is_file or s == out_host or s == out_host_abs:
                 continue
@@ -786,7 +788,8 @@ class TerminalEngine:
 
         async def _read_stdout() -> None:
             nonlocal last_output_at
-            assert proc.stdout is not None
+            if proc.stdout is None:
+                return
             # Chunked read (not readline) so very long single-line tool output
             # (ffuf -json, httpx) doesn't trip asyncio's 64KB line limit.
             while True:
@@ -795,8 +798,12 @@ class TerminalEngine:
                 except (asyncio.LimitOverrunError, ValueError):
                     try:
                         chunk = await proc.stdout.read(65536)
-                    except Exception:
+                    except Exception as read_exc:
+                        logger.debug("[TERMINAL] stdout read error: %s", read_exc)
                         break
+                except Exception as read_exc:
+                    logger.debug("[TERMINAL] stdout read error: %s", read_exc)
+                    break
                 if not chunk:
                     break
                 last_output_at = time.monotonic()
@@ -806,15 +813,20 @@ class TerminalEngine:
 
         async def _read_stderr() -> None:
             nonlocal last_output_at
-            assert proc.stderr is not None
+            if proc.stderr is None:
+                return
             while True:
                 try:
                     chunk = await proc.stderr.read(65536)
                 except (asyncio.LimitOverrunError, ValueError):
                     try:
                         chunk = await proc.stderr.read(65536)
-                    except Exception:
+                    except Exception as read_exc:
+                        logger.debug("[TERMINAL] stderr read error: %s", read_exc)
                         break
+                except Exception as read_exc:
+                    logger.debug("[TERMINAL] stderr read error: %s", read_exc)
+                    break
                 if not chunk:
                     break
                 last_output_at = time.monotonic()
@@ -827,8 +839,8 @@ class TerminalEngine:
                 proc.stdin.write(stdin.encode("utf-8") if isinstance(stdin, str) else stdin)
                 await proc.stdin.drain()
                 proc.stdin.close()
-            except Exception:
-                pass
+            except Exception as stdin_exc:
+                logger.debug("[TERMINAL] stdin write error: %s", stdin_exc)
 
         def _terminate() -> None:
             try:
@@ -871,13 +883,13 @@ class TerminalEngine:
             supervisor.cancel()
             try:
                 await readers
-            except Exception:
-                pass
+            except Exception as reader_exc:
+                logger.debug("[TERMINAL] reader cleanup error: %s", reader_exc)
             # Always reap to avoid zombies (Hermes reader-loop finally).
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5)
-            except Exception:
-                pass
+            except Exception as reap_exc:
+                logger.debug("[TERMINAL] process reap error: %s", reap_exc)
 
         return _ExecOutcome(
             stdout="".join(stdout_chunks),
@@ -965,8 +977,8 @@ class TerminalEngine:
         if wait and handle.task is not None:
             try:
                 await asyncio.wait_for(asyncio.shield(handle.task), timeout=10)
-            except Exception:
-                pass
+            except Exception as cancel_exc:
+                logger.debug("[TERMINAL] cancel wait error: %s", cancel_exc)
         return {"status": "cancelled", "process_id": process_id,
                 "final_status": handle.status}
 
@@ -982,7 +994,8 @@ def _build_default_engine() -> TerminalEngine:
         from backend.core.config import settings
         prefer_docker = bool(getattr(settings, "TERMINAL_PREFER_DOCKER", True))
         image = getattr(settings, "SANDBOX_IMAGE", None)
-    except Exception:
+    except Exception as exc:
+        logger.debug("[TERMINAL] config fallback: %s", exc)
         prefer_docker, image = True, None
     return TerminalEngine(scope=scope_guard, prefer_docker=prefer_docker, docker_image=image)
 

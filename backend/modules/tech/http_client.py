@@ -25,6 +25,7 @@ class HTTPRecord:
     status: int = 0
     response_headers: dict[str, str] = field(default_factory=dict)
     response_body: str = ""
+    _MAX_BODY_LEN = 50000  # FIX-022: Truncate to prevent memory exhaustion
     elapsed_ms: int = 0
     created_at: float = field(default_factory=time.time)
 
@@ -36,6 +37,9 @@ class BoundedHTTPHistory:
         self._counter = 0
 
     def add(self, record: HTTPRecord) -> HTTPRecord:
+        # FIX-022: Truncate oversized response bodies to prevent memory exhaustion
+        if len(record.response_body) > HTTPRecord._MAX_BODY_LEN:
+            record.response_body = record.response_body[:HTTPRecord._MAX_BODY_LEN] + "\n[TRUNCATED_BY_BOUNDED_HISTORY]"
         self._items[record.id] = record
         self._items.move_to_end(record.id)
         while len(self._items) > self.max_items:
@@ -85,9 +89,9 @@ class ReplayHTTPClient:
         if self.scope:
             self.scope.assert_allowed(url, action=f"{method.upper()} request")
         if self.cookie_jar is None:
-            self.cookie_jar = aiohttp.CookieJar(unsafe=True)
+            self.cookie_jar = aiohttp.CookieJar(unsafe=False)
         start = time.time()
-        async with aiohttp.ClientSession(cookie_jar=self.cookie_jar) as session:
+        async with aiohttp.ClientSession(cookie_jar=self.cookie_jar, timeout=aiohttp.ClientTimeout(total=timeout)) as session:
             response = await network_interceptor.fetch(
                 method,
                 url,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from pathlib import Path
@@ -9,6 +10,8 @@ from typing import Any
 from backend.agents.alpha_recon.models import EndpointFinding, ReconEntity, stable_id
 from backend.core.database import db_manager
 from backend.core.memory import memory_store
+
+logger = logging.getLogger("alpha.rag")
 
 
 class ReconRAGPipeline:
@@ -81,7 +84,8 @@ class ReconRAGPipeline:
         for line in self.path.read_text(encoding="utf-8").splitlines():
             try:
                 row = json.loads(line)
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"[ReconRAG] JSON parse failed: {exc}")
                 continue
             haystack = f"{row.get('content', '')} {json.dumps(row.get('metadata', {}), default=str)}".lower()
             score = sum(1 for term in terms if term and term in haystack)

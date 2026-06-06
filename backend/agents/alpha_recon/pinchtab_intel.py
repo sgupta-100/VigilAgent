@@ -70,8 +70,8 @@ class PinchTabIntelligence:
             pname = profile_name or f"alpha-{self.scan_id[:12]}"
             profile = await self.client.create_profile(pname, "Alpha V6 deep recon profile")
             profile_id = str(profile.get("id", profile.get("profileId", "")))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"[PinchTab] Profile creation failed: {exc}")
 
         # Start instance
         try:
@@ -95,8 +95,8 @@ class PinchTabIntelligence:
             try:
                 if instance_id:
                     await self.client.stop_instance(instance_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"[PinchTab] Instance cleanup failed: {exc}")
 
         return {
             "used": captured > 0,
@@ -123,7 +123,8 @@ class PinchTabIntelligence:
             # Wait for full page load
             try:
                 await self.client.wait_for_load(tab_id, timeout_ms=15000)
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"[PinchTab] wait_for_load fallback: {exc}")
                 await asyncio.sleep(2)
 
             # 1. Screenshot
@@ -135,8 +136,8 @@ class PinchTabIntelligence:
                 entities.append(ParsedEntity(kind="visual_artifact", label=url,
                     confidence=0.95, properties={"screenshot_path": str(screenshot_path)},
                     source_tool="pinchtab", phase="http_browser_intelligence"))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"[PinchTab] Screenshot failed for {url}: {exc}")
 
             # 2. DOM Snapshot (interactive elements, forms, links)
             try:
@@ -145,8 +146,8 @@ class PinchTabIntelligence:
                     tool_name="pinchtab", artifact_type="snapshot", scan_id=self.scan_id)
                 if isinstance(snapshot, dict):
                     entities.extend(self._extract_from_snapshot(snapshot, url))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"[PinchTab] DOM snapshot failed for {url}: {exc}")
 
             # 3. Page Text Content
             try:
@@ -155,8 +156,8 @@ class PinchTabIntelligence:
                 await self.artifacts.write_text(f"browser/{prefix}_text.txt", text_str,
                     tool_name="pinchtab", artifact_type="text", scan_id=self.scan_id)
                 entities.extend(self._extract_from_text(text_str, url))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"[PinchTab] Text extraction failed for {url}: {exc}")
 
             # 4. Network Requests (critical for endpoint discovery)
             try:
@@ -164,8 +165,8 @@ class PinchTabIntelligence:
                 await self.artifacts.write_json(f"browser/{prefix}_network.json", network,
                     tool_name="pinchtab", artifact_type="network", scan_id=self.scan_id)
                 entities.extend(self._extract_from_network(network, url))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"[PinchTab] Network capture failed for {url}: {exc}")
 
             # 5. Console output (error messages, debug info)
             try:
@@ -173,16 +174,16 @@ class PinchTabIntelligence:
                 await self.artifacts.write_json(f"browser/{prefix}_console.json", console,
                     tool_name="pinchtab", artifact_type="console", scan_id=self.scan_id)
                 entities.extend(self._extract_from_console(console, url))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"[PinchTab] Console capture failed for {url}: {exc}")
 
             # 6. Browser Errors
             try:
                 errors = await self.client.errors(tab_id, limit=200)
                 await self.artifacts.write_json(f"browser/{prefix}_errors.json", errors,
                     tool_name="pinchtab", artifact_type="errors", scan_id=self.scan_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"[PinchTab] Errors capture failed for {url}: {exc}")
 
             # 7. Cookies (session, auth tokens)
             try:
@@ -190,8 +191,8 @@ class PinchTabIntelligence:
                 await self.artifacts.write_json(f"browser/{prefix}_cookies.json", cookies,
                     tool_name="pinchtab", artifact_type="cookies", scan_id=self.scan_id)
                 entities.extend(self._extract_from_cookies(cookies, url))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"[PinchTab] Cookies capture failed for {url}: {exc}")
 
             # 8. Try to discover additional network requests by scrolling
             try:
@@ -199,14 +200,14 @@ class PinchTabIntelligence:
                 await asyncio.sleep(1)
                 network2 = await self.client.network(tab_id, limit=500)
                 entities.extend(self._extract_from_network(network2, url))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"[PinchTab] Scroll network failed for {url}: {exc}")
 
         finally:
             try:
                 await self.client.close_tab(tab_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"[PinchTab] Tab close failed: {exc}")
 
         return entities
 

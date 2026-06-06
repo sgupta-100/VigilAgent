@@ -11,6 +11,8 @@ This module also registers in-process child runners with the DelegationManager
 """
 from backend.agents.commanders.network_commander import NetworkServiceCommander
 
+logger = logging.getLogger(__name__)
+
 __all__ = ["NetworkServiceCommander"]
 
 
@@ -19,7 +21,9 @@ def _register_child_runners() -> None:
     try:
         from backend.core.delegation_manager import DelegationManager
         from backend.core.iteration_budget import IterationBudget
-    except Exception:
+    except Exception as e:
+        import logging
+        logging.debug(f"Commander child runner registration import failed: {e}")
         return
 
     if DelegationManager.has_runner("NetworkChild"):

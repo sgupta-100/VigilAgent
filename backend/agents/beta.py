@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import random
 import hashlib
 from backend.core.hive import EventType, HiveEvent
@@ -21,6 +22,8 @@ from backend.agents._shared import (
     SkillRecallMixin,
 )
 
+logger = logging.getLogger("AgentBeta")
+
 class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, BrowserEnabledAgent):
     """
     AGENT BETA: THE BREAKER
@@ -40,7 +43,9 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
         # CORTEX AI Integration (two-LLM policy: Gemini + OpenRouter)
         try:
             self.ai = get_cortex_engine()
-        except Exception:self.ai = None
+        except Exception as e:
+            logger.debug(f"[{self.name}] AI Engine initialization deferred: {e}")
+            self.ai = None
 
         
         # SOTA: Polyglots triggering multiple parsers
@@ -92,12 +97,12 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
         
         # Check if this is an XSS candidate that should be tested in browser
         if tag in ["XSS", "REFLECTED_XSS", "DOM_XSS"] or "xss" in str(payload.get("type", "")).lower():
-            print(f"[{self.name}] XSS Candidate detected. Routing to browser-based testing...")
+            logger.info(f"[{self.name}] XSS Candidate detected. Routing to browser-based testing...")
             await self._test_xss_browser(url, payload.get("payload", "<script>alert(1)</script>"), event.scan_id)
             return
         
         if tag == "API":
-            print(f"[{self.name}] Intercepted API Candidate: {url}. Recall Phase Initiated.")
+            logger.info(f"[{self.name}] Intercepted API Candidate: {url}. Recall Phase Initiated.")
             
             # RECALL tactics from Kappa (V6 Learning Loop)
             from backend.core.orchestrator import HiveOrchestrator
@@ -109,12 +114,12 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                     results = await kappa.recall_tactics(f"Exploit for {payload.get('type', 'vulnerability')} on {url}")
                     if results:
                         best_payload = results[0].get("payload", best_payload)
-                        print(f"[{self.name}] [RECALL SUCCESS] Reusing verified payload: {best_payload}")
+                        logger.debug(f"[{self.name}] [RECALL SUCCESS] Reusing verified payload: {best_payload}")
                 except Exception as e:
-                    print(f"[{self.name}] [RECALL ERROR] {e}")
+                    logger.warning(f"[{self.name}] [RECALL ERROR] {e}")
 
             mutated_polyglot = await self.waf_mutate(best_payload)
-            print(f"[{self.name}] >> AI Mutation Strategy: {mutated_polyglot}")
+            logger.debug(f"[{self.name}] >> AI Mutation Strategy: {mutated_polyglot}")
 
             # FIXED: Actually execute the attack via real HTTP requests. Carry
             # any auth headers exposed in the candidate (Sigma/Orchestrator may
@@ -127,7 +132,9 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
         payload = event.payload
         try:
             packet = JobPacket(**payload)
-        except Exception:return
+        except Exception as e:
+            logger.debug("[%s] Job packet parse failed: %s", self.name, e)
+            return
 
         if packet.config.agent_id != AgentID.BETA:
             return
@@ -136,10 +143,10 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
         # dispatch this round. Sigma still feeds us payloads via
         # handle_sigma_payloads when it's safe to fire.
         if self._throttled:
-            print(f"[{self.name}] [THROTTLE] Direct assault on {packet.target.url} skipped under governance signal.")
+            logger.warning(f"[{self.name}] [THROTTLE] Direct assault on {packet.target.url} skipped under governance signal.")
             return
 
-        print(f"[{self.name}] Received Breaker Job {packet.id}. Executing direct assault on {packet.target.url}")
+        logger.info(f"[{self.name}] Received Breaker Job {packet.id}. Executing direct assault on {packet.target.url}")
 
         if packet.config.module_id == "sigma_payload_handoff":
             payloads = packet.config.params.get("payloads", []) if packet.config.params else []
@@ -210,7 +217,7 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
         # Halve the dispatch fan-out instead of sleeping blindly.
         if self._throttled and len(payloads) > 4:
             payloads = payloads[: max(2, len(payloads) // 2)]
-            print(f"[{self.name}] [THROTTLE] Trimmed payload batch to {len(payloads)} under governance signal.")
+            logger.warning(f"[{self.name}] [THROTTLE] Trimmed payload batch to {len(payloads)} under governance signal.")
 
         digest = hashlib.sha256(
             json.dumps({"target": target_url, "payloads": payloads}, sort_keys=True).encode("utf-8")
@@ -220,7 +227,7 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
             return
         self._seen_payload_batches.add(batch_key)
 
-        print(f"[{self.name}] Intercepted {len(payloads)} payloads. Commencing bandit-driven multi-vector validation.")
+        logger.info(f"[{self.name}] Intercepted {len(payloads)} payloads. Commencing bandit-driven multi-vector validation.")
         try:
             import aiohttp
             timeout = aiohttp.ClientTimeout(total=10)
@@ -250,12 +257,12 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                                 await self._deliver_and_verify(session, target_url, mutated, scan_id=scan_id,
                                                                base_headers=base_headers)
                     except Exception as payload_err:
-                        print(f"[{self.name}] [PAYLOAD ERROR] Skipping payload: {payload_err}")
+                        logger.debug(f"[{self.name}] [PAYLOAD ERROR] Skipping payload: {payload_err}")
 
-                print(f"[{self.name}] Dispatching {len(payloads)} payloads concurrently across vectors...")
+                logger.info(f"[{self.name}] Dispatching {len(payloads)} payloads concurrently across vectors...")
                 await asyncio.gather(*[execute_payload_adaptive(p, i, scan_id) for i, p in enumerate(payloads)])
         except Exception as session_err:
-            print(f"[{self.name}] [SESSION ERROR] Failed to create HTTP session: {session_err}")
+            logger.error(f"[{self.name}] [SESSION ERROR] Failed to create HTTP session: {session_err}")
 
     async def _deliver_and_verify(self, session, target_url: str, payload_str: str, scan_id: str = None,
                                   base_headers: dict | None = None) -> bool:
@@ -276,7 +283,7 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
         # Consume skill recommendations for this vuln class (Architecture §29.9).
         skill_recs = self._skill_recommendations(target_url, vuln_class)
         if skill_recs:
-            print(f"[{self.name}] [SKILLS] {len(skill_recs)} recommendation(s) for {vuln_class}")
+            logger.debug(f"[{self.name}] [SKILLS] {len(skill_recs)} recommendation(s) for {vuln_class}")
 
         # Differential baseline.
         baseline = await self.delivery.baseline(target_url, session=session)
@@ -326,9 +333,8 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                 "latency": res.latency_ms,
                 "result": f"VERIFIED ({signals} signals)" if success else "OK",
                 "anomaly": success,
-            }, scan_id=scan_id)
-        except Exception:
-            pass
+            }, scan_id=scan_id)            except Exception as e:
+                logger.debug(f"[{self.name}] publish_request_event failed: {e}")
 
         if success:
             evidence = content_boundary.wrap_http_response(res.status, {}, res.body[:4000], res.request_url)
@@ -349,7 +355,7 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                         "status": "EXPLOITED", "response": evidence[:1200], "time_ms": res.latency_ms,
                     })
             except Exception as db_err:
-                print(f"[{self.name}] DB Logging Error: {db_err}")
+                logger.error(f"[{self.name}] DB Logging Error: {db_err}")
 
             await self.bus.publish(HiveEvent(
                 type=EventType.VULN_CANDIDATE,
@@ -370,7 +376,7 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                                  f"Controls: {', '.join(controls)}."),
                 }
             ))
-            print(f"[{self.name}] [HIT] {vuln_class} via {vector} on {target_url} "
+            logger.info(f"[{self.name}] [HIT] {vuln_class} via {vector} on {target_url} "
                   f"({signals} signals, controls={controls})")
         return success
 
@@ -418,7 +424,8 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                         "GET", url.split("?")[0], session=session,
                         headers=outbound_headers or None, timeout=5)
                     base_status = base_response.status; base_text = base_response.body
-                except Exception: pass
+                except Exception as e:
+                    logger.debug(f"[{self.name}] Baseline fetch failed: {e}")
 
                 verified, confidence, signals = MultiLayerVerifier.verify(
                     {"status": base_status, "response": base_text},
@@ -443,8 +450,8 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                         "result": result,
                         "anomaly": anomaly
                     }, scan_id=scan_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                logger.debug(f"[{self.name}] publish_request_event failed: {e}")
 
                 evidence = content_boundary.wrap_http_response(status, response.headers, text, response.url)
                 await self.bus.publish(HiveEvent(
@@ -458,9 +465,9 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                         "evidence": f"HTTP {status} with payload '{payload_str[:80]}' triggered anomalous response."
                     }
                 ))
-                print(f"[{self.name}] [HIT] Anomaly detected on {url}: {result}")
+                logger.info(f"[{self.name}] [HIT] Anomaly detected on {url}: {result}")
         except Exception as e:
-            print(f"[{self.name}] [ATTACK ERROR] {e}")
+            logger.error(f"[{self.name}] [ATTACK ERROR] {e}")
 
     async def waf_mutate(self, payload: str) -> str:
         """
@@ -475,7 +482,7 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                     mutated = content_boundary.sanitize_control_tokens(mutated)
                     return mutated
             except Exception as e:
-                pass
+                logger.debug("[%s] WAF mutation LLM fallback: %s", self.name, e)
 
         strategy = random.choice(["case_swap", "whitespace", "comment_split"])
         if strategy == "case_swap":
@@ -499,7 +506,7 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
     async def _test_xss_browser(self, url: str, payload: str, scan_id: str):
         """Test XSS payload in real browser context with forensic evidence capture."""
         try:
-            print(f"[{self.name}] Testing XSS in browser: {url} with payload: {payload[:50]}...")
+            logger.debug(f"[{self.name}] Testing XSS in browser: {url} with payload: {payload[:50]}...")
             
             # Broadcast attack intent
             await self.bus.publish(HiveEvent(
@@ -518,7 +525,7 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
             result = await self.browser.test_payload(url, payload)
             
             if result.get("triggered"):
-                print(f"[{self.name}] [XSS CONFIRMED] Payload triggered in browser!")
+                logger.info(f"[{self.name}] [XSS CONFIRMED] Payload triggered in browser!")
                 
                 # Capture forensic evidence
                 screenshot_path = await self.forensics.capture_screenshot(
@@ -551,12 +558,12 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                 ))
                 
         except Exception as e:
-            print(f"[{self.name}] Browser XSS test failed: {e}")
+            logger.error(f"[{self.name}] Browser XSS test failed: {e}")
     
     async def _test_csrf_browser(self, url: str, scan_id: str):
         """Test CSRF token extraction and validation in browser."""
         try:
-            print(f"[{self.name}] Testing CSRF protection: {url}")
+            logger.debug(f"[{self.name}] Testing CSRF protection: {url}")
             
             # Navigate to page and extract tokens
             result = await self.browser.extract_tokens(url)
@@ -564,7 +571,7 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
             csrf_tokens = [t for t in result.get("tokens", []) if "csrf" in t.get("name", "").lower()]
             
             if csrf_tokens:
-                print(f"[{self.name}] Found {len(csrf_tokens)} CSRF tokens")
+                logger.debug(f"[{self.name}] Found {len(csrf_tokens)} CSRF tokens")
                 
                 # Test if tokens are properly validated
                 for token in csrf_tokens:
@@ -586,12 +593,12 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                         ))
             
         except Exception as e:
-            print(f"[{self.name}] CSRF test failed: {e}")
+            logger.error(f"[{self.name}] CSRF test failed: {e}")
     
     async def _test_csrf_bypass(self, url: str, token: dict, scan_id: str) -> dict:
         """Attempt to bypass CSRF protection using various techniques."""
         try:
-            print(f"[{self.name}] Testing CSRF bypass for token: {token.get('name')}")
+            logger.debug(f"[{self.name}] Testing CSRF bypass for token: {token.get('name')}")
             
             bypassed = False
             bypass_method = None
@@ -613,9 +620,9 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                     if 200 <= response.status < 300:
                         bypassed = True
                         bypass_method = "missing_token"
-                        print(f"[{self.name}] CSRF bypass: Request succeeded without token")
-            except Exception:
-                pass
+                        logger.info(f"[{self.name}] CSRF bypass: Request succeeded without token")
+            except Exception as e:
+                logger.debug(f"[{self.name}] CSRF bypass missing_token failed: {e}")
             
             # Technique 2: Try with empty token value
             if not bypassed:
@@ -635,9 +642,9 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                         if 200 <= response.status < 300:
                             bypassed = True
                             bypass_method = "empty_token"
-                            print(f"[{self.name}] CSRF bypass: Request succeeded with empty token")
-                except Exception:
-                    pass
+                            logger.info(f"[{self.name}] CSRF bypass: Request succeeded with empty token")
+                except Exception as e:
+                    logger.debug(f"[{self.name}] CSRF bypass empty_token failed: {e}")
             
             # Technique 3: Try with wrong token value
             if not bypassed:
@@ -657,9 +664,9 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                         if 200 <= response.status < 300:
                             bypassed = True
                             bypass_method = "invalid_token"
-                            print(f"[{self.name}] CSRF bypass: Request succeeded with invalid token")
-                except Exception:
-                    pass
+                            logger.info(f"[{self.name}] CSRF bypass: Request succeeded with invalid token")
+                except Exception as e:
+                    logger.debug(f"[{self.name}] CSRF bypass invalid_token failed: {e}")
             
             # Technique 4: Try changing request method (POST -> GET)
             if not bypassed:
@@ -675,9 +682,9 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                         if 200 <= response.status < 300:
                             bypassed = True
                             bypass_method = "method_change"
-                            print(f"[{self.name}] CSRF bypass: Request succeeded with method change")
-                except Exception:
-                    pass
+                            logger.info(f"[{self.name}] CSRF bypass: Request succeeded with method change")
+                except Exception as e:
+                    logger.debug(f"[{self.name}] CSRF bypass method_change failed: {e}")
             
             return {
                 "bypassed": bypassed,
@@ -687,13 +694,13 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
             }
             
         except Exception as e:
-            print(f"[{self.name}] CSRF bypass test failed: {e}")
+            logger.error(f"[{self.name}] CSRF bypass test failed: {e}")
             return {"bypassed": False, "error": str(e)}
     
     async def _test_dom_xss(self, url: str, scan_id: str):
         """Test for DOM-based XSS vulnerabilities."""
         try:
-            print(f"[{self.name}] Testing DOM-based XSS: {url}")
+            logger.debug(f"[{self.name}] Testing DOM-based XSS: {url}")
             
             # DOM XSS payloads that trigger via JavaScript
             dom_payloads = [
@@ -709,7 +716,7 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                 result = await self.browser.navigate(test_url, stealth=False)
                 
                 if result.get("alert_detected"):
-                    print(f"[{self.name}] [DOM XSS CONFIRMED] Payload: {payload}")
+                    logger.info(f"[{self.name}] [DOM XSS CONFIRMED] Payload: {payload}")
                     
                     # Capture evidence
                     await self.forensics.capture_screenshot(
@@ -735,12 +742,12 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                     break
             
         except Exception as e:
-            print(f"[{self.name}] DOM XSS test failed: {e}")
+            logger.error(f"[{self.name}] DOM XSS test failed: {e}")
     
     async def _test_clickjacking(self, url: str, scan_id: str):
         """Test for clickjacking vulnerabilities."""
         try:
-            print(f"[{self.name}] Testing clickjacking protection: {url}")
+            logger.debug(f"[{self.name}] Testing clickjacking protection: {url}")
             
             # Check X-Frame-Options and CSP frame-ancestors
             result = await self.browser.navigate(url, stealth=False)
@@ -751,7 +758,7 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
             has_csp_frame = any("frame-ancestors" in str(v).lower() for v in headers.values())
             
             if not has_xfo and not has_csp_frame:
-                print(f"[{self.name}] [CLICKJACKING VULNERABLE] No frame protection headers")
+                logger.info(f"[{self.name}] [CLICKJACKING VULNERABLE] No frame protection headers")
                 
                 await self.bus.publish(HiveEvent(
                     type=EventType.VULN_CONFIRMED,
@@ -767,4 +774,4 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                 ))
             
         except Exception as e:
-            print(f"[{self.name}] Clickjacking test failed: {e}")
+            logger.error(f"[{self.name}] Clickjacking test failed: {e}")

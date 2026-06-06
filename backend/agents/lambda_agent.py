@@ -12,6 +12,8 @@ import re
 import time
 from typing import List, Dict
 
+logger = logging.getLogger(__name__)
+
 
 class LambdaAgent:
     """PRE-CODE SCANNER — Detects vulnerabilities in source code before deployment."""
@@ -239,8 +241,10 @@ class LambdaAgent:
                             "needs_runtime_validation": True,
                             "priority_boost": hint["priority_boost"],
                         }))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Bus publish failure must not break the analysis loop.
+                    import logging as _log
+                    _log.debug(f"LambdaAgent bridge_to_runtime bus publish failed: {exc}")
         return hints
 
     async def analyze_and_bridge(self, code: str, *, language: str = "python",
@@ -384,7 +388,9 @@ class SBOMScanner:
         findings = []
         try:
             data = _json.loads(content)
-        except Exception:
+        except Exception as json_exc:
+            import logging as _log
+            _log.getLogger("LambdaAgent").debug("SBOM package.json parse failed: %s", json_exc)
             return findings
         for section in ("dependencies", "devDependencies"):
             for name, ver in (data.get(section, {}) or {}).items():

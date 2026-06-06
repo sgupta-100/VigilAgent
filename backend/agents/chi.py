@@ -72,25 +72,29 @@ class AgentChi(BrowserEnabledAgent):
         self.keyring = KeyringIntelligence()
 
         # Skill recall cache (Architecture §5.3.5, §29.9)
-        self._skill_rec_cache = {}
+        # HIGH-69: bounded to prevent unbounded memory growth
+        self._skill_rec_cache: dict = {}
 
 
     def _recall_traffic_skills(self, target_url: str = "") -> list:
         """Kappa-style skill recall (Architecture §5.3.5, §29.9): Chi receives
         traffic-analysis, WebSocket, XHR/fetch, timing, and side-channel skills.
         Cached per target to avoid rework."""
-        cache = self._skill_rec_cache
-        if target_url in cache:
-            return cache[target_url]
+        # HIGH-69: Use SkillRecallMixin._skill_cache() for bounded eviction
+        cache = self._skill_cache()
+        cache_key = (target_url, ("traffic", "websocket", "timing", "side-channel"))
+        if cache_key in cache:
+            return cache[cache_key]
         recs = []
         try:
             from backend.core.skill_library import skill_library
             for vuln_class in ("traffic", "websocket", "timing", "side-channel"):
                 recs.extend(skill_library.get_recommendations(
                     target_url=target_url, vuln_class=vuln_class, limit=3))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[{self.name}] Traffic skill recall failed: {e}")
             recs = []
-        cache[target_url] = recs
+        cache[cache_key] = recs
         return recs
 
 
@@ -110,7 +114,7 @@ class AgentChi(BrowserEnabledAgent):
                     name="payload_auditor"
                 )
             except Exception as e:
-                print(f"[{self.name}] Safety Matrix failure: {e}")
+                logger.error(f"[{self.name}] Safety Matrix failure: {e}")
 
     async def stop(self):
         """Cleanup tasks on agent shutdown."""
@@ -154,7 +158,7 @@ class AgentChi(BrowserEnabledAgent):
         
         # If BLOCK verdict, publish VULN_CONFIRMED (which triggers Dashboard Alert)
         if verdict["action"] == "BLOCK":
-             print(f"[{self.name}]  EVENT BLOCKED: {verdict['reason']}")
+             logger.warning(f"[{self.name}] EVENT BLOCKED: {verdict['reason']}")
              
              await self.bus.publish(HiveEvent(
                 type=EventType.VULN_CONFIRMED,
@@ -315,7 +319,8 @@ class AgentChi(BrowserEnabledAgent):
                         "reason": f"AI-Detected: {ai_verdict.get('reason', 'Deceptive intent')}",
                         "risk_score": ai_verdict.get("risk_score", 80)
                     }
-            except Exception:pass  # Don't let AI failure block legitimate clicks
+            except Exception as e:
+                logger.debug(f"[{self.name}] AI intent analysis failed: {e}")
 
         return {"action": "ALLOW", "reason": "Intent verified"}
 
@@ -387,7 +392,7 @@ class AgentChi(BrowserEnabledAgent):
                         await self.redis_client.lpush("pending_tasks", json.dumps(job_payload))
                     else:
 
-                        print(f"[{self.name}] 🚨 IOTA BLOCK: {reason}")
+                        logger.warning(f"[{self.name}] IOTA BLOCK: {reason}")
                         await self._report_safety_violation(job_payload, reason)
                         
                         # V6-HARDENED: SIGNAL FAILURE TO HIVE
@@ -439,8 +444,8 @@ class AgentChi(BrowserEnabledAgent):
                         logger.warning(
                             "[%s] Advisory semantic flag (not blocking): %s",
                             self.name, verdict.get("reason"))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[{self.name}] Advisory semantic check error: {e}")
 
         return True, "Safe"
 
@@ -459,9 +464,8 @@ class AgentChi(BrowserEnabledAgent):
     # ============ EVENT INTERCEPTION (Phase 4) ============
     
     async def _intercept_events(self, url: str, scan_id: str) -> dict:
-        """Intercept and monitor real-time browser events."""
-        try:
-            print(f"[{self.name}] Intercepting events: {url}")
+        """Intercept and monitor real-time browser events."""            try:
+                logger.debug(f"[{self.name}] Intercepting events: {url}")
             
             # Install event listeners
             listeners = await self._install_event_listeners(url)
@@ -483,7 +487,7 @@ class AgentChi(BrowserEnabledAgent):
             }
             
         except Exception as e:
-            print(f"[{self.name}] Event interception failed: {e}")
+            logger.error(f"[{self.name}] Event interception failed: {e}")
             return {}
     
     async def _install_event_listeners(self, url: str) -> list:
@@ -565,11 +569,11 @@ class AgentChi(BrowserEnabledAgent):
                 return installedListeners;
             }""")
             
-            print(f"[{self.name}] Installed {len(listeners)} event listeners")
+            logger.debug(f"[{self.name}] Installed {len(listeners)} event listeners")
             return listeners
             
         except Exception as e:
-            print(f"[{self.name}] Event listener installation failed: {e}")
+            logger.error(f"[{self.name}] Event listener installation failed: {e}")
             return []
     
     async def _monitor_events(self, url: str, duration: int = 10) -> list:
@@ -587,11 +591,11 @@ class AgentChi(BrowserEnabledAgent):
                 return window.__chi_events || [];
             }""")
             
-            print(f"[{self.name}] Monitored {len(events)} events over {duration}s")
+            logger.debug(f"[{self.name}] Monitored {len(events)} events over {duration}s")
             return events
             
         except Exception as e:
-            print(f"[{self.name}] Event monitoring failed: {e}")
+            logger.error(f"[{self.name}] Event monitoring failed: {e}")
             return []
     
     def _is_dark_pattern(self, event: dict) -> bool:
@@ -610,7 +614,7 @@ class AgentChi(BrowserEnabledAgent):
         """Block a suspicious event from executing."""
         try:
             event_type = event.get("type", "")
-            print(f"[{self.name}] Blocking suspicious event: {event_type}")
+            logger.warning(f"[{self.name}] Blocking suspicious event: {event_type}")
             
             # Capture evidence before blocking
             await self.forensics.capture_screenshot(
@@ -642,7 +646,7 @@ class AgentChi(BrowserEnabledAgent):
             # For now, return True to indicate successful blocking
             # In production, this would actually inject the prevention code
             
-            print(f"[{self.name}] Event {event_type} blocked successfully")
+            logger.debug(f"[{self.name}] Event {event_type} blocked successfully")
             
             # Report the blocked event
             await self.bus.publish(HiveEvent(
@@ -662,5 +666,5 @@ class AgentChi(BrowserEnabledAgent):
             return True
             
         except Exception as e:
-            print(f"[{self.name}] Event blocking failed: {e}")
+            logger.error(f"[{self.name}] Event blocking failed: {e}")
             return False

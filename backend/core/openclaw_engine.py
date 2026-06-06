@@ -151,11 +151,11 @@ class OpenClawEngine:
                 try:
                     if self._playwright:
                         await self._playwright.stop()
-                except Exception:
-                    pass
-                self._playwright = None
-                self._browser = None
-                self.client = None
+        except Exception as stop_exc:
+            logger.debug("[OpenClawEngine] Playwright stop during rollback failed: %s", stop_exc)
+        self._playwright = None
+        self._browser = None
+        self.client = None
 
                 # Detect the common "browsers not installed" failure mode and
                 # produce an actionable error string + warning log. Playwright
@@ -240,8 +240,8 @@ class OpenClawEngine:
                     "resource_type": request.resource_type,
                     "post_data": request.post_data,
                 })
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[OpenClawEngine] Network log capture failed: %s", exc)
 
         page.on("request", _on_request)
         self.current_context = context
@@ -265,8 +265,8 @@ class OpenClawEngine:
         try:
             try:
                 resp = await page.goto(url, wait_until=wait_for, timeout=30000)
-            except Exception:
-                # Some sites never reach network idle; fall back to DOM ready.
+            except Exception as exc:
+                logger.debug("[OpenClawEngine] Primary navigation (%s) failed: %s, trying domcontentloaded", wait_for, exc)
                 resp = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             status_code = resp.status if resp else 0
             return {
@@ -298,8 +298,8 @@ class OpenClawEngine:
         try:
             # Wait briefly so SPAs can finish their initial XHR burst.
             await page.wait_for_timeout(800)
-        except Exception:
-            pass
+        except Exception as wait_exc:
+            logger.debug("[OpenClawEngine] SPA wait timeout: %s", wait_exc)
 
         endpoints: List[Dict[str, Any]] = []
         seen: set[str] = set()
@@ -429,9 +429,9 @@ class OpenClawEngine:
                 "(p) => { document.body.innerHTML += p; }",
                 payload,
             )
-        except Exception:
+        except Exception as exc:
             # XSS payload may itself raise inside the JS context — that's fine.
-            pass
+            logger.debug("[OpenClawEngine] XSS payload evaluate raised: %s", exc)
 
         alert_fired = bool(await page.evaluate("window.__alertFired || false"))
         dom_after = await page.content()
@@ -471,8 +471,8 @@ class OpenClawEngine:
             return []
         try:
             await result["page"].wait_for_load_state("networkidle", timeout=5000)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[OpenClawEngine] Network idle wait failed: %s", exc)
         return list(self._network_log)
 
     async def find_websockets(self, url: str) -> List[str]:
@@ -497,15 +497,16 @@ class OpenClawEngine:
                     }
                 })();
             """)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[OpenClawEngine] WebSocket capture init failed: %s", exc)
         result = await self.navigate(url)
         if not result.get("success"):
             return []
         try:
             captured = await page.evaluate("window.__capturedWS || []")
             return list(captured or [])
-        except Exception:
+        except Exception as exc:
+            logger.debug("[OpenClawEngine] WebSocket capture evaluation failed: %s", exc)
             return []
 
     async def extract_tokens(self, url: str) -> List[str]:
@@ -526,8 +527,8 @@ class OpenClawEngine:
                 key, value = entry[0], entry[1]
                 if isinstance(key, str) and ("token" in key.lower() or "auth" in key.lower()):
                     tokens.add(str(value))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[OpenClawEngine] Token extraction from localStorage failed: %s", exc)
         return list(tokens)
 
     async def capture_screenshot(self, scan_id: str, label: str) -> Optional[Path]:
@@ -543,7 +544,7 @@ class OpenClawEngine:
             await self.current_page.screenshot(path=str(filepath), full_page=True)
             return filepath
         except Exception as exc:
-            logger.debug("[OpenClawEngine] screenshot failed: %s", exc)
+            logger.debug("[OpenClawEngine] Screenshot capture failed: %s", exc)
             return None
 
     async def capture_dom(self, scan_id: str, label: str) -> Optional[Path]:
@@ -560,7 +561,7 @@ class OpenClawEngine:
             filepath.write_text(content, encoding="utf-8")
             return filepath
         except Exception as exc:
-            logger.debug("[OpenClawEngine] capture_dom failed: %s", exc)
+            logger.debug("[OpenClawEngine] DOM capture failed: %s", exc)
             return None
 
     async def get_network_log(self) -> List[Dict[str, Any]]:
@@ -573,7 +574,8 @@ class OpenClawEngine:
             return ""
         try:
             return await self.current_page.text_content("body") or ""
-        except Exception:
+        except Exception as exc:
+            logger.debug("[OpenClawEngine] get_page_text failed: %s", exc)
             return ""
 
     async def close(self) -> None:
@@ -589,22 +591,22 @@ class OpenClawEngine:
         if self.current_context:
             try:
                 await self.current_context.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[OpenClawEngine] Context close failed: %s", exc)
             self.current_context = None
             self.current_page = None
 
         if self._browser:
             try:
                 await self._browser.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[OpenClawEngine] Browser close failed: %s", exc)
             self._browser = None
             self.client = None
 
         if self._playwright:
             try:
                 await self._playwright.stop()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[OpenClawEngine] Playwright stop failed: %s", exc)
             self._playwright = None

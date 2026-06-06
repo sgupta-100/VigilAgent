@@ -2,9 +2,12 @@ import json
 import os
 import asyncio
 import hashlib
+import logging
 import threading
 
 from typing import List, Dict, Any
+
+logger = logging.getLogger("StateManager")
 
 STATE_FILE = "stats.json"
 TMP_STATE_FILE = "stats.json.tmp"
@@ -79,7 +82,7 @@ class StateManager:
                     if "scans" not in self._stats:
                         self._stats["scans"] = []
             except Exception as e:
-                print(f"[StateManager] Load Error: {e}")
+                logger.error(f"[StateManager] Load Error: {e}")
 
     async def _background_writer(self) -> None:
         """Coalesces multiple dirty flags into a single disk write every 2s."""
@@ -113,8 +116,8 @@ class StateManager:
         # Final flush (synchronous) — best effort.
         try:
             self.flush_immediate()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[State] flush_immediate deferred: %s", e)
 
     def _mark_dirty(self) -> None:
         self._dirty = True
@@ -146,7 +149,7 @@ class StateManager:
         try:
             self._save_sync()
         except Exception as e:
-            print(f"[StateManager] flush_immediate error: {e}")
+            logger.error(f"[StateManager] flush_immediate error: {e}")
 
     async def _async_save(self) -> None:
         async with self._lock:
@@ -160,7 +163,7 @@ class StateManager:
                 os.replace(TMP_STATE_FILE, STATE_FILE)
                 self._dirty = False
             except Exception as e:
-                print(f"[StateManager] Save Error: {e}")
+                logger.error(f"[StateManager] Save Error: {e}")
 
     # Aliasing remaining references to old _save()
     def _save(self) -> None:
@@ -408,11 +411,10 @@ class StateManager:
                         file_path = os.path.join(self.SCANS_DIR, fname)
                         try:
                             os.remove(file_path)
-                            print(f"[StateManager] Deleted sharded scan file: {fname}")
+                            logger.info(f"[StateManager] Deleted sharded scan file: {fname}")
                         except Exception as e:
-                            print(f"[StateManager] Error deleting {fname}: {e}")
-        except Exception as e:
-            print(f"[StateManager] Error accessing scan_states directory: {e}")
+                            logger.error(f"[StateManager] Error deleting brain episode {fname}: {e}")
+        except Exception as e:                logger.error(f"[StateManager] Error accessing scan_states directory: {e}")
         
         # Clear brain episodes
         episodes_dir = "brain/episodes"
@@ -423,11 +425,10 @@ class StateManager:
                         file_path = os.path.join(episodes_dir, fname)
                         try:
                             os.remove(file_path)
-                            print(f"[StateManager] Deleted brain episode: {fname}")
+                            logger.info(f"[StateManager] Deleted brain episode: {fname}")
                         except Exception as e:
-                            print(f"[StateManager] Error deleting {fname}: {e}")
-            except Exception as e:
-                print(f"[StateManager] Error accessing brain/episodes directory: {e}")
+                            logger.error(f"[StateManager] Error deleting brain episode {fname}: {e}")
+            except Exception as e:                    logger.error(f"[StateManager] Error accessing brain/episodes directory: {e}")
         
         # Clear scan_states subdirectories (forensics, sandboxes, sessions)
         subdirs_to_clean = ["forensics", "sandboxes", "sessions"]
@@ -443,15 +444,15 @@ class StateManager:
                                 os.remove(item_path)
                             elif os.path.isdir(item_path):
                                 shutil.rmtree(item_path)
-                            print(f"[StateManager] Deleted {subdir}/{item}")
+                            logger.info(f"[StateManager] Deleted {subdir}/{item}")
                         except Exception as e:
-                            print(f"[StateManager] Error deleting {subdir}/{item}: {e}")
+                            logger.error(f"[StateManager] Error deleting {subdir}/{item}: {e}")
                 except Exception as e:
-                    print(f"[StateManager] Error accessing {subdir_path}: {e}")
+                    logger.error(f"[StateManager] Error accessing {subdir_path}: {e}")
         
         # Save to disk
         self._save()
-        print("[StateManager] All historical scans wiped successfully.")
+        logger.info("[StateManager] All historical scans wiped successfully.")
 
     def reset_stale_scans(self) -> int:
         """Called on startup to clean up zombie scans."""
@@ -486,7 +487,7 @@ class StateManager:
                     json.dump(data, f, indent=2, default=str)
                 os.replace(tmp, path)
             except Exception as e:
-                print(f"[StateManager] Sharded write error: {e}")
+                logger.error(f"[StateManager] Sharded write error: {e}")
 
     async def read_scan_state(self, scan_id: str) -> Dict[str, Any]:
         path = self._scan_file(scan_id)
@@ -495,9 +496,9 @@ class StateManager:
                 return json.load(f)
         except FileNotFoundError:
             return {}
-        except Exception:
+        except Exception as e:
+            logger.debug("[State] load scan failed: %s", e)
             return {}
-
     async def list_scan_states(self) -> List[Dict[str, Any]]:
         """Read all sharded scan state files via thread pool to avoid blocking the event loop."""
         import functools
@@ -514,7 +515,8 @@ class StateManager:
                 try:
                     with open(os.path.join(self.SCANS_DIR, fname)) as f:
                         scans.append(json.load(f))
-                except Exception:
+                except Exception as e:
+                    logger.debug("[State] parse scan file skipped: %s", e)
                     continue
         return sorted(scans, key=lambda x: x.get("started_at", 0), reverse=True)
 
@@ -529,7 +531,8 @@ class StateManager:
                         for v in scan.get("vulnerabilities", []):
                             if v.get("vuln_id") == vuln_id:
                                 return v
-                except Exception:
+                except Exception as e:
+                    logger.debug("[State] parse scan file skipped: %s", e)
                     continue
         # Fallback: search in stats.json scans
         for s in self._stats.get("scans", []):

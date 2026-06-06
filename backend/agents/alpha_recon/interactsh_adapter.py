@@ -48,7 +48,7 @@ class InteractshAdapter:
     async def start(self) -> str:
         """Start the Interactsh client and return the OOB URL."""
         # Generate a correlation ID for this scan
-        self._correlation_id = hashlib.sha1(
+        self._correlation_id = hashlib.sha256(
             f"{self.scan_id}_{time.time()}".encode()).hexdigest()[:12]
 
         # Check if interactsh-client is available
@@ -116,8 +116,8 @@ class InteractshAdapter:
         finally:
             try:
                 proc.terminate()
-            except Exception:
-                pass
+            except Exception as term_exc:
+                logger.debug("[INTERACTSH] process terminate failed: %s", term_exc)
 
     async def _process_interaction(self, interaction: dict):
         """Process a single OOB interaction."""

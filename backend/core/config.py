@@ -45,6 +45,37 @@ WORKERS_CONFIG_PATH = os.path.join(CONFIG_FILES_DIR, "workers.yaml")
 ENGAGEMENT_CONFIG_PATH = os.path.join(CONFIG_FILES_DIR, "engagement.yaml")
 
 
+# CRIT-21: Schema validation constants for YAML config files.
+_WORKERS_REQUIRED_KEYS = {"default_num_workers", "heartbeat_interval_seconds"}
+_WORKERS_NUMERIC_KEYS = {
+    "default_num_workers", "heartbeat_interval_seconds",
+    "max_concurrent_tasks_per_worker",
+}
+
+
+def _validate_workers_schema(data: Dict[str, Any]) -> List[str]:
+    """Validate workers.yaml data against expected schema.
+    Returns a list of validation error strings (empty = valid)."""
+    errors: List[str] = []
+    cluster = data.get("cluster") or {}
+    if not isinstance(cluster, dict):
+        errors.append("'cluster' must be a mapping")
+        return errors
+    for key in _WORKERS_REQUIRED_KEYS:
+        if key not in cluster:
+            errors.append(f"cluster.{key} is required")
+    for key in _WORKERS_NUMERIC_KEYS:
+        val = cluster.get(key)
+        if val is not None and not isinstance(val, (int, float)):
+            errors.append(f"cluster.{key} must be numeric, got {type(val).__name__}")
+        elif isinstance(val, (int, float)) and val < 0:
+            errors.append(f"cluster.{key} must be >= 0")
+    specialties = data.get("specialties")
+    if specialties is not None and not isinstance(specialties, list):
+        errors.append("'specialties' must be a list")
+    return errors
+
+
 def load_workers_config() -> Dict[str, Any]:
     """Load cluster/worker defaults from config/workers.yaml (Architecture
     §4.3, §5.1.2, §29.10). Returns a dict with safe fallbacks so the cluster
@@ -63,9 +94,18 @@ def load_workers_config() -> Dict[str, Any]:
         if os.path.exists(WORKERS_CONFIG_PATH):
             with open(WORKERS_CONFIG_PATH, "r", encoding="utf-8") as fh:
                 data = yaml.safe_load(fh) or {}
+            # CRIT-21: Validate schema before accepting values
+            schema_errors = _validate_workers_schema(data)
+            if schema_errors:
+                for err in schema_errors:
+                    logger.warning("workers.yaml schema: %s", err)
+                # Still use safe defaults; only apply validated keys
             cluster = data.get("cluster", {}) or {}
-            defaults.update({k: v for k, v in cluster.items() if v is not None})
-            if data.get("specialties"):
+            if isinstance(cluster, dict):
+                for k, v in cluster.items():
+                    if v is not None and (k in _WORKERS_NUMERIC_KEYS or k in defaults):
+                        defaults[k] = v
+            if data.get("specialties") and isinstance(data["specialties"], list):
                 defaults["specialties"] = list(data["specialties"])
             if data.get("default_specialty"):
                 defaults["default_specialty"] = str(data["default_specialty"])
@@ -86,9 +126,9 @@ class GlobalSettings:
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
-    SCAN_TIMEOUT: int = int(os.getenv("SCAN_TIMEOUT", "600"))  # Default 10 minutes
+    SCAN_TIMEOUT: int = max(1, int(os.getenv("SCAN_TIMEOUT", "600") or "600"))  # Default 10 minutes
     ALPHA_ENABLE_V6: bool = os.getenv("ALPHA_ENABLE_V6", "true").lower() == "true"
-    ALPHA_TOOL_ROOT: str = os.getenv("ALPHA_TOOL_ROOT", r"D:\projects")
+    ALPHA_TOOL_ROOT: str = os.getenv("ALPHA_TOOL_ROOT", os.path.join(PROJECT_ROOT, "data"))
     ALPHA_ARTIFACT_ROOT: str = os.getenv("ALPHA_ARTIFACT_ROOT", "data/scans")
     ALPHA_DEFAULT_MODE: str = os.getenv("ALPHA_DEFAULT_MODE", "STANDARD")
     ALPHA_DEFAULT_RPS: int = int(os.getenv("ALPHA_DEFAULT_RPS", "50"))

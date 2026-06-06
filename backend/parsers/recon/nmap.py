@@ -1,16 +1,22 @@
 """Parser for nmap XML output."""
 from __future__ import annotations
+import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from backend.parsers.recon.base import ParsedEntity
 
+logger = logging.getLogger("parsers.nmap")
+
 
 def parse_nmap_xml(path: Path | str) -> list[ParsedEntity]:
     p = Path(path)
-    if not p.exists(): return []
+    if not p.exists():
+        logger.warning("Nmap XML file not found: %s", p)
+        return []
     try:
         tree = ET.parse(str(p))
-    except ET.ParseError:
+    except ET.ParseError as e:
+        logger.warning("Failed to parse nmap XML %s: %s", p, e)
         return []
     root = tree.getroot()
     entities: list[ParsedEntity] = []

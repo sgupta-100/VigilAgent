@@ -35,6 +35,8 @@ from typing import Sequence
 
 from backend.core.config import settings
 
+logger = logging.getLogger(__name__)
+
 # Container mount points.
 SCAN_MNT = "/scan"
 TOOLS_MNT = "/tools"
@@ -64,7 +66,9 @@ def docker_daemon_available() -> bool:
                            capture_output=True, text=True, timeout=15,
                            encoding="utf-8", errors="replace")
         return p.returncode == 0 and "linux" in (p.stdout or "").lower()
-    except Exception:
+    except Exception as exc:
+        import logging as _log
+        _log.getLogger('docker_runtime').debug('docker_daemon_available check failed: %s', exc)
         return False
 
 
@@ -79,8 +83,11 @@ def recon_image_present(image: str | None = None) -> bool:
                            capture_output=True, text=True, timeout=15,
                            encoding="utf-8", errors="replace")
         return p.returncode == 0
-    except Exception:
+    except Exception as exc:
+        import logging as _log
+        _log.getLogger('docker_runtime').debug('recon_image_present check failed: %s', exc)
         return False
+    return False
 
 
 def docker_recon_ready() -> bool:
@@ -101,8 +108,7 @@ def _running_recon_container_cached(image: str, override: str) -> str:
     long-lived container from the SAME image runs fine. When such a container is
     already up we exec into it instead of spawning fresh ones — more reliable and
     faster (no per-tool container spin-up). Returns the container name or "".
-    """
-    if shutil.which("docker") is None:
+    """    if shutil.which("docker") is None:
         return ""
     # 1. Explicit override (VIGILAGENT_RECON_CONTAINER) wins if it is running.
     if override:
@@ -112,8 +118,11 @@ def _running_recon_container_cached(image: str, override: str) -> str:
                                encoding="utf-8", errors="replace")
             if p.returncode == 0 and "true" in (p.stdout or "").lower():
                 return override
-        except Exception:
+        except Exception as exc:
+            import logging as _log
+            _log.getLogger('docker_runtime').debug('container inspect failed: %s', exc)
             pass
+    return ""
     # 2. Otherwise pick the first running container based on the recon image.
     #    The ancestor filter matches by image ID, so it MISSES containers whose
     #    image was since re-tagged/committed (the running container then shows a
@@ -127,8 +136,9 @@ def _running_recon_container_cached(image: str, override: str) -> str:
         if idp.returncode == 0 and idp.stdout.strip():
             candidate_images.add(idp.stdout.strip())
             candidate_images.add(idp.stdout.strip().replace("sha256:", "")[:12])
-    except Exception:
-        pass
+    except Exception as exc:
+        import logging as _log
+        _log.getLogger('docker_runtime').debug('image inspect failed: %s', exc)
     for img in candidate_images:
         try:
             p = subprocess.run(
@@ -139,8 +149,9 @@ def _running_recon_container_cached(image: str, override: str) -> str:
                 names = [n.strip() for n in (p.stdout or "").splitlines() if n.strip()]
                 if names:
                     return names[0]
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging as _log
+            _log.getLogger('docker_runtime').debug('docker ps ancestor filter failed: %s', exc)
     # 3. Last-resort: scan running containers and match any whose image (by
     #    name or short ID) looks like the recon image. Survives commit/re-tag.
     try:
@@ -159,8 +170,9 @@ def _running_recon_container_cached(image: str, override: str) -> str:
                     continue
                 if image_repo in img or img in short_ids:
                     return name
-    except Exception:
-        pass
+    except Exception as exc:
+        import logging as _log
+        _log.getLogger('docker_runtime').debug('docker ps scan failed: %s', exc)
     return ""
 
 
@@ -247,8 +259,9 @@ def _rewrite_for_exec(argv: Sequence[str], raw_dir: Path, tool_root: Path,
         # may itself already be relative).
         if not Path(raw_dir).is_absolute():
             prefixes_raw.add(str(raw_dir))
-    except Exception:
-        pass
+    except Exception as exc:
+        import logging as _log
+        _log.getLogger('docker_runtime').debug('path normalization failed: %s', exc)
     for extra in extra_raw_prefixes or ():
         if extra:
             prefixes_raw.add(str(extra))
@@ -324,8 +337,9 @@ def _to_container_path(host_path: str, raw_dir: Path, tool_root: Path) -> str | 
     try:
         if not Path(raw_dir).is_absolute():
             raw_candidates.add(str(raw_dir))
-    except Exception:
-        pass
+    except Exception as path_exc:
+        import logging as _log
+        _log.getLogger('docker_runtime').debug('path normalization failed: %s', path_exc)
     tool_s = str(tool_root)
     norm = host_path.replace("\\", "/")
     norm_low = norm.lower()

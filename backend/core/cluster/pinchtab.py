@@ -5,10 +5,14 @@ Extracted from orchestrator.py for clean architecture.
 """
 import asyncio
 import json
+import logging
 import os
+import re
 import shutil
 import tempfile
 from typing import Dict, List, Optional
+
+logger = logging.getLogger("PinchTab")
 
 from playwright.async_api import async_playwright
 
@@ -19,9 +23,10 @@ class PinchTabInstance:
     """Isolated browser execution for complex DOM fuzzing and IDOR detection."""
 
     def __init__(self, worker_id: str, port: int):
-        self.worker_id = worker_id
+        # Sanitize worker_id to prevent path traversal (CRIT-07)
+        self.worker_id = re.sub(r'[^a-zA-Z0-9_-]', '', worker_id)
         self.port = port
-        self.profile_path = os.path.join(tempfile.gettempdir(), "pinchtab_profiles", worker_id)
+        self.profile_path = os.path.join(tempfile.gettempdir(), "pinchtab_profiles", self.worker_id)
         self.browser = None
         self.context = None
         self.page = None
@@ -30,38 +35,42 @@ class PinchTabInstance:
         self.profile_id = ""
         self.tab_id = ""
         self.using_control_plane = False
+        # CRIT-15: Lock serializes start/stop to prevent race on using_control_plane
+        self._lifecycle_lock = asyncio.Lock()
         os.makedirs(self.profile_path, exist_ok=True)
 
     async def start(self):
-        try:
-            await self.client.health()
-            profile = await self.client.create_profile(f"worker-{self.worker_id}", "Vulagent worker browser profile")
-            self.profile_id = str(profile.get("id") or profile.get("profileId") or "")
-            instance = await self.client.start_instance(self.profile_id or None, mode="headless")
-            self.instance_id = str(instance.get("id") or instance.get("instanceId") or "")
-            self.using_control_plane = bool(self.instance_id)
-            if self.using_control_plane:
-                print(f"PinchTab control-plane instance online (Worker: {self.worker_id}, Instance: {self.instance_id})")
-                return
-        except Exception as e:
-            print(f"PinchTab control-plane unavailable for worker {self.worker_id}; using local Playwright fallback: {e}")
+        # CRIT-15: Serialize lifecycle transitions under the same lock as stop()
+        async with self._lifecycle_lock:
+            try:
+                await self.client.health()
+                profile = await self.client.create_profile(f"worker-{self.worker_id}", "Vulagent worker browser profile")
+                self.profile_id = str(profile.get("id") or profile.get("profileId") or "")
+                instance = await self.client.start_instance(self.profile_id or None, mode="headless")
+                self.instance_id = str(instance.get("id") or instance.get("instanceId") or "")
+                self.using_control_plane = bool(self.instance_id)
+                if self.using_control_plane:
+                    logger.info(f"PinchTab control-plane instance online (Worker: {self.worker_id}, Instance: {self.instance_id})")
+                    return
+            except Exception as e:
+                logger.warning(f"PinchTab control-plane unavailable for worker {self.worker_id}; using local Playwright fallback: {e}")
 
-        try:
-            self.playwright = await async_playwright().start()
-            self.browser = await self.playwright.chromium.launch(
-                headless=True,
-                args=[
-                    f"--user-data-dir={self.profile_path}",
-                    f"--remote-debugging-port={self.port}",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage"
-                ]
-            )
-            self.context = await self.browser.new_context()
-            self.page = await self.context.new_page()
-            print(f"PinchTab Playwright fallback online (Worker: {self.worker_id}, Port: {self.port})")
-        except Exception as e:
-            print(f"PinchTab failed to initialize: {e}")
+            try:
+                self.playwright = await async_playwright().start()
+                self.browser = await self.playwright.chromium.launch(
+                    headless=True,
+                    args=[
+                        f"--user-data-dir={self.profile_path}",
+                        f"--remote-debugging-port={self.port}",
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage"
+                    ]
+                )
+                self.context = await self.browser.new_context()
+                self.page = await self.context.new_page()
+                logger.info(f"PinchTab Playwright fallback online (Worker: {self.worker_id}, Port: {self.port})")
+            except Exception as e:
+                logger.error(f"PinchTab failed to initialize: {e}")
 
     async def execute_flow(self, flow_config: Dict) -> Dict:
         results = {"steps": [], "findings": []}
@@ -131,8 +140,9 @@ class PinchTabInstance:
             session_storage = await self.page.evaluate("() => JSON.stringify(window.sessionStorage)")
             state["tokens"]["local"] = json.loads(local_storage)
             state["tokens"]["session"] = json.loads(session_storage)
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging
+            logging.getLogger("PinchTab").debug("PinchTab state extraction failed: %s", exc)
         return state
 
     async def _check_vulnerabilities(self, step_result: Dict) -> List[Dict]:
@@ -149,17 +159,24 @@ class PinchTabInstance:
         return vulns
 
     async def stop(self):
-        try:
-            if self.using_control_plane and self.instance_id:
-                await self.client.stop_instance(self.instance_id)
-                self.using_control_plane = False
-                return
+        # CRIT-15: Serialize lifecycle transitions under a lock
+        async with self._lifecycle_lock:
+            try:
+                if self.using_control_plane and self.instance_id:
+                    await self.client.stop_instance(self.instance_id)
+                    self.using_control_plane = False
+                    return
 
-            if self.browser:
-                await self.browser.close()
-            if hasattr(self, 'playwright'):
-                await self.playwright.stop()
-            if os.path.exists(self.profile_path):
-                shutil.rmtree(self.profile_path, ignore_errors=True)
-        except Exception:
-            pass
+                if self.browser:
+                    await self.browser.close()
+                if hasattr(self, 'playwright'):
+                    await self.playwright.stop()
+                # Validate profile_path is within expected directory before deletion (CRIT-16)
+                if os.path.exists(self.profile_path):
+                    expected_base = os.path.normpath(os.path.join(tempfile.gettempdir(), "pinchtab_profiles"))
+                    real_path = os.path.realpath(self.profile_path)
+                    if real_path.startswith(expected_base):
+                        shutil.rmtree(self.profile_path, ignore_errors=True)
+            except Exception as exc:
+                import logging
+                logging.getLogger("PinchTab").error("PinchTab stop failed for %s: %s", self.worker_id, exc)

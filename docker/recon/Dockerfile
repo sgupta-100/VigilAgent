@@ -90,6 +90,9 @@ RUN printf '#!/bin/sh\nexec python3 /opt/LinkFinder/linkfinder.py "$@"\n'   > /u
  && printf '#!/bin/sh\nexec python3 /opt/spiderfoot/sf.py "$@"\n'             > /usr/local/bin/spiderfoot   && chmod +x /usr/local/bin/spiderfoot
 
 WORKDIR /scan
+# FIX-014: Run as non-root user for container security
+RUN useradd -m -s /bin/bash recon && chown -R recon:recon /scan
+USER recon
 # ENTRYPOINT allows TerminalEngine to exec any tool via `docker exec`.
 # CMD keeps the container alive when started standalone or from Docker Desktop.
 ENTRYPOINT ["/bin/bash"]

@@ -71,8 +71,9 @@ export default function App() {
                 setCheckingAuth(false);
             })
             .catch(err => {
-                console.error("Auth check failed", err);
-                setIsLocked(false); // Fail open if backend down
+                // console.error("Auth check failed", err);
+                // FIX-002: Fail CLOSED on auth check failure
+                setIsLocked(true);
                 setCheckingAuth(false);
             });
     };
