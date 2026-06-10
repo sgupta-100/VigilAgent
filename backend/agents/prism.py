@@ -225,7 +225,7 @@ class AgentPrism(BrowserEnabledAgent):
         return {
             "risk_score": min(risk_score, 100),
             "threat_type": ", ".join(threats) if threats else "Clean",
-            "element_api_id": dom.get("antigravity_id")
+            "element_api_id": dom.get("VIGILAGENT_id")
         }
 
     async def execute_task(self, packet):

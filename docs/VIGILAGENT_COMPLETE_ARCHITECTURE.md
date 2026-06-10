@@ -1789,7 +1789,7 @@ This is the intended Hermes-level improvement loop for Vigilagent: not a static 
 
 ## 29. Extracted Requirements From The Uploaded Gap Analysis
 
-This section distills the most important points from the uploaded Antigravity V6 to Hermes-level upgrade analysis. These are the requirements that should drive implementation.
+This section distills the most important points from the uploaded Vigilagent to Hermes-level upgrade analysis. These are the requirements that should drive implementation.
 
 ### 29.1 What Already Works And Must Be Preserved
 

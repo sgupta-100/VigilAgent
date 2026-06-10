@@ -1,6 +1,6 @@
-# API Changelog - Antigravity V5
+# API Changelog - Vigilagent
 
-Complete version history and changes to the Antigravity V5 API.
+Complete version history and changes to the Vigilagent API.
 
 ---
 
@@ -703,9 +703,9 @@ curl -H "Authorization: Bearer <token>" \
 ## Support
 
 For API questions:
-- Documentation: https://docs.antigravity.com
-- Support: api-support@antigravity.com
-- GitHub Issues: https://github.com/antigravity/issues
+- Documentation: https://docs.vigilagent.com
+- Support: api-support@vigilagent.com
+- GitHub Issues: https://github.com/vigilagent/issues
 
 ---
 

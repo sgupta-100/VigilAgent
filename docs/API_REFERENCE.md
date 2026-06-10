@@ -1,4 +1,4 @@
-# Antigravity V5 - API Reference
+# Vigilagent - API Reference
 
 **Last Updated**: May 25, 2026  
 **Version**: 5.0  
@@ -667,5 +667,5 @@ if not csrf.validate_token(token, session_id):
 ---
 
 **Last Updated**: May 25, 2026  
-**Maintainer**: Antigravity V5 Team  
+**Maintainer**: Vigilagent Team  
 **Status**: Production Ready

@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
 from backend.schemas.payloads import AttackPayload
 from backend.core.orchestrator import HiveOrchestrator
@@ -34,7 +35,7 @@ _active_scan_targets_lock = asyncio.Lock()
 @rate_limit("/api/attack/fire")
 async def fire_attack(request: Request, payload: AttackPayload, background_tasks: BackgroundTasks):
     """
-    Triggers the Antigravity V5 Singularity Swarm.
+    Triggers the Vigilagent Singularity Swarm.
     Replaces legacy Gatekeeper Engine.
     """
     # INPUT VALIDATION: Reject out-of-scope targets using centralized validator

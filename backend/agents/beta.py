@@ -333,8 +333,9 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                 "latency": res.latency_ms,
                 "result": f"VERIFIED ({signals} signals)" if success else "OK",
                 "anomaly": success,
-            }, scan_id=scan_id)            except Exception as e:
-                logger.debug(f"[{self.name}] publish_request_event failed: {e}")
+            }, scan_id=scan_id)
+        except Exception as e:
+            logger.debug(f"[{self.name}] publish_request_event failed: {e}")
 
         if success:
             evidence = content_boundary.wrap_http_response(res.status, {}, res.body[:4000], res.request_url)
@@ -451,7 +452,7 @@ class BetaAgent(SkillRecallMixin, ControlSignalMixin, ScanContextRecorderMixin, 
                         "anomaly": anomaly
                     }, scan_id=scan_id)
                 except Exception as e:
-                logger.debug(f"[{self.name}] publish_request_event failed: {e}")
+                    logger.debug(f"[{self.name}] publish_request_event failed: {e}")
 
                 evidence = content_boundary.wrap_http_response(status, response.headers, text, response.url)
                 await self.bus.publish(HiveEvent(

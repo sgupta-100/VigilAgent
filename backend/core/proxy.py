@@ -22,8 +22,8 @@ class ProxyEnvSnapshot:
     HTTPS_PROXY: str | None
     no_proxy: str | None
     NO_PROXY: str | None
-    ANTIGRAVITY_PROXY_ACTIVE: str | None
-    ANTIGRAVITY_PROXY_LOOPBACK_MODE: str | None
+    VIGILAGENT_PROXY_ACTIVE: str | None
+    VIGILAGENT_PROXY_LOOPBACK_MODE: str | None
 
 @dataclass
 class ProxyValidationCheck:
@@ -122,7 +122,7 @@ class ProxyLifecycleManager:
         return self._active_proxy_url
 
     def start_proxy(self, proxy_url: str = None, loopback_mode: str = "gateway-only") -> bool:
-        candidate_url = proxy_url or os.environ.get("OPENCLAW_PROXY_URL") or os.environ.get("ANTIGRAVITY_PROXY_URL")
+        candidate_url = proxy_url or os.environ.get("OPENCLAW_PROXY_URL") or os.environ.get("VIGILAGENT_PROXY_URL")
         if not candidate_url:
             return False
 
@@ -138,8 +138,8 @@ class ProxyLifecycleManager:
                 HTTPS_PROXY=os.environ.get("HTTPS_PROXY"),
                 no_proxy=os.environ.get("no_proxy"),
                 NO_PROXY=os.environ.get("NO_PROXY"),
-                ANTIGRAVITY_PROXY_ACTIVE=os.environ.get("ANTIGRAVITY_PROXY_ACTIVE"),
-                ANTIGRAVITY_PROXY_LOOPBACK_MODE=os.environ.get("ANTIGRAVITY_PROXY_LOOPBACK_MODE")
+                VIGILAGENT_PROXY_ACTIVE=os.environ.get("VIGILAGENT_PROXY_ACTIVE"),
+                VIGILAGENT_PROXY_LOOPBACK_MODE=os.environ.get("VIGILAGENT_PROXY_LOOPBACK_MODE")
             )
 
         self._active_proxy_url = candidate_url
@@ -149,8 +149,8 @@ class ProxyLifecycleManager:
         for key in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"]:
             os.environ[key] = candidate_url
             
-        os.environ["ANTIGRAVITY_PROXY_ACTIVE"] = "1"
-        os.environ["ANTIGRAVITY_PROXY_LOOPBACK_MODE"] = loopback_mode
+        os.environ["VIGILAGENT_PROXY_ACTIVE"] = "1"
+        os.environ["VIGILAGENT_PROXY_LOOPBACK_MODE"] = loopback_mode
         
         self._update_no_proxy()
         logger.info(f"Proxy lifecycle: Activated process-wide routing via {self._redact_proxy_url(candidate_url)}")

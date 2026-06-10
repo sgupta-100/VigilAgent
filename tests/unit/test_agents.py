@@ -1,5 +1,5 @@
 """
-Unit tests for Antigravity V5 Agents
+Unit tests for Vigilagent Agents
 Tests Alpha, Beta, Gamma, Delta, Sigma, Zeta, Kappa, Omega, Prism, and Chi agents
 """
 
@@ -50,12 +50,13 @@ class TestAlphaAgent:
         """Test agent subscribes to required events."""
         await alpha_agent.setup()
         
-        assert alpha_agent.bus.subscribe.call_count == 2
-        # Should subscribe to JOB_ASSIGNED and TARGET_ACQUIRED
+        assert alpha_agent.bus.subscribe.call_count == 3
+        # Should subscribe to JOB_ASSIGNED, TARGET_ACQUIRED, and CONTROL_SIGNAL
         calls = alpha_agent.bus.subscribe.call_args_list
         event_types = [call[0][0] for call in calls]
         assert EventType.JOB_ASSIGNED in event_types
         assert EventType.TARGET_ACQUIRED in event_types
+        assert EventType.CONTROL_SIGNAL in event_types
     
     @pytest.mark.asyncio
     async def test_detect_spa_identifies_react(self, alpha_agent):
@@ -149,7 +150,7 @@ class TestAlphaAgent:
                 "priority": "HIGH",  # Use string enum value
                 "target": {"url": "https://api.example.com/users"},
                 "config": {
-                    "module_id": "test_module",
+                    "module_id": "alpha_recon",
                     "agent_id": "agent_alpha",  # Use proper agent_id format
                     "params": {},
                     "aggression": 1,
@@ -160,10 +161,10 @@ class TestAlphaAgent:
         
         await alpha_agent.handle_job(event)
         
-        # Should publish VULN_CANDIDATE event
+        # Should publish JOB_COMPLETED event for recon module
         calls = alpha_agent.bus.publish.call_args_list
         event_types = [call[0][0].type for call in calls]
-        assert EventType.VULN_CANDIDATE in event_types
+        assert EventType.JOB_COMPLETED in event_types
     
     @pytest.mark.asyncio
     async def test_handle_job_detects_sensitive_paths(self, alpha_agent):
@@ -177,7 +178,7 @@ class TestAlphaAgent:
                 "priority": "HIGH",  # Use string enum value
                 "target": {"url": "https://example.com/user/profile"},
                 "config": {
-                    "module_id": "test_module",
+                    "module_id": "alpha_recon",
                     "agent_id": "agent_alpha",  # Use proper agent_id format
                     "params": {},
                     "aggression": 1,
@@ -188,10 +189,10 @@ class TestAlphaAgent:
         
         await alpha_agent.handle_job(event)
         
-        # Should publish TARGET_ACQUIRED event
+        # Should publish JOB_COMPLETED event for recon module
         calls = alpha_agent.bus.publish.call_args_list
         event_types = [call[0][0].type for call in calls]
-        assert EventType.TARGET_ACQUIRED in event_types
+        assert EventType.JOB_COMPLETED in event_types
 
 
 # ============================================================================

@@ -88,7 +88,14 @@ class TestValidate:
         valid, _ = validate_url("http://unknown-public-host.com/test")
         assert valid is False
 
-    def test_host_docker_internal(self):
+    def test_host_docker_internal_rejected_by_default(self):
+        """host.docker.internal is no longer in default allowlist for security.
+        It must be explicitly added via add_allowed_host() if needed."""
+        valid, _ = validate_url("http://host.docker.internal/test")
+        assert valid is False
+        
+        # Can be explicitly allowed
+        url_validator.add_allowed_host("host.docker.internal")
         valid, _ = validate_url("http://host.docker.internal/test")
         assert valid is True
 

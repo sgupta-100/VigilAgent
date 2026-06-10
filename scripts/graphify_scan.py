@@ -208,7 +208,7 @@ def find_surprising_connections(G, communities, top_n=10):
 
 
 def main():
-    root = Path(r"d:\Antigravity 2\API Endpoint Scanner")
+    root = Path(r"d:\Vigilagent 2\API Endpoint Scanner")
 
     # Collect files
     import glob

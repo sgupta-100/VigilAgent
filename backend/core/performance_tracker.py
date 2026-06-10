@@ -23,6 +23,7 @@ from collections import defaultdict, deque
 from backend.core.self_awareness_config import SelfAwarenessConfig
 from backend.core.database import db_manager
 from backend.core.tracing import get_tracer, trace_span
+from backend.core.task_manager import TaskManager
 
 logger = logging.getLogger("PerformanceTracker")
 tracer = get_tracer()
@@ -146,6 +147,9 @@ class PerformanceTracker:
         self._api_calls = 0
         self._api_call_timestamps: deque = deque(maxlen=1000)
         
+        # Task manager for background tasks
+        self._task_manager = TaskManager(f"PerformanceTracker-{agent_id}")
+        
         logger.info(f"[PerformanceTracker] Initialized for agent {agent_id}")
     
     async def start(self):
@@ -156,7 +160,7 @@ class PerformanceTracker:
         self._running = True
         
         # Start batch flush task
-        self._flush_task = asyncio.create_task(self._batch_flush_loop())
+        self._flush_task = self._task_manager.create_task(self._batch_flush_loop(), name="batch_flush_loop")
         
         logger.info(f"[PerformanceTracker] Started for agent {self.agent_id}")
     
@@ -164,13 +168,8 @@ class PerformanceTracker:
         """Stop the performance tracker"""
         self._running = False
         
-        # Cancel flush task
-        if self._flush_task:
-            self._flush_task.cancel()
-            try:
-                await self._flush_task
-            except asyncio.CancelledError:
-                pass
+        # Cancel all tracked tasks
+        await self._task_manager.cancel_all()
         
         # Flush remaining data
         await self.flush()

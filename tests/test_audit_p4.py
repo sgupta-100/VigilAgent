@@ -3,7 +3,7 @@ class TestGuardLayer:
     def test_empty(self):
         from backend.core.guard_layer import GuardLayer; assert GuardLayer().filter([])==[]
     def test_no_resp(self):
-        from backend.core.guard_layer import GuardLayer; assert len(GuardLayer().filter([{'url':'t','validation':'VALID','confidence':0.9}]))==0
+        from backend.core.guard_layer import GuardLayer; assert len(GuardLayer().filter([{'url':'t','confidence':0.9}]))==0
     def test_valid(self):
         from backend.core.guard_layer import GuardLayer
         assert len(GuardLayer().filter([{'url':'t','response':'d','validation':'VALID','gi5_match':True,'confidence':0.9}]))==1
@@ -84,4 +84,4 @@ class TestURL:
     def test_aws(self): assert not self._v('http://169.254.169.254/x')
     def test_file(self): assert not self._v('file:///etc/passwd')
     def test_pub(self): assert not self._v('http://google.com')
-    def test_port(self): assert self._v('http://custom.io:9090')
+    def test_port(self): assert self._v('http://localhost:9090')

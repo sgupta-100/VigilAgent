@@ -1,5 +1,5 @@
 """
-End-to-End Tests for Antigravity V5
+End-to-End Tests for Vigilagent
 
 This package contains E2E tests that verify complete user workflows
 from start to finish, including:

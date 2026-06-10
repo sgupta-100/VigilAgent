@@ -27,6 +27,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, validator
 
+import logging
 from backend.core.state import stats_db_manager
 
 logger = logging.getLogger(__name__)

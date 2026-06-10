@@ -1,4 +1,4 @@
-# Antigravity V5 - Actionable Audit Summary
+# Vigilagent - Actionable Audit Summary
 
 **Date:** May 24, 2026  
 **Total Issues Found:** 47+  

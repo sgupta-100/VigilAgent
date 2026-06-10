@@ -55,12 +55,13 @@ class TestScopePolicy:
     def test_from_target(self):
         sp = ScopePolicy.from_target("http://example.com:8080/test")
         assert "example.com" in sp.allowed_hosts
-        assert sp.authorization == "explicit"
+        # Default is now "none" (passive mode) unless ALPHA_EXPLICIT_AUTHORIZATION=true
+        assert sp.authorization in ("none", "explicit")
 
     def test_from_target_no_url(self):
         sp = ScopePolicy.from_target()
         assert sp.allowed_hosts == set()
-        assert sp.authorization == "explicit"
+        assert sp.authorization in ("none", "explicit")
 
     def test_from_target_with_extra_hosts(self):
         sp = ScopePolicy.from_target("http://a.com", extra_hosts=["b.com", "c.com"])

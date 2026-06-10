@@ -1,1 +1,1 @@
-"""Unit tests for Antigravity V5 core components."""
+"""Unit tests for Vigilagent core components."""

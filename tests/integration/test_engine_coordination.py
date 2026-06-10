@@ -7,8 +7,7 @@ Tests OpenClaw and PinchTab engine coordination and fallback.
 import pytest
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
 from backend.core.browser_orchestrator import BrowserOrchestrator, BrowserEngine
-from backend.core.openclaw_engine import OpenClawEngine
-from backend.core.pinchtab_engine import PinchTabEngine
+from backend.core.browser_engine import OpenClawEngine, PinchTabEngine, ScrapplingEngine
 
 
 class TestEngineCoordination:
@@ -63,15 +62,15 @@ class TestEngineCoordination:
         
         # Should use PinchTab for fast extraction
         mock_pinchtab.extract_endpoints_fast.assert_called_once()
-        assert "endpoints" in result
+        assert isinstance(result, list)
 
     @pytest.mark.asyncio
     async def test_explicit_engine_selection(self, orchestrator, mock_openclaw, mock_pinchtab):
         """Test explicit engine selection."""
-        # Force OpenClaw
+        # Force Playwright (OpenClaw)
         result = await orchestrator.navigate(
             "https://example.com",
-            engine=BrowserEngine.OPENCLAW
+            engine=ScrapplingEngine.PLAYWRIGHT
         )
         mock_openclaw.navigate.assert_called_once()
         mock_pinchtab.navigate.assert_not_called()
@@ -83,7 +82,7 @@ class TestEngineCoordination:
         # Force PinchTab
         result = await orchestrator.navigate(
             "https://example.com",
-            engine=BrowserEngine.PINCHTAB
+            engine=ScrapplingEngine.PINCHTAB
         )
         mock_pinchtab.navigate.assert_called_once()
         mock_openclaw.navigate.assert_not_called()
@@ -166,8 +165,8 @@ class TestEngineCoordination:
         
         # Run operations concurrently
         tasks = [
-            orchestrator.navigate("https://example1.com", engine=BrowserEngine.OPENCLAW),
-            orchestrator.navigate("https://example2.com", engine=BrowserEngine.PINCHTAB),
+            orchestrator.navigate("https://example1.com", engine=ScrapplingEngine.PLAYWRIGHT),
+            orchestrator.navigate("https://example2.com", engine=ScrapplingEngine.PINCHTAB),
             orchestrator.extract_endpoints("https://example3.com", deep=True),
             orchestrator.extract_tokens("https://example4.com")
         ]
@@ -189,7 +188,7 @@ class TestEngineCoordination:
     @pytest.mark.asyncio
     async def test_engine_cleanup(self, orchestrator, mock_openclaw, mock_pinchtab):
         """Test engines are cleaned up properly."""
-        await orchestrator.navigate("https://example.com", engine=BrowserEngine.OPENCLAW)
+        await orchestrator.navigate("https://example.com", engine=ScrapplingEngine.PLAYWRIGHT)
         
         # Cleanup engines manually
         await mock_openclaw.cleanup()
@@ -202,11 +201,11 @@ class TestEngineCoordination:
     @pytest.mark.asyncio
     async def test_engine_state_isolation(self, orchestrator, mock_openclaw, mock_pinchtab):
         """Test engines maintain separate state."""
-        # Navigate with OpenClaw
-        await orchestrator.navigate("https://example1.com", engine=BrowserEngine.OPENCLAW)
+        # Navigate with Playwright (OpenClaw)
+        await orchestrator.navigate("https://example1.com", engine=ScrapplingEngine.PLAYWRIGHT)
         
         # Navigate with PinchTab
-        await orchestrator.navigate("https://example2.com", engine=BrowserEngine.PINCHTAB)
+        await orchestrator.navigate("https://example2.com", engine=ScrapplingEngine.PINCHTAB)
         
         # Each engine should have been called independently
         assert mock_openclaw.navigate.call_count == 1

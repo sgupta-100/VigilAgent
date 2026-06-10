@@ -226,8 +226,8 @@ class TestAgentWorkflows:
             payload={"url": "https://example.com"}
         )
         
-        with patch.object(alpha_agent, '_detect_spa', new_callable=AsyncMock) as mock_spa:
-            mock_spa.side_effect = Exception("Network error")
+        with patch.object(alpha_agent.alpha_recon, 'run', new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = Exception("Network error")
             
             # Should not raise, should handle gracefully
             try:
@@ -235,8 +235,8 @@ class TestAgentWorkflows:
             except Exception:
                 pass  # Expected to handle gracefully
             
-            # Verify agent attempted detection
-            assert mock_spa.called
+            # Verify agent attempted recon
+            assert mock_run.called
 
     @pytest.mark.asyncio
     async def test_concurrent_agent_workflows(self, alpha_agent, beta_agent, mock_hive):
@@ -253,15 +253,13 @@ class TestAgentWorkflows:
             for i in range(3)
         ]
         
-        with patch.object(alpha_agent, '_detect_spa', new_callable=AsyncMock) as mock_spa:
-            mock_spa.return_value = False
-            
+        with patch.object(alpha_agent.alpha_recon, 'run', new_callable=AsyncMock) as mock_run:
             # Run multiple recon tasks concurrently
             tasks = [alpha_agent.handle_target_acquired(e) for e in events]
             await asyncio.gather(*tasks)
             
             # Verify all targets processed
-            assert mock_spa.call_count == 3
+            assert mock_run.call_count == 3
 
     @pytest.mark.asyncio
     async def test_agent_state_sharing(self, alpha_agent, beta_agent, mock_hive):
@@ -278,8 +276,7 @@ class TestAgentWorkflows:
             payload={"url": "https://example.com"}
         )
         
-        with patch.object(alpha_agent, '_detect_spa', new_callable=AsyncMock) as mock_spa:
-            mock_spa.return_value = False
+        with patch.object(alpha_agent.alpha_recon, 'run', new_callable=AsyncMock):
             await alpha_agent.handle_target_acquired(event)
         
         # Verify events were published (state sharing happens via events)

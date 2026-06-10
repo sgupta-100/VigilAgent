@@ -285,7 +285,7 @@ Supabase.
 
 ### 4.4 `GenerateReport`
 
-Wraps `AntigravityReportBuilder.build` behind a port. Takes a `ScanId`,
+Wraps `VigilagentReportBuilder.build` behind a port. Takes a `ScanId`,
 returns a `ReportArtifact { path, format }`. The PDF rendering itself
 stays in `frameworks_drivers`.
 

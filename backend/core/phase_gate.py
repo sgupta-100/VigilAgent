@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# ANTIGRAVITY V6 :: PHASE GATE — LIFECYCLE STATE MACHINE
+# Vigilagent :: PHASE GATE — LIFECYCLE STATE MACHINE
 # ═══════════════════════════════════════════════════════════════════════════════
 # PURPOSE: Enforces strict sequential execution of scan phases
 #          Prevents agents from executing out of order

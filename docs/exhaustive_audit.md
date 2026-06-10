@@ -95,7 +95,7 @@
 - **traversaal.go**: Funcs: ['NewTraversaalTool', '', '', '', '', '']
 - **traversaal_test.go**: Funcs: ['testTraversaalConfig', 'TestTraversaalHandle', 'TestTraversaalIsAvailable', 'TestTraversaalParseHTTPResponse_StatusAndDecodeErrors', 'TestTraversaalHandle_ValidationAndSwallowedError']
 
-## Antigravity V5 Agents
+## Vigilagent Agents
 - **alpha.py**: Classes: ['AlphaAgent'], Funcs: ['__init__']
 - **beta.py**: Classes: ['BetaAgent'], Funcs: ['__init__']
 - **chi.py**: Classes: ['AgentChi'], Funcs: ['__init__', '_extract_and_store_tokens']

@@ -1,4 +1,4 @@
-# Antigravity V5 - Performance Tuning Guide
+# Vigilagent - Performance Tuning Guide
 
 **Last Updated**: May 25, 2026  
 **Version**: 5.0
@@ -22,7 +22,7 @@
 
 ## Overview
 
-Antigravity V5 is designed for high performance with built-in optimizations. This guide helps you tune performance for your specific use case.
+Vigilagent is designed for high performance with built-in optimizations. This guide helps you tune performance for your specific use case.
 
 ### Performance Features
 
@@ -764,4 +764,4 @@ for scan in scans:
 ---
 
 **Last Updated**: May 25, 2026  
-**Maintainer**: Antigravity V5 Performance Team
+**Maintainer**: Vigilagent Performance Team

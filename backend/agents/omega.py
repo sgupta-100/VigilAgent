@@ -46,8 +46,8 @@ class OmegaAgent(BrowserEnabledAgent):
             try:
                 self._cortex = get_cortex_engine()
             except Exception as e:
-            logger.debug(f"[{self.name}] Cortex AI init deferred: {e}")
-            self._cortex = None
+                logger.debug(f"[{self.name}] Cortex AI init deferred: {e}")
+                self._cortex = None
         return self._cortex
 
     async def setup(self):

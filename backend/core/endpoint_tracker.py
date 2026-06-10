@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# ANTIGRAVITY V6 :: ENDPOINT TRACKER — COVERAGE MONITORING
+# Vigilagent :: ENDPOINT TRACKER — COVERAGE MONITORING
 # ═══════════════════════════════════════════════════════════════════════════════
 # PURPOSE: Tracks discovered vs tested endpoints to ensure complete coverage
 #          Prevents incomplete scans and missed vulnerabilities

@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# ANTIGRAVITY :: AUTO REMEDIATION ENGINE & PATCH GENERATOR
+# VIGILAGENT :: AUTO REMEDIATION ENGINE & PATCH GENERATOR
 # ═══════════════════════════════════════════════════════════════════════════════
 # PURPOSE: Generates framework-specific, developer-ready code patches
 #          in unified diff format. Powered by GPT-OSS-20B via OpenRouter.

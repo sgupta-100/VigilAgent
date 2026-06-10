@@ -7,6 +7,7 @@ All commands go through this validation layer before reaching subprocess.
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import re
 import unicodedata
@@ -128,5 +129,9 @@ def validate_output_path(path: str) -> bool:
         return False
     # Must be under data/scans or a temp dir
     # FIX-019: Restrict to project-specific scan directories only
-    allowed_prefixes = ["data", "scan_states"]
-    return any(normalized.startswith(p) for p in allowed_prefixes) or "scans" in normalized
+    # Check if path contains allowed directories as components (handles Windows paths)
+    path_parts = normalized.split(os.sep)
+    allowed_dirs = {"data", "scan_states"}
+    if any(part in allowed_dirs for part in path_parts):
+        return True
+    return "scans" in normalized

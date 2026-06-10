@@ -305,18 +305,34 @@ class OptimizedBrowserOrchestrator:
     @classmethod
     async def cleanup(cls):
         """Cleanup all resources."""
-        if cls._resource_monitor:
-            await cls._resource_monitor.stop_monitoring()
+        try:
+            if cls._resource_monitor:
+                await cls._resource_monitor.stop_monitoring()
+        except RuntimeError as e:
+            if "Event loop is closed" not in str(e):
+                raise
         
-        if cls._context_pool:
-            await cls._context_pool.close_all()
+        try:
+            if cls._context_pool:
+                await cls._context_pool.close_all()
+        except RuntimeError as e:
+            if "Event loop is closed" not in str(e):
+                raise
         
-        if cls._framework_cache:
-            await cls._framework_cache.clear()
+        try:
+            if cls._framework_cache:
+                await cls._framework_cache.clear()
+        except RuntimeError as e:
+            if "Event loop is closed" not in str(e):
+                raise
         
-        if cls._instance:
-            await cls._instance.close()
-            cls._instance = None
+        try:
+            if cls._instance:
+                await cls._instance.close()
+                cls._instance = None
+        except RuntimeError as e:
+            if "Event loop is closed" not in str(e):
+                raise
         
         logger.info("[OptimizedBrowserOrchestrator] Cleanup complete")
     

@@ -12,6 +12,7 @@ Hardened gating (Architecture §17, §25):
     CMDI output) suppresses Tycoon findings.
 """
 import copy
+import logging
 import time
 from backend.core.base import BaseArsenalModule
 from backend.core.protocol import JobPacket, Vulnerability, TaskTarget

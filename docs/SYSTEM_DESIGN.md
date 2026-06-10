@@ -64,7 +64,7 @@ graph TB
     end
 
     subgraph Reports["Reporting"]
-        PDF["AntigravityReportBuilder<br/>backend/reporting/scan_pdf.py"]
+        PDF["VigilagentReportBuilder<br/>backend/reporting/scan_pdf.py"]
         FIND["FindingReport (SARIF/STIX/JSON)"]
     end
 
@@ -231,7 +231,7 @@ sequenceDiagram
     participant ST as StateManager
     participant WS as SocketManager
     participant UI as React UI
-    participant PDF as AntigravityReportBuilder
+    participant PDF as VigilagentReportBuilder
 
     BETA-->>BUS: VULN_CANDIDATE { url, type, payload, evidence }
     GAMMA->>BUS: forensic verification → upgrades to VULN_CONFIRMED
@@ -253,7 +253,7 @@ sequenceDiagram
     LISTEN->>DB: scan_state_db.add_event (durable)
 
     Note over BUS: Scan finalises → REPORT_READY emitted by orchestrator.
-    LISTEN->>PDF: AntigravityReportBuilder(scan_id, target_url, events, telemetry, cortex).build()
+    LISTEN->>PDF: VigilagentReportBuilder(scan_id, target_url, events, telemetry, cortex).build()
     PDF->>PDF: collect_findings (dedupe by sha256 of url+type+payload)
     PDF->>PDF: enrich via Cortex (description, impact, remediation, code-fix)
     PDF->>PDF: render Executive Summary → Detailed Findings → Timeline
@@ -411,7 +411,7 @@ These sections are the ones a perf regression will show up in first:
    spine. Don't replace `executemany` with per‑row inserts.
 3. **`SocketManager._process_batch_queue`** — 50 FPS WebSocket fan‑out. JSON
    serialisation happens once per tick; don't re‑serialise per connection.
-4. **`AntigravityReportBuilder._enrich_findings`** — LLM calls per finding,
+4. **`VigilagentReportBuilder._enrich_findings`** — LLM calls per finding,
    bounded by `LLM_OVERALL_TIMEOUT = 600 s`. Adjust per‑call timeout if
    you add expensive prompts.
 5. **`db_manager.report_vulnerability`** — Redis hot‑cache check before

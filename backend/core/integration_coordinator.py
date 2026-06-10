@@ -56,6 +56,7 @@ except Exception:  # pragma: no cover
     _CIRCUIT_BREAKER_LIB_AVAILABLE = False
 
 from backend.core.integration_config import IntegrationConfig, get_integration_config
+from backend.core.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,9 @@ class IntegrationCoordinator:
         self._batch_lock = asyncio.Lock()
         self._batch_task: Optional[asyncio.Task] = None
         self._shutdown = False
+        
+        # Task manager for background tasks
+        self._task_manager = TaskManager("IntegrationCoordinator")
 
         # Concurrency cap on learning fan-out.
         self._learning_semaphore = asyncio.Semaphore(
@@ -245,7 +249,7 @@ class IntegrationCoordinator:
             except Exception as e:  # pragma: no cover - defensive
                 logger.warning("Coordinator subscribe partially failed: %s", e)
 
-            self._batch_task = asyncio.create_task(
+            self._batch_task = self._task_manager.create_task(
                 self._drain_discovery_batches(), name="ic_batch_drain"
             )
             self._initialized = True

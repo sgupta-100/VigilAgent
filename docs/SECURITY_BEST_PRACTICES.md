@@ -1,4 +1,4 @@
-# Antigravity V5 - Security Best Practices
+# Vigilagent - Security Best Practices
 
 **Last Updated**: May 25, 2026  
 **Version**: 5.0  
@@ -23,7 +23,7 @@
 
 ## Overview
 
-Antigravity V5 is designed with security as a core principle. This guide outlines best practices for maintaining a secure deployment.
+Vigilagent is designed with security as a core principle. This guide outlines best practices for maintaining a secure deployment.
 
 ### Security Features
 
@@ -258,7 +258,7 @@ class DataEncryption:
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=b"antigravity-salt",  # Use unique salt per deployment
+            salt=b"vigilagent-salt",  # Use unique salt per deployment
             iterations=100000
         )
         key_bytes = base64.urlsafe_b64encode(kdf.derive(key.encode()))
@@ -786,4 +786,4 @@ await audit.log_action(
 
 **Last Updated**: May 25, 2026  
 **Security Level**: Production Ready  
-**Maintainer**: Antigravity V5 Security Team
+**Maintainer**: Vigilagent Security Team

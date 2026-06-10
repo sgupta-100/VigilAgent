@@ -2,7 +2,7 @@
 **Version**: 6.1-OMEGA (Project Singularity)  
 **Status**: Unified Architecture Active  
 
-This manifest is the primary blueprint for the **Vulagent Scanner Penetration Testing System**. It synthesizes the project's evolution from the Antigravity/Xytherion era into a high-performance, tri-core autonomous security organism.
+This manifest is the primary blueprint for the **Vulagent Scanner Penetration Testing System**. It synthesizes the project's evolution from the Vigilagent era into a high-performance, tri-core autonomous security organism.
 
 ---
 
@@ -59,9 +59,9 @@ Vulagent Scanner is powered by a decentralized swarm of specialized agents:
 ## 5. Legacy Component Documentation
 In accordance with the **Zero-Deletion Policy**, the following files remain active as low-level component specifications:
 
-- [Architect's Bible](file:///d:/Antigravity%202/API%20Endpoint%20Scanner/architects_bible.md): Deep-dive on Hive communication protocols and agent logic.
-- [System Blueprint](file:///d:/Antigravity%202/API%20Endpoint%20Scanner/system_blueprint.md): Original infrastructure map and "Sovereign Midnight" design tokens.
-- [Project Vision](file:///d:/Antigravity%202/API%20Endpoint%20Scanner/PROJECT.md): Historical roadmap and core development mandates.
+- [Architect's Bible](file:///d:/vigilagent%202/API%20Endpoint%20Scanner/architects_bible.md): Deep-dive on Hive communication protocols and agent logic.
+- [System Blueprint](file:///d:/vigilagent%202/API%20Endpoint%20Scanner/system_blueprint.md): Original infrastructure map and "Sovereign Midnight" design tokens.
+- [Project Vision](file:///d:/vigilagent%202/API%20Endpoint%20Scanner/PROJECT.md): Historical roadmap and core development mandates.
 
 ---
 

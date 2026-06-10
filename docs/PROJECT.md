@@ -1,4 +1,4 @@
-# Antigravity IDE Framework
+# Vigilagent IDE Framework
 
 ## Vision
 To provide a persistent, autonomous development and security ecosystem where the **"Get Shit Done" (GSD)** framework, **"Ralph Loop"**, and **"TestSprite"** oversee every project, task, and security assessment performed within the Antigravity workspace.
@@ -18,5 +18,5 @@ To provide a persistent, autonomous development and security ecosystem where the
 
 ## Project Management
 This project follows the **Get Shit Done (GSD)** framework.
-- Roadmap: [.planning/ROADMAP.md](file:///d:/Antigravity%202/API%20Endpoint%20Scanner/.planning/ROADMAP.md)
+- Roadmap: [.planning/ROADMAP.md](file:///d:/vigilagent%202/API%20Endpoint%20Scanner/.planning/ROADMAP.md)
 - Status: Active Development (Singularity V6)

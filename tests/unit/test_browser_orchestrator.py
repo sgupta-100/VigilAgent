@@ -7,7 +7,7 @@ import pytest
 import pytest_asyncio
 import asyncio
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
-from backend.core.browser_orchestrator import BrowserOrchestrator, BrowserEngine
+from backend.core.browser_orchestrator import BrowserOrchestrator, BrowserEngine, ScrapplingEngine
 
 
 @pytest_asyncio.fixture
@@ -28,11 +28,11 @@ class TestEngineSelection:
         orchestrator.openclaw = Mock()
         
         engine = orchestrator._select_engine(
-            requested=BrowserEngine.AUTO,
+            requested=ScrapplingEngine.AUTO,
             stealth=True,
             url="https://example.com"
         )
-        assert engine == BrowserEngine.OPENCLAW
+        assert engine == ScrapplingEngine.PLAYWRIGHT
     
     def test_select_pinchtab_for_fast_ops(self, orchestrator):
         """PinchTab should be selected for fast operations."""
@@ -41,12 +41,12 @@ class TestEngineSelection:
         orchestrator.pinchtab = Mock()
         
         engine = orchestrator._select_engine(
-            requested=BrowserEngine.AUTO,
+            requested=ScrapplingEngine.AUTO,
             stealth=False,
             url="https://api.example.com"
         )
         # Should prefer OpenClaw by default when both available
-        assert engine in [BrowserEngine.OPENCLAW, BrowserEngine.PINCHTAB]
+        assert engine in [ScrapplingEngine.PLAYWRIGHT, ScrapplingEngine.PINCHTAB]
     
     def test_select_openclaw_for_auth(self, orchestrator):
         """OpenClaw should be selected for auth/login pages."""
@@ -54,11 +54,11 @@ class TestEngineSelection:
         orchestrator.pinchtab = Mock()
         
         engine = orchestrator._select_engine(
-            requested=BrowserEngine.AUTO,
+            requested=ScrapplingEngine.AUTO,
             stealth=False,
             url="https://example.com/login"
         )
-        assert engine == BrowserEngine.OPENCLAW
+        assert engine == ScrapplingEngine.PLAYWRIGHT
 
 
 class TestContextManagement:

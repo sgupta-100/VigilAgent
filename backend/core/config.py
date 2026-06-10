@@ -231,15 +231,20 @@ class MasterConfig:
     distribution_interval: int = 10
     worker_timeout: int = 180
 
+import threading
+
 class ConfigManager:
     """Central configuration management using the Singleton pattern with validation."""
     _instance = None
+    _lock = threading.Lock()
     
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._load_all()
-            cls._instance._validate_all()
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._load_all()
+                    cls._instance._validate_all()
         return cls._instance
     
     def _load_all(self):

@@ -10,7 +10,7 @@ def run():
 
     cmd = [
         "docker", "run", "--rm", 
-        "-v", "d:\\Antigravity 2\\API Endpoint Scanner:/usr/src", 
+        "-v", "d:\\Vigilagent 2\\API Endpoint Scanner:/usr/src", 
         "--network=host", 
         "-e", "SONAR_HOST_URL=http://localhost:9000", 
         "-e", f"SONAR_TOKEN={token}", 

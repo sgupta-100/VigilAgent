@@ -110,16 +110,20 @@ class ProcessRunner:
             # and httpx emit very long single lines that exceed asyncio's default
             # 64KB StreamReader line limit, which raises LimitOverrunError and
             # aborts the read (tool reported as failed despite producing output).
-            while True:                    try:
+            while True:
+                try:
+                    chunk = await stream.read(65536)
+                except (asyncio.LimitOverrunError, ValueError):
+                    # Defensive: if any line-based limit still fires, drain what
+                    # we can and continue rather than killing the whole read.
+                    try:
                         chunk = await stream.read(65536)
-                    except (asyncio.LimitOverrunError, ValueError):
-                        # Defensive: if any line-based limit still fires, drain what
-                        # we can and continue rather than killing the whole read.
-                        try:
-                            chunk = await stream.read(65536)
                     except Exception as exc:
                         logger.debug("ProcessRunner: stream read failed after overrun for %s: %s", display_command, exc)
-                            break
+                        break
+                except Exception as exc:
+                    logger.debug("ProcessRunner: stream read failed for %s: %s", display_command, exc)
+                    break
                 if not chunk:
                     break
                 last_output_at = time.monotonic()

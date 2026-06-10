@@ -11,6 +11,8 @@ from typing import Optional
 from contextlib import asynccontextmanager
 import asyncio
 
+from backend.core.task_manager import TaskManager
+
 logger = logging.getLogger(__name__)
 
 # Try to import Redis, but make it optional
@@ -50,6 +52,7 @@ class RedisClient:
         self._client: Optional[aioredis.Redis] = None
         self._health_check_task: Optional[asyncio.Task] = None
         self._is_healthy = False
+        self._task_manager = TaskManager("RedisClient")
     
     async def initialize(self) -> None:
         """Initialize Redis client with connection pooling"""
@@ -73,7 +76,7 @@ class RedisClient:
             self._is_healthy = True
             
             # Start health check loop
-            self._health_check_task = asyncio.create_task(self._health_check_loop())
+            self._health_check_task = self._task_manager.create_task(self._health_check_loop(), name="health_check_loop")
             
             logger.info(f"Redis client initialized: {self.config.url}")
         except Exception as e:
@@ -111,12 +114,8 @@ class RedisClient:
     
     async def shutdown(self) -> None:
         """Shutdown Redis client and cleanup resources"""
-        if self._health_check_task:
-            self._health_check_task.cancel()
-            try:
-                await self._health_check_task
-            except asyncio.CancelledError:
-                pass
+        # Cancel all tracked tasks
+        await self._task_manager.cancel_all()
         
         if self._client:
             await self._client.close()

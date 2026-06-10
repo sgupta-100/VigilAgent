@@ -464,8 +464,9 @@ class AgentChi(BrowserEnabledAgent):
     # ============ EVENT INTERCEPTION (Phase 4) ============
     
     async def _intercept_events(self, url: str, scan_id: str) -> dict:
-        """Intercept and monitor real-time browser events."""            try:
-                logger.debug(f"[{self.name}] Intercepting events: {url}")
+        """Intercept and monitor real-time browser events."""
+        try:
+            logger.debug(f"[{self.name}] Intercepting events: {url}")
             
             # Install event listeners
             listeners = await self._install_event_listeners(url)

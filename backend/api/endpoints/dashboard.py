@@ -67,9 +67,11 @@ def _validate_auth(authorization: str = None):
     Returns (is_valid, session). If session exists, the token MUST match."""
     session = load_session()
     
-    # TC003 mock tokens always fail (only in test mode)
+    # Test mode mock tokens (only active when TESTING=true environment variable is set)
     if authorization and os.getenv("TESTING", "false").lower() == "true":
-        mock_tokens = ["invalidtoken123", "expiredtoken123"]
+        # In test mode, reject known invalid tokens
+        mock_tokens = os.getenv("TEST_MOCK_TOKENS", "invalidtoken123,expiredtoken123").split(",")
+        mock_tokens = [t.strip() for t in mock_tokens if t.strip()]
         if any(m in authorization for m in mock_tokens):
             return False, session
 
@@ -155,7 +157,7 @@ def _get_browser_health_block():
             try:
                 data = summary_fn()
             except Exception as _sum_e:
-            logger.debug("Browser health summary fallback failed: %s", _sum_e)
+                logger.debug("Browser health summary fallback failed: %s", _sum_e)
                 continue
         except Exception as _getter_e:
             logger.debug("Browser health getter failed: %s", _getter_e)
@@ -422,7 +424,7 @@ async def generate_2fa(request: Request, authorization: str = Header(None)):
     save_config(config)
     
     totp = pyotp.TOTP(secret)
-    provisioning_uri = totp.provisioning_uri(name="Agent Omega", issuer_name="Antigravity")
+    provisioning_uri = totp.provisioning_uri(name="Agent Omega", issuer_name="Vigilagent")
     
     img = qrcode.make(provisioning_uri)
     buffered = io.BytesIO()

@@ -58,7 +58,7 @@ const NewScan = ({ navigate }) => {
         }
 
         const handleMessage = (event) => {
-            if (event.data?.type === 'ANTIGRAVITY_EXTENSION_CONNECTED') {
+            if (event.data?.type === 'VIGILAGENT_EXTENSION_CONNECTED') {
                 setIsConnected(true);
                 localConnectedRef.current = true;
             }
@@ -70,7 +70,7 @@ const NewScan = ({ navigate }) => {
         };
 
         window.addEventListener('message', handleMessage);
-        document.addEventListener('ANTIGRAVITY_EXTENSION_HEARTBEAT', handleCustomEvent);
+        document.addEventListener('VIGILAGENT_EXTENSION_HEARTBEAT', handleCustomEvent);
 
         // Backend health-poll fallback: the Chrome extension sends traffic to
         // the backend via HTTP (not postMessage), and the HUD content script
@@ -91,7 +91,7 @@ const NewScan = ({ navigate }) => {
 
         return () => {
             window.removeEventListener('message', handleMessage);
-            document.removeEventListener('ANTIGRAVITY_EXTENSION_HEARTBEAT', handleCustomEvent);
+            document.removeEventListener('VIGILAGENT_EXTENSION_HEARTBEAT', handleCustomEvent);
             clearInterval(pollId);
         };
     }, [isExtensionEnabled]);

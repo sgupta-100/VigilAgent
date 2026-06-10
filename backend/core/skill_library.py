@@ -308,6 +308,27 @@ class BrowserSkill:
         return cls(**kwargs)
 
 
+def _sanitize_filename(name: str) -> str:
+    """Sanitize a string to be a valid Windows filename."""
+    # Windows invalid characters: < > : " / \ | ? *
+    # Replace with safe alternatives
+    replacements = {
+        ':': '_',
+        '<': '_',
+        '>': '_',
+        '"': '_',
+        '/': '_',
+        '\\': '_',
+        '|': '_',
+        '?': '_',
+        '*': '_',
+    }
+    result = name
+    for char, replacement in replacements.items():
+        result = result.replace(char, replacement)
+    return result
+
+
 class SkillLibrary:
     """
     Manages persistent storage and retrieval of agent skills.
@@ -375,7 +396,8 @@ class SkillLibrary:
             
             # Determine category directory
             category = self._get_category(skill.skill_type)
-            skill_file = self.skills_dir / category / f"{skill.skill_id}.json"
+            safe_id = _sanitize_filename(skill.skill_id)
+            skill_file = self.skills_dir / category / f"{safe_id}.json"
             
             # Save skill to file
             skill_file.write_text(
@@ -623,7 +645,7 @@ class SkillLibrary:
             export_data = {
                 "skill": asdict(skill),
                 "exported_at": time.time(),
-                "exported_from": "Antigravity V6"
+                "exported_from": "Vigilagent"
             }
             
             export_file.write_text(
@@ -928,11 +950,15 @@ class BrowserSkillLibraryExtension:
             
             # Determine category directory
             category = self.library._get_category(skill.skill_type)
-            skill_file = self.library.skills_dir / category / f"{skill.skill_id}.json"
+            safe_id = _sanitize_filename(skill.skill_id)
+            skill_file = self.library.skills_dir / category / f"{safe_id}.json"
             
-            # Save skill to file
+            # Save skill to file - convert frozenset to list for proper JSON serialization
+            skill_dict = asdict(skill)
+            if isinstance(skill_dict.get("required_capabilities"), frozenset):
+                skill_dict["required_capabilities"] = list(skill_dict["required_capabilities"])
             skill_file.write_text(
-                json.dumps(asdict(skill), indent=2, default=str),
+                json.dumps(skill_dict, indent=2, default=str),
                 encoding="utf-8"
             )
             

@@ -151,9 +151,9 @@ class SessionLifecycleMixin:
         if session is not None and not session.closed:
             try:
                 await session.close()
-        except Exception as e:
-            # Closing must never raise during agent shutdown.
-            logger.debug("Session close failed (non-fatal): %s", e)
+            except Exception as e:
+                # Closing must never raise during agent shutdown.
+                logger.debug("Session close failed (non-fatal): %s", e)
         # Leave the attribute as None so a later call creates a fresh session.
         self._session = None  # type: ignore[attr-defined]
 

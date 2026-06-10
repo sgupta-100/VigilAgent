@@ -1,7 +1,7 @@
 """
-Antigravity Scanner Report Generator (V8)
+Vigilagent Scanner Report Generator (V8)
 ================================================================================
-Per-scan PDF generator that mirrors the uploaded "ANTIGRAVITY SCANNER" layout
+Per-scan PDF generator that mirrors the uploaded "Vigilagent Scanner" layout
 exactly:
 
   * Page 1:  EXECUTIVE SUMMARY  (real Target / Scan ID / Date / Findings)
@@ -26,13 +26,13 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from backend.ai.cortex import get_cortex_engine
-from backend.reporting.scan_pdf import AntigravityReportBuilder
+from backend.reporting.scan_pdf import VigilagentReportBuilder
 
 logger = logging.getLogger("REPORTING")
 
 
 class ReportGenerator:
-    """Thin façade that delegates to the Antigravity PDF builder.
+    """Thin façade that delegates to the Vigilagent PDF builder.
 
     Kept as a class to preserve the public surface used by:
       - backend.core.orchestrator
@@ -53,7 +53,7 @@ class ReportGenerator:
             logger.warning("ReportGenerator: cortex unavailable (%s) - LLM disabled", exc)
             cortex = None
 
-        builder = AntigravityReportBuilder(
+        builder = VigilagentReportBuilder(
             scan_id=scan_id,
             target_url=target_url,
             events=events or [],
@@ -63,8 +63,8 @@ class ReportGenerator:
         )
         try:
             out_path = await builder.build()
-            logger.info("[REPORTER] Antigravity Scanner report generated: %s", out_path)
+            logger.info("[REPORTER] Vigilagent Scanner report generated: %s", out_path)
             return out_path
         except Exception as exc:
-            logger.exception("[REPORTER] Failed to generate Antigravity Scanner report: %s", exc)
+            logger.exception("[REPORTER] Failed to generate Vigilagent Scanner report: %s", exc)
             return None

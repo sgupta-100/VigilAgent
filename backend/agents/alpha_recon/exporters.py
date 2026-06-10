@@ -33,7 +33,7 @@ class SARIFExporter:
                     "driver": {
                         "name": "AlphaV6-Recon",
                         "version": "6.0.0",
-                        "informationUri": "https://github.com/vigilagent/antigravity",
+                        "informationUri": "https://github.com/vigilagent/Vigilagent",
                         "rules": self._build_rules(vulns),
                     }
                 },

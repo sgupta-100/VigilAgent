@@ -88,17 +88,25 @@ class ScopePolicy:
 
     @classmethod
     def from_target(cls, target_url: str | None = None, extra_hosts: Iterable[str] = ()) -> "ScopePolicy":
-        """Build scope from a single target URL (preserves legacy behavior).
+        """Build scope from a single target URL.
 
-        Single-target scans authorize the discovered host implicitly so that the
-        existing single-URL flow keeps working when no scope.yaml is supplied.
+        SECURITY: Defaults to passive/recon-only mode (authorization="none").
+        Active testing requires explicit authorization via scope.yaml or
+        ALPHA_EXPLICIT_AUTHORIZATION=true environment variable.
         """
         hosts = {host.lower() for host in extra_hosts if host}
         if target_url:
             parsed = urlparse(target_url)
             if parsed.hostname:
                 hosts.add(parsed.hostname.lower())
-        return cls(allowed_hosts=hosts, authorization="explicit")
+        
+        # SECURITY: Default to passive mode unless explicitly authorized
+        import os
+        auth_mode = "none"
+        if os.getenv("ALPHA_EXPLICIT_AUTHORIZATION", "false").lower() == "true":
+            auth_mode = "explicit"
+        
+        return cls(allowed_hosts=hosts, authorization=auth_mode)
 
     @classmethod
     def from_yaml(cls, path: str | Path | None = None) -> "ScopePolicy":

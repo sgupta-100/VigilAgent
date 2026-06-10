@@ -1,5 +1,6 @@
 import importlib
 import inspect
+import logging
 import os
 from functools import lru_cache
 from typing import Any
@@ -24,7 +25,7 @@ AGENT_MODULES = [
 
 
 def _agent_key(class_name: str) -> str:
-    return class_name.replace("Agent", "").upper()
+    return class_name.replace("Agent", "").lower()
 
 
 @lru_cache(maxsize=1)
@@ -39,7 +40,7 @@ def discover_agent_classes() -> dict[str, type]:
             continue
         for name, obj in inspect.getmembers(module, inspect.isclass):
             if name.endswith("Agent") or name.startswith("Agent") or name.endswith("Commander"):
-                discovered[name] = obj
+                discovered[_agent_key(name)] = obj
     return discovered
 
 
@@ -49,8 +50,8 @@ def create_agent(class_name: str, *args: Any, model_override: str | None = None,
         raise KeyError(f"Unknown agent class: {class_name}")
     model = (
         model_override
-        or os.getenv(f"ANTIGRAVITY_{_agent_key(class_name)}_MODEL")
-        or os.getenv("ANTIGRAVITY_MODEL")
+        or os.getenv(f"VIGILAGENT_{_agent_key(class_name)}_MODEL")
+        or os.getenv("VIGILAGENT_MODEL")
     )
     agent = classes[class_name](*args, **kwargs)
     if model is not None:

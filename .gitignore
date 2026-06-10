@@ -1,109 +1,48 @@
-﻿# Dependencies
-node_modules/
+﻿# Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
-*.pyd
-.Python
 .pytest_cache/
-*.egg-info/
+*.pyc
+
+# Node
+node_modules/
+.node/
+local_node/
 dist/
 build/
-*.egg
+
+# Test artifacts
+scan_states/
+logs/
+*.log
+
+# Build
+dist/
+build/
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Archives
+.archive/
 
 # Environment
 .env
 .env.local
 .env.*.local
 
-# Build output
-dist/
-build/
-*.so
-*.dylib
-*.dll
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.cursor/
-
-# Data & artifacts
-data/scans/
-data/graph.json
-data/stats.json
-brain/memory.json
-brain/notifications.json
-reports/uuid-reports/
-reports/named-reports/*.pdf
-reports/benchmark-tests/*.pdf
-reports/torture-tests/*.pdf
-scan_states/
-
-# Session encryption key (CRIT-02)
-**/.session_key
-
-# Logs
-*.log
-logs/
-*.err.log
-
-# Test coverage
-.coverage
-htmlcov/
-.tox/
-.pytest_cache/
-
-# OS
-.DS_Store
-Thumbs.db
-.AppleDouble
-.LSOverride
-
-# Node specific
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.npm
-.eslintcache
-
-# Python specific
-*.py[cod]
-*.class
-venv/
-env/
-ENV/
-.venv
-
-# Local node installation
-.node/
-local_node/
-
-# Archive (session reports)
-.archive/
-
-# Temporary files
-*.tmp
-*.bak
-*.swp
-*~
-
-# Database
-*.db
-*.sqlite
-*.sqlite3
-
-# Redis
-dump.rdb
-
-# Docker
-.dockerignore
-
-# Graphify output
+# Generated
 graphify-out/
+*.generated.json
 
-# Recon tool binaries (built by scripts/install_recon_tools.py — do NOT commit binaries)
-tools/recon_bin/
+# Cache
+.cache/
+.parcel-cache/
+.eslintcache

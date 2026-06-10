@@ -1,6 +1,6 @@
-# Deployment Guide - Antigravity V5
+# Deployment Guide - Vigilagent
 
-Complete guide for deploying Antigravity V5 to production environments.
+Complete guide for deploying Vigilagent to production environments.
 
 > Looking for the **Deep System Integration topology** (component map,
 > environment variable matrix, persistent volumes for the
@@ -106,9 +106,9 @@ playwright install-deps
 ```bash
 # Clone from repository
 cd /opt
-sudo git clone https://github.com/your-org/antigravity-v5.git
-sudo chown -R antigravity:antigravity antigravity-v5
-cd antigravity-v5
+sudo git clone https://github.com/your-org/vigilagent.git
+sudo chown -R antigravity:antigravity vigilagent
+cd vigilagent
 ```
 
 ### 2. Create Virtual Environment
@@ -169,7 +169,7 @@ APP_DEBUG=false
 APP_SECRET_KEY=<generate-secure-key>
 
 # Database
-DATABASE_URL=postgresql://user:password@localhost:5432/antigravity
+DATABASE_URL=postgresql://user:password@localhost:5432/vigilagent
 DATABASE_POOL_SIZE=20
 DATABASE_MAX_OVERFLOW=10
 
@@ -194,7 +194,7 @@ BROWSER_MEMORY_THRESHOLD_MB=500
 
 # Logging
 LOG_LEVEL=INFO
-LOG_FILE=/var/log/antigravity/app.log
+LOG_FILE=/var/log/vigilagent/app.log
 
 # Monitoring
 SENTRY_DSN=<your-sentry-dsn>
@@ -213,10 +213,10 @@ python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().
 
 ### 3. Configure Nginx
 
-Create `/etc/nginx/sites-available/antigravity`:
+Create `/etc/nginx/sites-available/vigilagent`:
 
 ```nginx
-upstream antigravity_backend {
+upstream vigilagent_backend {
     server 127.0.0.1:8000;
     keepalive 64;
 }
@@ -247,14 +247,14 @@ server {
     
     # Static Files
     location /static/ {
-        alias /opt/antigravity-v5/dist/;
+        alias /opt/vigilagent/dist/;
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
     
     # API Proxy
     location /api/ {
-        proxy_pass http://antigravity_backend;
+        proxy_pass http://vigilagent_backend;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -274,7 +274,7 @@ server {
     
     # WebSocket
     location /ws/ {
-        proxy_pass http://antigravity_backend;
+        proxy_pass http://vigilagent_backend;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -284,7 +284,7 @@ server {
     
     # Frontend
     location / {
-        root /opt/antigravity-v5/dist;
+        root /opt/vigilagent/dist;
         try_files $uri $uri/ /index.html;
     }
 }
@@ -296,7 +296,7 @@ limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
 Enable site:
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/antigravity /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/vigilagent /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl reload nginx
 ```
@@ -312,9 +312,9 @@ sudo systemctl reload nginx
 sudo -u postgres psql
 
 # Create database and user
-CREATE DATABASE antigravity;
-CREATE USER antigravity_user WITH ENCRYPTED PASSWORD 'secure_password';
-GRANT ALL PRIVILEGES ON DATABASE antigravity TO antigravity_user;
+CREATE DATABASE vigilagent;
+CREATE USER vigilagent_user WITH ENCRYPTED PASSWORD 'secure_password';
+GRANT ALL PRIVILEGES ON DATABASE antigravity TO vigilagent_user;
 \q
 ```
 
@@ -344,20 +344,20 @@ python backend/scripts/load_config.py
 
 ### 1. Create Systemd Service
 
-Create `/etc/systemd/system/antigravity.service`:
+Create `/etc/systemd/system/vigilagent.service`:
 
 ```ini
 [Unit]
-Description=Antigravity V5 Application
+Description=Vigilagent Application
 After=network.target postgresql.service redis.service
 
 [Service]
 Type=notify
 User=antigravity
 Group=antigravity
-WorkingDirectory=/opt/antigravity-v5
-Environment="PATH=/opt/antigravity-v5/venv/bin"
-ExecStart=/opt/antigravity-v5/venv/bin/python backend/main.py
+WorkingDirectory=/opt/vigilagent
+Environment="PATH=/opt/vigilagent/venv/bin"
+ExecStart=/opt/vigilagent/venv/bin/python backend/main.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -368,7 +368,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/log/antigravity /opt/antigravity-v5/data
+ReadWritePaths=/var/log/vigilagent /opt/vigilagent/data
 
 # Resource Limits
 LimitNOFILE=65536
@@ -396,10 +396,10 @@ sudo systemctl status antigravity
 
 ### 3. Configure Log Rotation
 
-Create `/etc/logrotate.d/antigravity`:
+Create `/etc/logrotate.d/vigilagent`:
 
 ```
-/var/log/antigravity/*.log {
+/var/log/vigilagent/*.log {
     daily
     rotate 14
     compress
@@ -424,10 +424,10 @@ Create `/etc/logrotate.d/antigravity`:
 sudo journalctl -u antigravity -f
 
 # View application logs
-tail -f /var/log/antigravity/app.log
+tail -f /var/log/vigilagent/app.log
 
 # View error logs
-tail -f /var/log/antigravity/error.log
+tail -f /var/log/vigilagent/error.log
 ```
 
 ### 2. Prometheus Metrics
@@ -435,11 +435,11 @@ tail -f /var/log/antigravity/error.log
 Access metrics at: `http://localhost:9090/metrics`
 
 **Key Metrics**:
-- `antigravity_requests_total` - Total API requests
-- `antigravity_request_duration_seconds` - Request latency
-- `antigravity_active_scans` - Active scans
-- `antigravity_browser_contexts` - Browser contexts
-- `antigravity_memory_usage_bytes` - Memory usage
+- `vigilagent_requests_total` - Total API requests
+- `vigilagent_request_duration_seconds` - Request latency
+- `vigilagent_active_scans` - Active scans
+- `vigilagent_browser_contexts` - Browser contexts
+- `vigilagent_memory_usage_bytes` - Memory usage
 
 ### 3. Health Checks
 
@@ -462,20 +462,20 @@ curl http://localhost:8000/api/health/redis
 
 ```bash
 # Create backup script
-cat > /opt/antigravity-v5/scripts/backup_db.sh << 'EOF'
+cat > /opt/vigilagent/scripts/backup_db.sh << 'EOF'
 #!/bin/bash
-BACKUP_DIR="/var/backups/antigravity"
+BACKUP_DIR="/var/backups/vigilagent"
 DATE=$(date +%Y%m%d_%H%M%S)
 mkdir -p $BACKUP_DIR
 
 # Backup database
-pg_dump -U antigravity_user antigravity | gzip > $BACKUP_DIR/db_$DATE.sql.gz
+pg_dump -U vigilagent_user antigravity | gzip > $BACKUP_DIR/db_$DATE.sql.gz
 
 # Keep only last 7 days
 find $BACKUP_DIR -name "db_*.sql.gz" -mtime +7 -delete
 EOF
 
-chmod +x /opt/antigravity-v5/scripts/backup_db.sh
+chmod +x /opt/vigilagent/scripts/backup_db.sh
 ```
 
 ### 2. Schedule Backups
@@ -485,7 +485,7 @@ chmod +x /opt/antigravity-v5/scripts/backup_db.sh
 crontab -e
 
 # Add line (daily at 2 AM)
-0 2 * * * /opt/antigravity-v5/scripts/backup_db.sh
+0 2 * * * /opt/vigilagent/scripts/backup_db.sh
 ```
 
 ### 3. Restore from Backup
@@ -495,8 +495,8 @@ crontab -e
 sudo systemctl stop antigravity
 
 # Restore database
-gunzip < /var/backups/antigravity/db_20260526_020000.sql.gz | \
-    psql -U antigravity_user antigravity
+gunzip < /var/backups/vigilagent/db_20260526_020000.sql.gz | \
+    psql -U vigilagent_user antigravity
 
 # Start application
 sudo systemctl start antigravity
@@ -511,12 +511,12 @@ sudo systemctl start antigravity
 **Load Balancer Configuration** (HAProxy):
 
 ```
-frontend antigravity_frontend
+frontend vigilagent_frontend
     bind *:80
-    bind *:443 ssl crt /etc/ssl/certs/antigravity.pem
-    default_backend antigravity_backend
+    bind *:443 ssl crt /etc/ssl/certs/vigilagent.pem
+    default_backend vigilagent_backend
 
-backend antigravity_backend
+backend vigilagent_backend
     balance roundrobin
     option httpchk GET /api/health
     server app1 10.0.1.10:8000 check
@@ -566,7 +566,7 @@ sentinel failover-timeout antigravity 10000
 sudo journalctl -u antigravity -n 100
 
 # Check permissions
-ls -la /opt/antigravity-v5
+ls -la /opt/vigilagent
 
 # Check environment
 source venv/bin/activate
@@ -577,7 +577,7 @@ python -c "import backend; print('OK')"
 
 ```bash
 # Test connection
-psql -U antigravity_user -h localhost antigravity
+psql -U vigilagent_user -h localhost antigravity
 
 # Check PostgreSQL status
 sudo systemctl status postgresql
@@ -665,9 +665,9 @@ systemctl status antigravity nginx postgresql redis
 ## Support
 
 For deployment issues:
-- Check logs: `/var/log/antigravity/`
+- Check logs: `/var/log/vigilagent/`
 - Review documentation: `docs/`
-- Contact support: support@antigravity.com
+- Contact support: support@vigilagent.com
 
 ---
 

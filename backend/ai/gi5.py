@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# PROJECT ANTIGRAVITY // GI5 "OMEGA" KERNEL
+# PROJECT VIGILAGENT // GI5 "OMEGA" KERNEL
 # ═══════════════════════════════════════════════════════════════════════════════
 # IDENTITY: GI5 (General Intelligence 5) - The Deterministic Cyber-Forensic God Class
 # TYPE: Multi-Dimensional Heuristic Engine (NOT an LLM)

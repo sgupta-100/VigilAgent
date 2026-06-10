@@ -268,7 +268,7 @@ Vigilagent is **fully `asyncio` based**. The few rules to remember:
    Examples:
    - `EliteDBManager._run_sync` (`backend/core/database.py:42`).
    - `loop.run_in_executor(None, self.pdf.output, out_path)` in the PDF
-     builder (`backend/reporting/scan_pdf.py` — `AntigravityReportBuilder.build`).
+     builder (`backend/reporting/scan_pdf.py` — `VigilagentReportBuilder.build`).
 
 2. **One consumer task per `ScanContext`.** The EventBus enqueues every
    scan‑local event into the scan's own `asyncio.Queue` and drains it from a
@@ -461,7 +461,7 @@ The end‑to‑end path of a single scan, traced through code.
      (`orchestrator.py:340-378`).
 
 7. **Phase 4 — Reporting.** When the scan completes,
-   `AntigravityReportBuilder` (`backend/reporting/scan_pdf.py:303`) renders
+   `VigilagentReportBuilder` (`backend/reporting/scan_pdf.py:303`) renders
    the PDF; `REPORT_READY` is broadcast.
 
 8. **Persistence.** `scan_state_db.checkpoint_phase(...)` is called at every

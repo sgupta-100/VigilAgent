@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# ANTIGRAVITY :: OPENROUTER CLIENT — GPT-OSS-20B INTEGRATION
+# VIGILAGENT :: OPENROUTER CLIENT — GPT-OSS-20B INTEGRATION
 # ═══════════════════════════════════════════════════════════════════════════════
 # PURPOSE: Production-grade async client for OpenRouter API.
 #          Provides Final Arbitration, Exploit Planning, and Auto-Remediation
@@ -127,7 +127,7 @@ class OpenRouterClient:
         }
 
         if self._api_key:
-            logger.info(f"OPENROUTER: Client initialized → model={OPENROUTER_MODEL}")
+            logger.info(f"OPENROUTER: Client initialized -> model={OPENROUTER_MODEL}")
         else:
             logger.warning("OPENROUTER: No valid API key found. Cloud reasoning disabled.")
 
@@ -168,7 +168,7 @@ class OpenRouterClient:
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://antigravity.local",
+            "HTTP-Referer": "https://vigilagent.local",
             "X-Title": "Vigilagent",
         }
 

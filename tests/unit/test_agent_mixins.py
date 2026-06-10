@@ -29,7 +29,11 @@ class TestControlSignalMixin:
                 self._throttled = False
                 self._stealth_mode = False
         agent = TestAgent()
-        agent._handle_throttle("THROTTLE")
+        # Create a mock event with THROTTLE signal
+        class MockEvent:
+            payload = {"signal": "THROTTLE"}
+        import asyncio
+        asyncio.run(agent.handle_control_signal(MockEvent()))
         assert agent._throttled is True
 
     def test_resume(self):
@@ -39,6 +43,10 @@ class TestControlSignalMixin:
                 self._throttled = True
                 self._stealth_mode = True
         agent = TestAgent()
-        agent._handle_throttle("RESUME")
+        # Create a mock event with RESUME signal
+        class MockEvent:
+            payload = {"signal": "RESUME"}
+        import asyncio
+        asyncio.run(agent.handle_control_signal(MockEvent()))
         assert agent._throttled is False
         assert agent._stealth_mode is False

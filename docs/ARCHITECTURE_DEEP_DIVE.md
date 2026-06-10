@@ -1,6 +1,6 @@
-# Architecture Deep Dive - Antigravity V5
+# Architecture Deep Dive - Vigilagent
 
-Comprehensive technical architecture documentation for Antigravity V5.
+Comprehensive technical architecture documentation for Vigilagent.
 
 ---
 

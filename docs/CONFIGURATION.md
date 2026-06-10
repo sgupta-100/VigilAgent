@@ -1,6 +1,6 @@
-# Configuration Reference - Antigravity V5
+# Configuration Reference - Vigilagent
 
-Complete reference for all configuration options in Antigravity V5.
+Complete reference for all configuration options in Vigilagent.
 
 ---
 
@@ -49,7 +49,7 @@ Complete reference for all configuration options in Antigravity V5.
 - **Type**: String (PostgreSQL URL)
 - **Required**: Yes
 - **Format**: `postgresql://user:password@host:port/database`
-- **Example**: `DATABASE_URL=postgresql://antigravity:pass@localhost:5432/antigravity`
+- **Example**: `DATABASE_URL=postgresql://vigilagent:pass@localhost:5432/vigilagent`
 
 #### `DATABASE_POOL_SIZE`
 - **Type**: Integer
@@ -281,7 +281,7 @@ Complete reference for all configuration options in Antigravity V5.
 - **Type**: String (file path)
 - **Default**: `logs/app.log`
 - **Description**: Log file path
-- **Example**: `LOG_FILE=/var/log/antigravity/app.log`
+- **Example**: `LOG_FILE=/var/log/vigilagent/app.log`
 
 #### `LOG_FORMAT`
 - **Type**: String
@@ -518,7 +518,7 @@ BROWSER_HEADLESS=false
 
 ```python
 #!/usr/bin/env python3
-"""Validate Antigravity V5 configuration."""
+"""Validate Vigilagent configuration."""
 
 import os
 import sys

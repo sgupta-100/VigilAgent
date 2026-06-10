@@ -1,6 +1,6 @@
 # Utility Scripts
 
-This directory contains utility scripts for development, maintenance, testing, and operations of the Antigravity V5 penetration testing system.
+This directory contains utility scripts for development, maintenance, testing, and operations of the Vigilagent penetration testing system.
 
 ## 📁 Script Categories
 
@@ -205,4 +205,4 @@ For issues with scripts or to request new utility scripts, please:
 
 **Last Updated:** May 24, 2026  
 **Total Scripts:** 12  
-**Maintained By:** Antigravity V5 Development Team
+**Maintained By:** Vigilagent Development Team

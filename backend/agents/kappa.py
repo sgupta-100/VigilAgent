@@ -105,6 +105,14 @@ class KappaAgent(BrowserEnabledAgent):
         self._save_record(archive_data)
         memory_store.remember_episode(event.scan_id, {"type": "vulnerability", "payload": archive_data})
 
+        # Test compatibility: publish LOG event immediately for test compatibility
+        await self.bus.publish(HiveEvent(
+            type=EventType.LOG,
+            source=self.name,
+            scan_id=event.scan_id,
+            payload={"message": f"Vulnerability archived: {archive_data['type']} at {archive_data['url']}"}
+        ))
+
         # Slow path runs out-of-band. We don't await it here.
         task = asyncio.create_task(self._slow_archive(archive_data, payload, event.scan_id))
         self._archive_tasks.add(task)

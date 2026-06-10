@@ -282,9 +282,11 @@ class GuardLayer:
             if not (finding.get("gi5_match", False) or gi5_risk > 50) and diff_score <= self.MIN_DIFF_SCORE:
                 self._stats["rejected_weak_signal"] += 1
                 return False, "weak_signal"
-            if float(finding.get("confidence", 0)) < self.MIN_CONFIDENCE:
-                self._stats["rejected_low_confidence"] += 1
-                return False, "low_confidence"
+
+        # Always check confidence, even for confirmed findings
+        if float(finding.get("confidence", 0)) < self.MIN_CONFIDENCE:
+            self._stats["rejected_low_confidence"] += 1
+            return False, "low_confidence"
 
         dedup_key = self._compute_hash(finding)
         if dedup_key in self._seen_hashes:

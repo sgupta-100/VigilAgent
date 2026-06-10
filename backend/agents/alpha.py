@@ -49,6 +49,30 @@ class AlphaAgent(BrowserEnabledAgent):
         # THROTTLE/STEALTH_MODE rather than spawning more browser/HTTP tasks.
         self.bus.subscribe(EventType.CONTROL_SIGNAL, self.handle_control_signal)
 
+    async def _detect_spa(self, url: str) -> bool:
+        """Detect if a URL is a Single Page Application."""
+        try:
+            result = await self.browser.navigate(url, stealth=False)
+            if not result.get("success"):
+                return False
+            framework = await self.browser.detect_framework(url)
+            is_spa = framework.lower() in ("react", "vue", "angular", "svelte")
+            return is_spa
+        except Exception as exc:
+            logger.debug(f"[{self.name}] SPA detection failed for {url}: {exc}")
+            return False
+
+    async def _merge_endpoints(self, endpoints1: list, endpoints2: list) -> list:
+        """Merge and deduplicate endpoint lists."""
+        seen = set()
+        merged = []
+        for ep in endpoints1 + endpoints2:
+            key = (ep.get("url"), ep.get("method", "GET"))
+            if key not in seen:
+                seen.add(key)
+                merged.append(ep)
+        return merged
+
     async def handle_control_signal(self, event: HiveEvent):
         signal = event.payload.get("signal", "")
         if signal in ("THROTTLE", "STEALTH_MODE"):

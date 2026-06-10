@@ -60,7 +60,7 @@ class ModelAssignment:
 
 class LLMRouter:
     def __init__(self, profile: str | None = None):
-        self.profile = (profile or os.getenv("ANTIGRAVITY_MODEL_PROFILE", "eco")).lower()
+        self.profile = (profile or os.getenv("VIGILAGENT_MODEL_PROFILE", "eco")).lower()
 
     def tier_for(self, agent_name: str) -> ModelTier:
         if self.profile == "max":
@@ -71,8 +71,8 @@ class LLMRouter:
         return AGENT_TIERS.get(key, ModelTier.MID)
 
     def resolve(self, agent_name: str) -> ModelAssignment:
-        env_key = f"ANTIGRAVITY_{agent_name.upper().replace('AGENT_', '')}_MODEL"
-        override = os.getenv(env_key) or os.getenv("ANTIGRAVITY_MODEL")
+        env_key = f"VIGILAGENT_{agent_name.upper().replace('AGENT_', '')}_MODEL"
+        override = os.getenv(env_key) or os.getenv("VIGILAGENT_MODEL")
         tier = self.tier_for(agent_name)
         chain = [override] if override else list(TIER_MODELS[tier])
         return ModelAssignment(

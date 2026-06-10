@@ -5,15 +5,43 @@ import signal
 import sys
 import uuid
 import os
+import json
+import time
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from json import JSONDecodeError
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 import uvicorn
+
+# Structured logging setup
+class StructuredFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(record.created)),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno,
+        }
+        if hasattr(record, "correlation_id"):
+            log_entry["correlation_id"] = record.correlation_id
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_entry)
+
+# Setup structured logging
+log_handler = logging.StreamHandler(sys.stdout)
+log_handler.setFormatter(StructuredFormatter())
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.handlers = [log_handler]
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +61,10 @@ from backend.api.endpoints.scans import router as scans_router
 from backend.api import defense
 from backend.core.task_manager import TaskManager
 from backend.core.rate_limiter import start_cleanup_task, rate_limiter
-from backend.core.csrf_protection import start_csrf_cleanup_task
+from backend.core.csrf_protection import start_csrf_cleanup_task, csrf_protection, get_session_id
+
+# Global TaskManager for background tasks
+_background_task_manager = TaskManager("BackgroundTasks")
 
 # FIX: Windows charmap encoding crash
 if sys.platform == 'win32':
@@ -90,11 +121,11 @@ async def lifespan(app: FastAPI):
         logger.info(f"[BOOT] commander runner registration skipped: {_e}")
     
     # Start rate limiter cleanup task
-    cleanup_task = asyncio.create_task(start_cleanup_task())
+    cleanup_task = _background_task_manager.create_task(start_cleanup_task(), name="rate_limiter_cleanup")
     logger.info("[RATE_LIMITER] Background cleanup task started")
     
     # Start CSRF protection cleanup task
-    csrf_cleanup_task = asyncio.create_task(start_csrf_cleanup_task())
+    csrf_cleanup_task = _background_task_manager.create_task(start_csrf_cleanup_task(), name="csrf_cleanup")
     logger.info("[CSRF_PROTECTION] Background cleanup task started")
 
     # Eager Redis client init (singleton in backend.core.redis_client) so the
@@ -193,26 +224,59 @@ if _cors_env == "*":
     raise ValueError("CORS_ORIGINS='*' is not allowed when allow_credentials=True. Set explicit origins.")
 ALLOWED_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()]
 
+# Security headers middleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+
+# TrustedHostMiddleware for additional security
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "0.0.0.0"])
+
+# Security headers middleware
+@app.middleware("http")
+async def _security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' wss: https:;"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    return response
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
 )
 
-# HIGH-43: API key authentication middleware (wired in)
-_app_api_key = os.getenv('API_AUTH_KEY', '')
-if _app_api_key:
-    @app.middleware("http")
-    async def _api_key_middleware(request: Request, call_next):
-        path = request.url.path
-        if path in ('/api/health', '/docs', '/openapi.json', '/') or not path.startswith('/api/'):
-            return await call_next(request)
-        provided = request.headers.get('X-API-Key', '') or request.headers.get('Authorization', '').replace('Bearer ', '')
-        if provided != _app_api_key:
-            return JSONResponse(status_code=401, content={'detail': 'Invalid or missing API key'})
+# HIGH-43: API key authentication middleware (required by default)
+_app_api_key = os.getenv('API_AUTH_KEY')
+if not _app_api_key:
+    raise RuntimeError("API_AUTH_KEY environment variable is required. Set a secure API key for production use.")
+
+@app.middleware("http")
+async def _api_key_middleware(request: Request, call_next):
+    path = request.url.path
+    # Skip auth for health checks, docs, and non-API paths
+    if path in ('/api/health', '/docs', '/openapi.json', '/', '/redoc') or not path.startswith('/api/'):
         return await call_next(request)
+    provided = request.headers.get('X-API-Key', '') or request.headers.get('Authorization', '').replace('Bearer ', '')
+    if provided != _app_api_key:
+        return JSONResponse(status_code=401, content={'detail': 'Invalid or missing API key'})
+    return await call_next(request)
+
+# Correlation ID middleware for request tracing
+@app.middleware("http")
+async def _correlation_id_middleware(request: Request, call_next):
+    correlation_id = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
+    request.state.correlation_id = correlation_id
+    response = await call_next(request)
+    response.headers["X-Correlation-ID"] = correlation_id
+    return response
 
 app.include_router(runtime.router, prefix="/api")
 
@@ -228,7 +292,7 @@ async def _rate_limit_middleware(request: Request, call_next):
             raise  # Let FastAPI's HTTPException propagate with Retry-After header
         except Exception as exc:
             import logging as _log
-            _log.getLogger("main").debug("CORS middleware import failed: %s", exc)
+            _log.getLogger("main").debug("Rate limiter error: %s", exc)
             from fastapi.responses import JSONResponse as _JSONResponse
             return _JSONResponse(status_code=429, content={"detail": "Rate limit exceeded."})
     return await call_next(request)
@@ -264,8 +328,46 @@ async def _scope_guard_middleware(request: Request, call_next):
             pass  # Other errors pass through to handler
     return await call_next(request)
 
+# CSRF Protection Middleware - protects all state-changing endpoints
+@app.middleware("http")
+async def _csrf_middleware(request: Request, call_next):
+    """CSRF protection for state-changing operations."""
+    # Only apply to state-changing methods on API routes
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and request.url.path.startswith("/api/"):
+        # Skip for endpoints that don't require CSRF (e.g., webhooks, internal APIs)
+        skip_paths = ['/api/attack/fire', '/api/recon/ingest', '/api/recon/keys', '/api/bridge/']
+        if any(request.url.path.startswith(p) for p in skip_paths):
+            return await call_next(request)
+        
+        # Get CSRF token from header or form
+        csrf_token = request.headers.get("X-CSRF-Token")
+        if not csrf_token:
+            # Try to get from form data (for multipart/form-data)
+            try:
+                form = await request.form()
+                csrf_token = form.get("csrf_token")
+            except Exception:
+                pass
+        
+        if not csrf_token:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF validation failed. Missing X-CSRF-Token header."}
+            )
+        
+        session_id = get_session_id(request)
+        is_valid = await csrf_protection.validate_token(csrf_token, session_id, consume=True)
+        
+        if not is_valid:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF validation failed. Invalid or expired token."}
+            )
+    
+    return await call_next(request)
+
 # Routes
-@app.get("/api/health")
+@app.get("/api/v1/health")
 async def health_check():
     """Production health check — tests infra components."""
     import time as _t
@@ -297,7 +399,7 @@ async def health_check():
             "latency_ms": round((_t.time() - start) * 1000, 1)}
 
 
-@app.get("/api/tools")
+@app.get("/api/v1/tools")
 async def list_tools():
     """Recon tool inventory + availability (Architecture §7, §22)."""
     try:
@@ -314,23 +416,23 @@ async def list_tools():
     except Exception as e:
         return {"tools": [], "error": str(e)}
 
-app.include_router(recon.router, prefix="/api/recon", tags=["Recon"])
-app.include_router(attack.router, prefix="/api/attack", tags=["Attack"])
-app.include_router(reports.router, prefix="/api/reports", tags=["Reports"])
-app.include_router(defense.router, prefix="/api/defense", tags=["Defense"])
-app.include_router(dashboard.router, prefix="/api/dashboard", tags=["Dashboard"])
-app.include_router(ai.router, prefix="/api/ai", tags=["AI"])
-app.include_router(code_analysis_router, prefix="/api", tags=["Code Analysis"])  # PROBLEM 18
-app.include_router(data_router, prefix="/api/data", tags=["Data"])
-app.include_router(self_awareness_router, prefix="/api/self-awareness", tags=["Self-Awareness"])
-app.include_router(skills_router, prefix="/api/skills", tags=["Skills"])
-app.include_router(bridge_router, prefix="/bridge", tags=["Extension Bridge"])
-app.include_router(scans_router, prefix="/api/scans", tags=["Scans"])
+app.include_router(recon.router, prefix="/api/v1/recon", tags=["Recon"])
+app.include_router(attack.router, prefix="/api/v1/attack", tags=["Attack"])
+app.include_router(reports.router, prefix="/api/v1/reports", tags=["Reports"])
+app.include_router(defense.router, prefix="/api/v1/defense", tags=["Defense"])
+app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"])
+app.include_router(ai.router, prefix="/api/v1/ai", tags=["AI"])
+app.include_router(code_analysis_router, prefix="/api/v1", tags=["Code Analysis"])  # PROBLEM 18
+app.include_router(data_router, prefix="/api/v1/data", tags=["Data"])
+app.include_router(self_awareness_router, prefix="/api/v1/self-awareness", tags=["Self-Awareness"])
+app.include_router(skills_router, prefix="/api/v1/skills", tags=["Skills"])
+app.include_router(bridge_router, prefix="/api/v1/bridge", tags=["Extension Bridge"])
+app.include_router(scans_router, prefix="/api/v1/scans", tags=["Scans"])
 
 # Alpha Recon API
 from backend.agents.alpha_recon.api_routes import router as alpha_recon_router
 
-app.include_router(alpha_recon_router, tags=["Alpha Recon"])
+app.include_router(alpha_recon_router, prefix="/api/v1", tags=["Alpha Recon"])
 
 @app.websocket("/stream")
 @app.websocket("/ws/live")

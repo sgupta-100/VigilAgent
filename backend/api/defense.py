@@ -113,7 +113,7 @@ async def analyze_threat(request: Request):
             else:
                 return {
                     "verdict": "IDLE",
-                    "reason": "Antigravity Hive is in Standby Mode",
+                    "reason": "Vigilagent Hive is in Standby Mode",
                     "risk_score": 0
                 }
 

@@ -109,7 +109,7 @@ async def publish_request_event(data: Dict[str, Any], scan_id: str = None):
                     }
                 })
     except Exception as e:
-        logging.getLogger("Antigravity.SocketManager").error(f"publish_request_event error: {e}")
+        logging.getLogger("Vigilagent.SocketManager").error(f"publish_request_event error: {e}")
 
 # ------------------------------------------
 
@@ -124,7 +124,7 @@ class SocketManager:
     def __init__(self):
         self.ui_connections: List[WebSocket] = []
         self.spy_connections: List[WebSocket] = []
-        self.logger = logging.getLogger("Antigravity.SocketManager")
+        self.logger = logging.getLogger("Vigilagent.SocketManager")
         
         self.last_spy_activity = 0.0
         self.message_queue = collections.deque(maxlen=10000) # Memory Guard: Capped for reasonable memory usage
@@ -188,7 +188,7 @@ class SocketManager:
             await asyncio.wait_for(connection.send_text(msg), timeout=1.0)
             return None
         except Exception as exc:
-            logging.getLogger("Antigravity.SocketManager").debug("WS send timeout/failure: %s", exc)
+            logging.getLogger("Vigilagent.SocketManager").debug("WS send timeout/failure: %s", exc)
             return connection
 
     async def _process_batch_queue(self):

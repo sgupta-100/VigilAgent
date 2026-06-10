@@ -1,4 +1,4 @@
-# Antigravity V5 - Troubleshooting Guide
+# Vigilagent - Troubleshooting Guide
 
 **Last Updated**: May 25, 2026  
 **Version**: 5.0
@@ -759,9 +759,9 @@ When reporting issues, include:
 
 ### Community Support
 
-- GitHub Issues: [github.com/antigravity/issues](https://github.com/antigravity/issues)
-- Documentation: [docs.antigravity.io](https://docs.antigravity.io)
-- Discord: [discord.gg/antigravity](https://discord.gg/antigravity)
+- GitHub Issues: [github.com/vigilagent/issues](https://github.com/vigilagent/issues)
+- Documentation: [docs.vigilagent.io](https://docs.vigilagent.io)
+- Discord: [discord.gg/vigilagent](https://discord.gg/vigilagent)
 
 ---
 
@@ -775,4 +775,4 @@ When reporting issues, include:
 ---
 
 **Last Updated**: May 25, 2026  
-**Maintainer**: Antigravity V5 Team
+**Maintainer**: Vigilagent Team

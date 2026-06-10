@@ -1,11 +1,11 @@
 """
-Antigravity Scanner PDF Builder
+Vigilagent Scanner PDF Builder
 ================================================================================
-Builds the per-scan PDF report in the exact "ANTIGRAVITY SCANNER" layout
+Builds the per-scan PDF report in the exact "Vigilagent Scanner" layout
 (Executive Summary → Detailed Findings (one per finding) → Scan Timeline).
 
 Public entry point:
-    AntigravityReportBuilder(scan_id, target_url, events, telemetry, cortex)
+    VigilagentReportBuilder(scan_id, target_url, events, telemetry, cortex)
         .build()         -> async; returns absolute path of the produced PDF.
 
 Design rules (enforced):
@@ -14,7 +14,7 @@ Design rules (enforced):
     prose (description, impact, explanation, remediation, code-fix).
   * Never display "N/A" — degrade to a concrete neutral value.
   * No new heavy dependencies — uses fpdf2 (already in requirements).
-  * Branding stays "ANTIGRAVITY SCANNER".
+  * Branding stays "Vigilagent Scanner".
   * Output path: <REPORTS_DIR>/Scan_Report_<scan_id>.pdf  (preserves the
     existing /api/reports/download/<file> endpoint).
 """
@@ -37,7 +37,7 @@ from backend.reporting.cvss_engine import score_for_vuln_class, severity_band
 
 logger = logging.getLogger("ScanPDF")
 
-# ── Color palette (Antigravity Scanner specimen) ─────────────────────────────
+# ── Color palette (Vigilagent Scanner specimen) ─────────────────────────────
 BRAND_BLACK = (15, 15, 15)
 BRAND_RULE = (44, 62, 80)         # Header/footer underline
 TITLE_RED = (192, 57, 43)         # Big section titles
@@ -136,8 +136,8 @@ def _first_meaningful(*values: Any, default: str = "") -> str:
 
 # ── PDF document class ───────────────────────────────────────────────────────
 
-class _AntigravityPDF(FPDF):
-    """fpdf2 document with the Antigravity Scanner header + footer."""
+class _VigilagentPDF(FPDF):
+    """fpdf2 document with the Vigilagent Scanner header + footer."""
 
     LEFT_MARGIN = 15
     RIGHT_MARGIN = 15
@@ -155,7 +155,7 @@ class _AntigravityPDF(FPDF):
         self.set_y(8)
         self.set_text_color(*BRAND_BLACK)
         self.set_font("Helvetica", "B", 11)
-        self.cell(0, 6, "ANTIGRAVITY SCANNER", align="L", new_x="LMARGIN", new_y="NEXT")
+        self.cell(0, 6, "Vigilagent Scanner", align="L", new_x="LMARGIN", new_y="NEXT")
         # Horizontal rule
         self.set_draw_color(*BRAND_RULE)
         self.set_line_width(0.5)
@@ -408,7 +408,7 @@ class _AntigravityPDF(FPDF):
 
 # ── Builder ──────────────────────────────────────────────────────────────────
 
-class AntigravityReportBuilder:
+class VigilagentReportBuilder:
     """Orchestrates real-data extraction + LLM enrichment + PDF rendering."""
 
     LLM_OVERALL_TIMEOUT = 600.0      # seconds budget for all LLM calls
@@ -429,7 +429,7 @@ class AntigravityReportBuilder:
         self.telemetry = telemetry or {}
         self.cortex = cortex
         self.manager = manager
-        self.pdf = _AntigravityPDF()
+        self.pdf = _VigilagentPDF()
 
     # ── public entry point ───────────────────────────────────────────────────
 
@@ -764,7 +764,7 @@ class AntigravityReportBuilder:
                 "Maintain monitoring and alerting on the surfaces that were probed.",
             ]
         return [
-            f"Antigravity Scanner confirmed {total_findings} security finding(s) against {self.target_url}.",
+            f"Vigilagent Scanner confirmed {total_findings} security finding(s) against {self.target_url}.",
             "Each finding includes the captured HTTP traffic, payload decomposition and a reproduction command.",
             "Prioritise remediation by severity; CRITICAL and HIGH findings should be addressed first.",
             "Re-run the scan after remediation to validate that each finding has been closed.",
@@ -829,7 +829,7 @@ class AntigravityReportBuilder:
             if sev not in counts:
                 vuln_type = str(payload.get("type") or "").upper()
                 cvss, _ = score_for_vuln_class(vuln_type)
-                sev = AntigravityReportBuilder._severity_label(cvss)
+                sev = VigilagentReportBuilder._severity_label(cvss)
             counts[sev] = counts.get(sev, 0) + 1
         return counts
 

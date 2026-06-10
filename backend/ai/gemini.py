@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# ANTIGRAVITY :: GEMINI CLIENT — GEMINI 2.5 FLASH INTEGRATION
+# VIGILAGENT :: GEMINI CLIENT — GEMINI 2.5 FLASH INTEGRATION
 # ═══════════════════════════════════════════════════════════════════════════════
 # PURPOSE: Production-grade async client for Google Gemini API.
 #          Provides payload generation, validation, narrative synthesis,
@@ -58,7 +58,7 @@ class GeminiClient:
         }
 
         if self._api_key:
-            logger.info(f"GEMINI: Client initialized → model={GEMINI_MODEL}")
+            logger.info(f"GEMINI: Client initialized -> model={GEMINI_MODEL}")
         else:
             logger.warning("GEMINI: No valid API key found. Gemini inference disabled.")
 

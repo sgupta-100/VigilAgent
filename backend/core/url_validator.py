@@ -17,13 +17,13 @@ class URLValidator:
     """
     
     def __init__(self):
-        # Allowed hosts for scanning
+        # Allowed hosts for scanning - only localhost and explicit test domains
+        # SECURITY: 0.0.0.0 and host.docker.internal removed from default allowlist
+        # to prevent SSRF bypass. Add explicitly via add_allowed_host() if needed.
         self.allowed_hosts: Set[str] = {
             "localhost",
             "127.0.0.1",
-            "0.0.0.0",
             "test-env.local",
-            "host.docker.internal",
             "example.com",
             "www.example.com",
         }

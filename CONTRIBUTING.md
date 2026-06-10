@@ -1,6 +1,6 @@
-# Contributing to Antigravity V5
+# Contributing to Vigilagent
 
-Thank you for your interest in contributing to Antigravity V5! This document provides guidelines and instructions for contributing to the project.
+Thank you for your interest in contributing to Vigilagent! This document provides guidelines and instructions for contributing to the project.
 
 ---
 
@@ -57,11 +57,11 @@ Thank you for your interest in contributing to Antigravity V5! This document pro
 ```bash
 # Fork the repository on GitHub
 # Then clone your fork
-git clone https://github.com/YOUR_USERNAME/antigravity-v5.git
-cd antigravity-v5
+git clone https://github.com/YOUR_USERNAME/vigilagent.git
+cd vigilagent
 
 # Add upstream remote
-git remote add upstream https://github.com/ORIGINAL_OWNER/antigravity-v5.git
+git remote add upstream https://github.com/ORIGINAL_OWNER/vigilagent.git
 ```
 
 ---
@@ -622,7 +622,7 @@ git push origin feature/my-feature
 ## Project Structure
 
 ```
-antigravity-v5/
+vigilagent/
 ├── backend/              # Backend Python code
 │   ├── agents/          # Security testing agents
 │   ├── ai/              # AI integrations
@@ -674,9 +674,9 @@ Contributors will be recognized in:
 - Release notes
 - Project documentation
 
-Thank you for contributing to Antigravity V5! 🚀
+Thank you for contributing to Vigilagent! 🚀
 
 ---
 
 **Last Updated**: May 25, 2026  
-**Maintainer**: Antigravity V5 Team
+**Maintainer**: Vigilagent Team

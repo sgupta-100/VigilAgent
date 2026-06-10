@@ -1,6 +1,6 @@
-# Antigravity V5 Documentation
+# Vigilagent Documentation
 
-Comprehensive documentation for the Antigravity V5 autonomous penetration testing system.
+Comprehensive documentation for the Vigilagent autonomous penetration testing system.
 
 ## 📚 Documentation Index
 
@@ -240,4 +240,4 @@ For documentation-related questions or issues:
 
 **Last Updated:** May 24, 2026  
 **Documentation Files:** 7 core + archive  
-**Maintained By:** Antigravity V5 Development Team
+**Maintained By:** Vigilagent Development Team

@@ -128,6 +128,12 @@ class PinchTabUnavailable(RuntimeError):
     """Raised when the PinchTab control plane is offline."""
     pass
 
+# Backward compatibility
+class BrowserEngine(Enum):
+    OPENCLAW = "openclaw"
+    PINCHTAB = "pinchtab"
+    AUTO = "auto"
+
 class ScrapplingEngine(Enum):
     PLAYWRIGHT = "playwright"
     PINCHTAB = "pinchtab"
@@ -2366,7 +2372,13 @@ class Scrappling:
         self._pinchtab_last_reason: str = ""
         self._pinchtab_last_hint: str = ""
         self._proxy_rotator: Any = None
-        
+
+    async def _init_scrapling_proxy_rotator(self):
+        """Initialize proxy rotator for Scrapling. No-op if no proxy list configured."""
+        # Proxy rotator is configured per-spider in PentestCrawlSpider.configure_sessions
+        # This method exists for API compatibility
+        self._proxy_rotator = None
+        logger.debug("[Scrappling] Proxy rotator initialized (no-op)")
 
     # --- New Scrapling Feature Methods ---
 

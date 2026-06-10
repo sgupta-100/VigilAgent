@@ -82,7 +82,7 @@ class EventBus:
             ctx = ScanContext(scan_id=scan_id)
             self.scan_contexts[scan_id] = ctx
             # CRITICAL FIX 3: Single consumer per scan ensures causal A->B->C ordering
-            task = asyncio.create_task(self._scan_event_loop(ctx))
+            task = self._task_manager.create_task(self._scan_event_loop(ctx), name=f"scan_event_loop_{scan_id}")
             self._context_tasks[scan_id] = task
         return self.scan_contexts[scan_id]
 
@@ -452,6 +452,9 @@ class BaseAgent:
         self.status = "ACTIVE"
         self._agent_tasks = set()
         
+        # Task manager for agent background tasks
+        self._task_manager = TaskManager(f"Agent-{self.name}")
+        
         # Ensure DB connections are active
         await self.db.initialize()
         
@@ -471,16 +474,14 @@ class BaseAgent:
             source=self.name,
             payload={"status": "ONLINE"}
         ))
-
+        
         # Start the internal thinking loop (if needed)
-        task = asyncio.create_task(self.lifecycle())
+        task = self._task_manager.create_task(self.lifecycle(), name=f"lifecycle_{self.name}")
         self._agent_tasks.add(task)
-        task.add_done_callback(self._agent_tasks.discard)
         
         # Start health reporting loop
-        health_task = asyncio.create_task(self._health_reporting_loop())
+        health_task = self._task_manager.create_task(self._health_reporting_loop(), name=f"health_reporting_{self.name}")
         self._agent_tasks.add(health_task)
-        health_task.add_done_callback(self._agent_tasks.discard)
 
     async def stop(self):
         """Puts the agent to sleep."""
@@ -496,11 +497,10 @@ class BaseAgent:
             engine = getattr(self, attr, None)
             if engine and hasattr(engine, "shutdown"):
                 await engine.shutdown()
-
-        for task in getattr(self, "_agent_tasks", []):
-            task.cancel()
-        if getattr(self, "_agent_tasks", []):
-            await asyncio.gather(*self._agent_tasks, return_exceptions=True)
+        
+        # Cancel all tracked tasks
+        if hasattr(self, '_task_manager'):
+            await self._task_manager.cancel_all()
             
         logging.info(f"💤 {self.name} is OFFLINE.")
     

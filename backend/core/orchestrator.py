@@ -100,7 +100,7 @@ class HiveOrchestrator:
     @staticmethod
     async def bootstrap_hive(target_config, scan_id=None):
         """
-        Initializes the Antigravity V5 Singularity.
+        Initializes the Vigilagent Singularity.
         """
         start_time = datetime.now()
         if not scan_id:

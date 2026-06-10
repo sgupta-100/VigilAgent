@@ -63,7 +63,7 @@ class Doppelganger(BaseArsenalModule):
             ratio = difflib.SequenceMatcher(None, b_text, a_text).ratio()
             if ratio > 0.95:
                 cortex = _get_cortex()
-            idor_analysis = await cortex.classify_idor_response(attack_text, ratio)
+                idor_analysis = await cortex.classify_idor_response(attack_text, ratio)
                 sensitivity = idor_analysis.get("sensitivity", "HIGH")
                 data_types = idor_analysis.get("data_types", [])
                 

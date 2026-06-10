@@ -1,4 +1,4 @@
-# Antigravity V5 - Usage Examples
+# Vigilagent - Usage Examples
 
 **Last Updated**: May 25, 2026  
 **Version**: 5.0
@@ -579,4 +579,4 @@ result = await resilient_scan("https://example.com", "scan-001")
 ---
 
 **Last Updated**: May 25, 2026  
-**Maintainer**: Antigravity V5 Team
+**Maintainer**: Vigilagent Team

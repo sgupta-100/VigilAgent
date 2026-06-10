@@ -36,7 +36,7 @@ class TracingConfig:
     
     def __init__(self):
         self.enabled = os.getenv("TRACING_ENABLED", "false").lower() == "true"
-        self.service_name = os.getenv("SERVICE_NAME", "antigravity-v5")
+        self.service_name = os.getenv("SERVICE_NAME", "vigilagent")
         self.exporter_type = os.getenv("TRACING_EXPORTER", "console")  # console, jaeger, zipkin
         self.jaeger_endpoint = os.getenv("JAEGER_ENDPOINT", "http://localhost:14268/api/traces")
         self.zipkin_endpoint = os.getenv("ZIPKIN_ENDPOINT", "http://localhost:9411/api/v2/spans")

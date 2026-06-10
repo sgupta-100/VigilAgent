@@ -1,6 +1,6 @@
 [
   {
-    "timestamp": 1779791561.633115,
+    "timestamp": 1781098161.1463482,
     "event_type": "RECON_COMPLETE",
     "source": "agent_alpha",
     "payload": {
@@ -8,7 +8,7 @@
     }
   },
   {
-    "timestamp": 1779791674.7973003,
+    "timestamp": 1781098363.336961,
     "event_type": "RECON_COMPLETE",
     "source": "agent_alpha",
     "payload": {
@@ -16,7 +16,7 @@
     }
   },
   {
-    "timestamp": 1779791813.337392,
+    "timestamp": 1781098557.5626101,
     "event_type": "RECON_COMPLETE",
     "source": "agent_alpha",
     "payload": {
@@ -24,7 +24,7 @@
     }
   },
   {
-    "timestamp": 1779792270.2658775,
+    "timestamp": 1781098910.104522,
     "event_type": "RECON_COMPLETE",
     "source": "agent_alpha",
     "payload": {
@@ -32,7 +32,7 @@
     }
   },
   {
-    "timestamp": 1779808988.5891445,
+    "timestamp": 1781099237.7599885,
     "event_type": "RECON_COMPLETE",
     "source": "agent_alpha",
     "payload": {
@@ -40,7 +40,7 @@
     }
   },
   {
-    "timestamp": 1779809248.1705852,
+    "timestamp": 1781099349.5960362,
     "event_type": "RECON_COMPLETE",
     "source": "agent_alpha",
     "payload": {
@@ -48,7 +48,7 @@
     }
   },
   {
-    "timestamp": 1779809440.7185285,
+    "timestamp": 1781099508.757654,
     "event_type": "RECON_COMPLETE",
     "source": "agent_alpha",
     "payload": {
@@ -56,7 +56,7 @@
     }
   },
   {
-    "timestamp": 1779809482.296065,
+    "timestamp": 1781099916.2419035,
     "event_type": "RECON_COMPLETE",
     "source": "agent_alpha",
     "payload": {
@@ -64,7 +64,7 @@
     }
   },
   {
-    "timestamp": 1779809939.2185748,
+    "timestamp": 1781102019.5909724,
     "event_type": "RECON_COMPLETE",
     "source": "agent_alpha",
     "payload": {
@@ -72,7 +72,7 @@
     }
   },
   {
-    "timestamp": 1779809964.6223311,
+    "timestamp": 1781102228.7283742,
     "event_type": "RECON_COMPLETE",
     "source": "agent_alpha",
     "payload": {
@@ -80,7 +80,39 @@
     }
   },
   {
-    "timestamp": 1780169790.8703973,
+    "timestamp": 1781102429.776315,
+    "event_type": "RECON_COMPLETE",
+    "source": "agent_alpha",
+    "payload": {
+      "endpoints": 3
+    }
+  },
+  {
+    "timestamp": 1781105748.5798903,
+    "event_type": "RECON_COMPLETE",
+    "source": "agent_alpha",
+    "payload": {
+      "endpoints": 3
+    }
+  },
+  {
+    "timestamp": 1781108151.7931,
+    "event_type": "RECON_COMPLETE",
+    "source": "agent_alpha",
+    "payload": {
+      "endpoints": 3
+    }
+  },
+  {
+    "timestamp": 1781108283.871976,
+    "event_type": "RECON_COMPLETE",
+    "source": "agent_alpha",
+    "payload": {
+      "endpoints": 3
+    }
+  },
+  {
+    "timestamp": 1781108611.9419842,
     "event_type": "RECON_COMPLETE",
     "source": "agent_alpha",
     "payload": {

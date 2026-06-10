@@ -166,10 +166,10 @@ class WorkerNode:
             module_class = getattr(module_pkg, class_name)
             instance = module_class()
 
-                from backend.core.protocol import JobPacket
-                # FIX-019: Validate task data before constructing JobPacket
-                if not isinstance(task, dict) or not task.get("target"):
-                    raise ValueError("Invalid task: missing 'target' field")
+            from backend.core.protocol import JobPacket
+            # FIX-019: Validate task data before constructing JobPacket
+            if not isinstance(task, dict) or not task.get("target"):
+                raise ValueError("Invalid task: missing 'target' field")
                 packet = JobPacket(**task)
 
                 # 1. Generate Payloads
@@ -257,13 +257,13 @@ class WorkerNode:
         try:
             await self.update_task_status(tid, "RUNNING")
             # FIX-011: Validate agent_class against explicit allowlist before execution
-        allowed_runner_classes = {k for k in DelegationManager._runners.keys()}
-        if agent_class not in allowed_runner_classes:
-            result["summary"] = f"agent_class '{agent_class}' not in allowlist"
-            await self.update_task_status(tid, "FAILED")
-            return
-        runner = DelegationManager._runners.get(agent_class)
-        if runner is None:
+            allowed_runner_classes = {k for k in DelegationManager._runners.keys()}
+            if agent_class not in allowed_runner_classes:
+                result["summary"] = f"agent_class '{agent_class}' not in allowlist"
+                await self.update_task_status(tid, "FAILED")
+                return
+            runner = DelegationManager._runners.get(agent_class)
+            if runner is None:
                 result["summary"] = f"no in-process runner for {agent_class}"
             else:
                 out = await runner(context, budget) or {}
