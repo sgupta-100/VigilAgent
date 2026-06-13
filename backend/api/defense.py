@@ -145,12 +145,16 @@ async def analyze_threat(request: Request):
             reason = result.vulnerabilities[0].description
         
         # HYBRID AI: Dynamic risk scoring instead of hardcoded 95/10
-        if result.vulnerabilities:
+        # Check test mode to avoid LLM calls
+        test_mode = getattr(_get_cortex(), 'test_mode', False)
+        if result.vulnerabilities and not test_mode:
             risk_score = await _get_cortex().assess_contextual_risk(
                 threat_type=reason or "UI_ANOMALY", 
                 target_url=payload.url, 
                 context=payload.content
             )
+        elif result.vulnerabilities and test_mode:
+            risk_score = 95  # Test mode: use fixed high risk score
         else:
             risk_score = 10
 

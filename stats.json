@@ -1,0 +1,67 @@
+{
+    "scans": [
+        {
+            "id": "test-replay-scan-12345",
+            "status": "Completed",
+            "name": "Test Replay Scan",
+            "scope": "http://localhost:8000",
+            "modules": [
+                "TestModule"
+            ],
+            "timestamp": "2026-04-05 00:00:00",
+            "results": [
+                {
+                    "payload": {
+                        "vuln_id": "test-vuln-67890",
+                        "url": "http://localhost:8000/api/test",
+                        "method": "GET",
+                        "type": "SQL Injection",
+                        "severity": "High"
+                    }
+                }
+            ]
+        }
+    ],
+    "active_scans": 0,
+    "total_scans": 0,
+    "total_requests": 0,
+    "vulnerabilities": 0,
+    "critical": 0,
+    "history": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+    ],
+    "v6_metrics": {
+        "injections_blocked": 0,
+        "deceptive_ui_blocked": 0,
+        "risk_score": 0
+    }
+}

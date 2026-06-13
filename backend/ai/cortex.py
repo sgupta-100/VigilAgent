@@ -288,7 +288,7 @@ class CortexEngine:
     # CORE 2: Gemini Tactical Engine (gemini-2.5-flash)
     # =========================================================================
 
-    async def _call_gemini(self, prompt, temperature=0.2, max_tokens=256, scan_ctx=None, model_override=None, _skip_cache=False):
+    async def _call_gemini(self, prompt, temperature=0.2, max_tokens=256, scan_ctx=None, model_override=None, _skip_cache=False, timeout=10.0):
         """Send a prompt to Gemini with circuit breaker + cache + telemetry."""
         self._telemetry["llm_calls"] += 1
         if self._circuit_open:
@@ -316,9 +316,12 @@ class CortexEngine:
             return "[CORTEX OFFLINE] Gemini API is not configured. Set GEMINI_API_KEY."
         try:
             async with command_lane.slot(LanePriority.LOW):
-                result = await self._gemini.call(
-                    prompt, system_prompt=SYSTEM_GUARD,
-                    temperature=temperature, max_tokens=min(max_tokens, 8192), scan_ctx=scan_ctx,
+                result = await asyncio.wait_for(
+                    self._gemini.call(
+                        prompt, system_prompt=SYSTEM_GUARD,
+                        temperature=temperature, max_tokens=min(max_tokens, 8192), scan_ctx=scan_ctx,
+                    ),
+                    timeout=timeout
                 )
             if self._is_error(result):
                 self._consecutive_failures += 1
@@ -331,6 +334,12 @@ class CortexEngine:
             self._consecutive_failures = 0
             self._set_cached(prompt, result)
             return result
+        except asyncio.TimeoutError:
+            self._consecutive_failures += 1
+            self._telemetry["llm_timeouts"] += 1
+            self._check_circuit_breaker("TIMEOUT")
+            logger.warning(f"CORTEX CORE-2: Call timed out after {timeout}s")
+            return f"[CORTEX TIMEOUT] Call timed out after {timeout}s"
         except asyncio.CancelledError:
             logger.warning("CORTEX CORE-2: Execution cancelled via ScanContext.")
             raise
@@ -368,23 +377,37 @@ class CortexEngine:
         """LEGACY ALIAS: payload generation via Gemini (gemini-2.5-flash)."""
         if not self._gemini or not self._gemini.is_available:
             return "[CORTEX OFFLINE] Gemini API is not configured."
-        async with command_lane.slot(LanePriority.LOW):
-            return await self._gemini.generate_payloads(
-                self._prompt_with_transcript(prompt, scan_ctx),
-                max_tokens=max_tokens,
-                scan_ctx=scan_ctx,
-            )
+        try:
+            async with command_lane.slot(LanePriority.LOW):
+                return await asyncio.wait_for(
+                    self._gemini.generate_payloads(
+                        self._prompt_with_transcript(prompt, scan_ctx),
+                        max_tokens=max_tokens,
+                        scan_ctx=scan_ctx,
+                    ),
+                    timeout=10.0
+                )
+        except asyncio.TimeoutError:
+            logger.warning("CORTEX: _call_nvidia_payload_model timed out")
+            return "[CORTEX TIMEOUT] Payload generation timed out"
 
     async def _call_nvidia_validation_model(self, prompt, max_tokens=4096, scan_ctx=None):
         """LEGACY ALIAS: validation via Gemini (gemini-2.5-flash)."""
         if not self._gemini or not self._gemini.is_available:
             return "[CORTEX OFFLINE] Gemini API is not configured."
-        async with command_lane.slot(LanePriority.LOW):
-            return await self._gemini.validate_candidate(
-                self._prompt_with_transcript(prompt, scan_ctx),
-                max_tokens=max_tokens,
-                scan_ctx=scan_ctx,
-            )
+        try:
+            async with command_lane.slot(LanePriority.LOW):
+                return await asyncio.wait_for(
+                    self._gemini.validate_candidate(
+                        self._prompt_with_transcript(prompt, scan_ctx),
+                        max_tokens=max_tokens,
+                        scan_ctx=scan_ctx,
+                    ),
+                    timeout=10.0
+                )
+        except asyncio.TimeoutError:
+            logger.warning("CORTEX: _call_nvidia_validation_model timed out")
+            return "[CORTEX TIMEOUT] Validation timed out"
 
     def _check_circuit_breaker(self, reason: str):
         """Trip the circuit breaker if failures exceed threshold."""
@@ -1531,13 +1554,13 @@ Explain: what was found, evidence, consequences. Professional tone. No markdown.
         """
         if self.test_mode:
             return 50
-        # CORE 1: GI5 deterministic analysis
+        # CORE 1: GI5 deterministic analysis (instant)
         gi5_score = 50
         gi5_result = self._gi5_analyze({"text": threat_type, "url": target_url})
         if gi5_result:
             gi5_score = gi5_result.get("risk_score", 50)
 
-        # CORE 2: Gemini contextual score
+        # CORE 2: Gemini contextual score (with timeout)
         ctx_str = self._compress_context(json.dumps(context or {}), 150)
         prompt = f"""Risk score 0-100 for:
 THREAT: {threat_type} | TARGET: {self._compress_context(target_url, 80)}
@@ -1546,7 +1569,16 @@ GI5 SCORE: {gi5_score}/100
 Consider: data type, industry, exploitability.
 Respond with ONLY a single number (0-100)."""
 
-        result = await self._call_ollama(prompt, temperature=0.1, max_tokens=16)
+        # Add timeout to prevent hanging - use asyncio.wait_for with 5 second timeout
+        try:
+            result = await asyncio.wait_for(
+                self._call_ollama(prompt, temperature=0.1, max_tokens=16),
+                timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("CORTEX: assess_contextual_risk LLM call timed out, using GI5 score")
+            result = "[CORTEX TIMEOUT]"
+
         granite_score = gi5_score  # Default to GI5 if Granite fails
         if not self._is_error(result):
             try:

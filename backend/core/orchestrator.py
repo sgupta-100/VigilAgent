@@ -130,8 +130,9 @@ class HiveOrchestrator:
             
             # Determine scan duration
             duration_val = target_config.get('duration')
-            scan_duration = int(duration_val) if duration_val is not None else 5
-            scan_duration = max(scan_duration, 1)
+            scan_duration = int(duration_val) if duration_val is not None else 10
+            # Ensure minimum duration for WebSocket listeners to connect and receive events
+            scan_duration = max(scan_duration, 10)
             
             # Lightweight monitoring loop — broadcasts frequently for WS listeners
             loop_start = time.time()
